@@ -415,6 +415,7 @@ function ChildRequestCard({
           <Link
             to="/$environmentId/$threadId"
             params={{ environmentId: group.origin.environmentId, threadId: group.origin.threadId }}
+            state={{ threadLinkOrigin: true }}
             className="min-w-0 truncate rounded-sm font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring"
             aria-label={`Open original thread: ${group.title}`}
           >

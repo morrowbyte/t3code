@@ -10,6 +10,11 @@ return to writing. Navigation stays active while you move through the app. Use F
 and Shift+F6 to move between regions. Ctrl+Shift+Space opens app navigation from a
 terminal or embedded browser; customize **Navigation: Activate** in Keybindings.
 
+The keyboard control in the thread header shows **Input** while writing and **Normal**
+while navigating. Open it and choose **Practice keyboard navigation** for a short
+exercise in the current thread. Each step advances when you perform its action;
+your draft stays in place and you can stop the exercise at any point.
+
 Space, then `c`, opens composer controls: `m` for model, `r` for reasoning,
 `s` for service tier or speed, and `a` for access. Space, then `v`, provides
 dictation, call and microphone commands. These actions keep their existing

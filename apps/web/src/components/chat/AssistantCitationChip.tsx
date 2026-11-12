@@ -3,7 +3,7 @@ import {
   assistantCitationLabel,
   serializeAssistantCitation,
 } from "@t3tools/shared/assistantCitations";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowUpRightIcon, PencilIcon, QuoteIcon } from "lucide-react";
 import {
   useEffect,
@@ -34,6 +34,7 @@ import { composerFloatingLayerProps } from "./composerEventScope";
 import { observeResize } from "~/lib/observeResize";
 import { textDirection } from "~/textDirection";
 import { useCommentDictationTarget } from "~/voice/useCommentDictationTarget";
+import { resolveThreadRouteRef } from "~/threadRoutes";
 
 export function AssistantCitationChip({
   citation,
@@ -54,6 +55,10 @@ export function AssistantCitationChip({
   };
 }) {
   const navigate = useNavigate();
+  const origin = resolveThreadRouteRef(useParams({ strict: false }));
+  const hasThreadReturn = useLocation({
+    select: (location) => location.state.threadLinkOrigin === true,
+  });
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
   const commentPopupRef = useRef<HTMLDivElement>(null);
   const draftCommentRef = useRef<string | null>(null);
@@ -123,7 +128,7 @@ export function AssistantCitationChip({
         return;
       }
       event.preventDefault();
-      void navigate(assistantCitationNavigation(citation));
+      void navigate(assistantCitationNavigation(citation, origin, hasThreadReturn));
     },
   };
   const composerSourceLink = (

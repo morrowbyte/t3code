@@ -1203,6 +1203,8 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                   Du
                 </p>
                 <CollapsibleUserMessageBody
+                  key={row.message.id}
+                  messageId={row.message.id}
                   text={resolvedContext.text}
                   renderContextReference={renderContextReference}
                   skills={ctx.skills}
@@ -1308,14 +1310,24 @@ const COLLAPSED_USER_MESSAGE_FADE_HEIGHT_REM = 1.75;
 const COLLAPSED_USER_MESSAGE_FADE_MASK = `linear-gradient(to bottom, black calc(100% - ${COLLAPSED_USER_MESSAGE_FADE_HEIGHT_REM}rem), transparent)`;
 
 const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(props: {
+  messageId: string;
   text: string;
   renderContextReference: (reference: ChatMarkdownContextReference) => ReactNode;
   skills: ReadonlyArray<ServerProviderSkill>;
   markdownCwd: string | undefined;
   collapsible?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const revealForFind = () => setExpanded(true);
+  const { workGroupViewState } = use(TimelineRowCtx);
+  const disclosureKey = `message-body:${props.messageId}`;
+  const [expanded, setExpanded] = useState(() =>
+    workGroupViewState.expandedEntries.has(disclosureKey),
+  );
+  const updateExpanded = (next: boolean) => {
+    if (next) workGroupViewState.expandedEntries.add(disclosureKey);
+    else workGroupViewState.expandedEntries.delete(disclosureKey);
+    setExpanded(next);
+  };
+  const revealForFind = () => updateExpanded(true);
   const revealRef = findRevealRef(revealForFind);
   const hasVisibleBody = props.text.trim().length > 0;
   const canCollapse =
@@ -1363,7 +1375,7 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
               data-keyboard-action="details"
               aria-keyshortcuts="D"
               data-scroll-anchor-ignore
-              onClick={() => setExpanded((value) => !value)}
+              onClick={() => updateExpanded(!expanded)}
               className="-ml-1"
             >
               {expanded ? "Show less" : "Show full message"}

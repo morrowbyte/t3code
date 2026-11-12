@@ -518,6 +518,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(threadRef),
+      state: { threadLinkOrigin: true },
     });
   };
   const onOpenRelatedThreadStable = useStableCallback(onOpenRelatedThread);

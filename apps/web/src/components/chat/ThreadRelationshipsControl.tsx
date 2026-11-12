@@ -275,6 +275,7 @@ function RemoteSubagentRow(props: {
                   params: buildThreadRouteParams(
                     scopeThreadRef(remoteChild.environmentId, remoteChild.threadId),
                   ),
+                  state: { threadLinkOrigin: true },
                 });
               }}
             />
@@ -345,6 +346,7 @@ function DelegatedFromRow(props: {
                 void navigate({
                   to: "/$environmentId/$threadId",
                   params: buildThreadRouteParams(parentRef),
+                  state: { threadLinkOrigin: true },
                 });
               }}
             />
@@ -542,6 +544,7 @@ export function ThreadRelationshipsPanel(props: {
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(scopeThreadRef(props.environmentId, threadId)),
+      state: { threadLinkOrigin: true },
     });
   };
 

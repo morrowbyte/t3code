@@ -322,6 +322,11 @@ it.each([false, true])(
     expect(link.querySelector("[data-agent-identity]")).not.toBeNull();
     expect(link.textContent?.trim()).toMatch(/\S+\s+\S+/u);
     expect(screen.container.textContent).not.toContain("nicht erfasst");
+    await click(link);
+    await vi.waitFor(() =>
+      expect(screen.router!.state.location.pathname).toContain(encodeURIComponent(senderThreadId)),
+    );
+    expect(screen.router!.state.location.state.threadLinkOrigin).toBe(true);
   },
 );
 
@@ -517,6 +522,36 @@ describe("MessagesTimeline work rows", () => {
 });
 
 describe("MessagesTimeline messages", () => {
+  it("keeps an expanded long message and its reading position after switching threads", async () => {
+    using _state = setup();
+    const props = { ...baseProps(), liveFollowEnabled: false };
+    const entry = message("A paragraph to read across thread switches.\n\n".repeat(100));
+    const draw = (other = false) => (
+      <MessagesTimeline
+        {...props}
+        routeThreadKey={other ? `${props.routeThreadKey}:other` : props.routeThreadKey}
+        timelineEntries={other ? [message("Other thread", {}, "other")] : [entry]}
+      />
+    );
+    await using screen = await renderElement(draw());
+    await screen.getByRole("button", { name: "Show full message" }).click();
+    const scroll = props.listRef.current!.getScrollableNode()!;
+    await act(() => {
+      scroll.scrollTop = 600;
+      scroll.dispatchEvent(new Event("scroll"));
+    });
+    await vi.waitFor(() => expect(scroll.scrollTop).toBeGreaterThan(500));
+    await screen.rerender(draw(true));
+    await screen.rerender(draw());
+    await vi.waitFor(() => {
+      expect(
+        screen.container.querySelector<HTMLElement>("[data-user-message-body]")?.dataset
+          .userMessageCollapsed,
+      ).toBe("false");
+      expect(props.listRef.current!.getScrollableNode()!.scrollTop).toBeGreaterThan(500);
+    });
+  });
+
   it("settles when equally long messages have very different rendered heights", async () => {
     const props = baseProps();
     const tall = message("a\n\n".repeat(6000), { role: "assistant" }, "tall");
@@ -1357,39 +1392,45 @@ describe("MessagesTimeline thread find", () => {
     expect(navigations).toEqual([released]);
   });
 
-  it("still restores the position of a thread it switches to whose find is open", async () => {
-    setup();
-    const base = baseProps();
-    const other = "environment-local:thread-find-open-positioned";
-    const replies = Array.from({ length: 40 }, (_, index) =>
-      message(`Reply ${index}\n\n${"line\n\n".repeat(8)}`, { role: "assistant" }, `r-${index}`),
-    );
-    rememberTimelinePosition(
-      other,
-      { rowId: "entry-r-20", offsetWithinRow: 0, scrollOffset: 0, atEnd: false },
-      false,
-    );
-    await using screen = await renderElement(
-      <MessagesTimeline {...base} timelineEntries={[message("Short thread")]} />,
-    );
-    await screen.rerender(
-      <MessagesTimeline
-        {...base}
-        routeThreadKey={other}
-        timelineEntries={replies}
-        liveFollowEnabled={false}
-        findOpen
-      />,
-    );
-    const viewport = base.listRef.current!.getScrollableNode()!;
-    await vi.waitFor(() => {
-      const row = screen.container.querySelector('[data-timeline-row-id="entry-r-20"]');
-      expect(row).not.toBeNull();
-      expect(
-        Math.abs(row!.getBoundingClientRect().top - viewport.getBoundingClientRect().top),
-      ).toBeLessThanOrEqual(2);
-    });
-  });
+  it.each([false, true])(
+    "restores reading position and reports its end state (find: %s)",
+    async (findOpen) => {
+      setup();
+      const onIsAtEndChange = vi.fn();
+      const base = { ...baseProps(), onIsAtEndChange };
+      const other = "environment-local:thread-find-open-positioned";
+      const replies = Array.from({ length: 40 }, (_, index) =>
+        message(`Reply ${index}\n\n${"line\n\n".repeat(8)}`, { role: "assistant" }, `r-${index}`),
+      );
+      rememberTimelinePosition(
+        other,
+        { rowId: "entry-r-20", offsetWithinRow: 0, scrollOffset: 0, atEnd: false },
+        false,
+      );
+      await using screen = await renderElement(
+        <MessagesTimeline {...base} timelineEntries={[message("Short thread")]} />,
+      );
+      onIsAtEndChange.mockClear();
+      await screen.rerender(
+        <MessagesTimeline
+          {...base}
+          routeThreadKey={other}
+          timelineEntries={replies}
+          liveFollowEnabled={false}
+          findOpen={findOpen}
+        />,
+      );
+      const viewport = base.listRef.current!.getScrollableNode()!;
+      await vi.waitFor(() => {
+        const row = screen.container.querySelector('[data-timeline-row-id="entry-r-20"]');
+        expect(row).not.toBeNull();
+        expect(
+          Math.abs(row!.getBoundingClientRect().top - viewport.getBoundingClientRect().top),
+        ).toBeLessThanOrEqual(2);
+      });
+      await vi.waitFor(() => expect(onIsAtEndChange).toHaveBeenLastCalledWith(false));
+    },
+  );
   it("reveals find's match, not the remembered row, on a thread it switches to", async () => {
     setup();
     const base = baseProps();
