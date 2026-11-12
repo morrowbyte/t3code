@@ -182,6 +182,8 @@ export function executionEmbeddedScripts(command: string, language: string): Emb
     const name = (program?.[1] ?? program?.[2] ?? program?.[3] ?? "").split(/[\\/]/u).at(-1);
     if (language !== "powershell" || !/^(?:pwsh|powershell)(?:\.exe)?$/iu.test(name ?? ""))
       return [];
+    // POSIX parsing cannot preserve these PowerShell quote and escape forms.
+    if (/''|""|`|\\/u.test(command.trim().slice(program?.[0].length ?? 0))) return [];
   }
   return embeddedScripts(command);
 }

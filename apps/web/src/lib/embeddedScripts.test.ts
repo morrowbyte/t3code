@@ -35,6 +35,13 @@ describe("embeddedScripts", () => {
     expect(executionEmbeddedScripts('Write-Output "python3 -c print(1)"', "powershell")).toEqual(
       [],
     );
+    for (const ambiguous of [
+      "pwsh -Command 'Write-Output ''hello world'''",
+      'pwsh -Command "Write-Output `"hello world`""',
+      'powershell.exe -Command "Write-Output ""hello world"""',
+    ]) {
+      expect(executionEmbeddedScripts(ambiguous, "powershell")).toEqual([]);
+    }
   });
 
   it.each([
