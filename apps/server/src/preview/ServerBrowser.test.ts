@@ -2633,7 +2633,7 @@ it.live("a desktop page that comes back reconnects without waiting for a viewer"
 );
 
 it.live(
-  "native human fill reserves a human-opened primary tab and refuses an existing auto-taken viewer",
+  "native human fill refuses an occupied manual surface and waits for its confirmed release",
   () =>
     Effect.gen(function* () {
       const browser = yield* ServerBrowser.ServerBrowser;
@@ -2672,8 +2672,11 @@ it.live(
         requestId: "native-release",
         generation: grant.generation,
       });
-      // The existing viewer path REALLY auto-takes an unclaimed human tab.
-      yield* browser.attachViewer(viewerInput(opened.tabId, true));
+      // Native surfaces still reserve the ordinary viewer even without streamed frames.
+      const viewer = yield* browser.attachViewer({
+        ...viewerInput(opened.tabId, true),
+        frames: false,
+      });
       const refusal = next();
       yield* nativeHandler!.request({
         ...binding,
@@ -2683,6 +2686,65 @@ it.live(
       expect(yield* Effect.promise(() => refusal)).toMatchObject({
         type: "private-entry-refused",
         reason: "viewer-owned",
+      });
+
+      const control = (yield* Queue.clear(viewer.output)).findLast(
+        (message) => message._tag === "control",
+      );
+      if (!control || control._tag !== "control") throw new Error("Expected viewer control");
+      expect(control.controller).toBe("you");
+      yield* viewer.input({
+        type: "key",
+        action: "down",
+        key: "a",
+        code: "KeyA",
+        modifiers: 0,
+      });
+      const cdp = desktopConnections.at(-1)!.context.sessions.at(-1)!;
+      const send = cdp.send.getMockImplementation()!;
+      const drainStarted = Promise.withResolvers<void>();
+      const continueDrain = Promise.withResolvers<void>();
+      using _drain = { [Symbol.dispose]: () => continueDrain.resolve() };
+      cdp.send.mockImplementation(async (method, input) => {
+        if (
+          method === "Input.dispatchKeyEvent" &&
+          (input as { type?: string }).type === "keyUp"
+        ) {
+          drainStarted.resolve();
+          await continueDrain.promise;
+        }
+        return send(method, input);
+      });
+      yield* Queue.clear(viewer.output);
+      const release = yield* viewer
+        .input({
+          type: "releaseControl",
+          requestId: "native-menu-release",
+          expectedGeneration: control.generation,
+        })
+        .pipe(Effect.forkScoped);
+      yield* Effect.promise(() => drainStarted.promise);
+      expect(yield* Queue.clear(viewer.output)).not.toContainEqual(
+        expect.objectContaining({ _tag: "controlReleased" }),
+      );
+      continueDrain.resolve();
+      yield* Fiber.join(release);
+      expect(yield* Queue.clear(viewer.output)).toContainEqual({
+        _tag: "controlReleased",
+        requestId: "native-menu-release",
+        expectedGeneration: control.generation,
+        generation: control.generation + 1,
+        released: true,
+      });
+      const afterDrain = next();
+      yield* nativeHandler!.request({
+        ...binding,
+        type: "private-entry-acquire",
+        requestId: "native-after-viewer-drain",
+      });
+      expect(yield* Effect.promise(() => afterDrain)).toMatchObject({
+        type: "private-entry-granted",
+        requestId: "native-after-viewer-drain",
       });
     }).pipe(Effect.provide(layer), Effect.scoped),
 );
