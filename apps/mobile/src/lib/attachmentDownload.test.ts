@@ -102,6 +102,7 @@ import {
   downloadAndSaveAttachment,
   downloadAndShareAttachment,
   downloadAttachmentForPreview,
+  nativeViewerErrorMessage,
   shareLocalAttachment,
 } from "./attachmentDownload";
 import { isForegroundHandoffActive } from "./foreground-handoff";
@@ -146,6 +147,29 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   expect(isForegroundHandoffActive()).toBe(false);
+});
+
+describe("nativeViewerErrorMessage", () => {
+  it.each([
+    [
+      "Call to function 'T3NativeControls.openFile' has been rejected.\n→ Caused by: No Activity found to handle Intent { act=android.intent.action.VIEW typ=application/vnd.openxmlformats-officedocument.wordprocessingml.document }",
+      "No app on this device can show this format. Save or share it to open it elsewhere.",
+    ],
+    [
+      "android.content.ActivityNotFoundException",
+      "No app on this device can show this format. Save or share it to open it elsewhere.",
+    ],
+    [
+      "This format cannot be previewed",
+      "No app on this device can show this format. Save or share it to open it elsewhere.",
+    ],
+    [
+      "The file could not be downloaded",
+      "The file could not be opened. Check the connection and try again.",
+    ],
+  ])("classifies the native failure: %s", (message, expected) => {
+    expect(nativeViewerErrorMessage(new Error(message))).toBe(expected);
+  });
 });
 
 describe("downloadAndSaveAttachment", () => {

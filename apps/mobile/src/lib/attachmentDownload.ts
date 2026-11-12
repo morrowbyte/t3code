@@ -162,7 +162,7 @@ async function createCachedAttachmentFile(attachment: AttachmentFileMetadata) {
 
 export function nativeViewerErrorMessage(cause: unknown): string {
   const text = cause instanceof Error ? cause.message : String(cause);
-  return /ActivityNotFound|cannot be previewed/i.test(text)
+  return /ActivityNotFound|No Activity found to handle Intent|cannot be previewed/i.test(text)
     ? "No app on this device can show this format. Save or share it to open it elsewhere."
     : "The file could not be opened. Check the connection and try again.";
 }
