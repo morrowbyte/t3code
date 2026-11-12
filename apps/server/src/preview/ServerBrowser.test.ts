@@ -2719,10 +2719,7 @@ it.live(
       const continueDrain = Promise.withResolvers<void>();
       using _drain = { [Symbol.dispose]: () => continueDrain.resolve() };
       cdp.send.mockImplementation(async (method, input) => {
-        if (
-          method === "Input.dispatchKeyEvent" &&
-          (input as { type?: string }).type === "keyUp"
-        ) {
+        if (method === "Input.dispatchKeyEvent" && (input as { type?: string }).type === "keyUp") {
           drainStarted.resolve();
           await continueDrain.promise;
         }

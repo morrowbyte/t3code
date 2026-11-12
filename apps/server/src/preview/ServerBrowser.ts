@@ -2933,9 +2933,15 @@ const make = Effect.gen(function* () {
         if (next._tag === "frame") runFork(next.ack);
         // Preserve the latest control and size when frames fill a slow viewer's queue.
         else if (
-          ["gone", "reconnect", "control", "controlReleased", "viewport", "fileChooser", "selection"].includes(
-            next._tag,
-          )
+          [
+            "gone",
+            "reconnect",
+            "control",
+            "controlReleased",
+            "viewport",
+            "fileChooser",
+            "selection",
+          ].includes(next._tag)
         ) {
           const dropped = Effect.runSyncExit(Queue.clear(output));
           if (dropped._tag === "Failure") return;
