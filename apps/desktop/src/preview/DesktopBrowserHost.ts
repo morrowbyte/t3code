@@ -264,7 +264,9 @@ export const make = Effect.gen(function* () {
       session.webRequest.onBeforeRequest({ urls: ["<all_urls>"] }, (_request, callback) => {
         const current = networkSessions.get(session);
         callback({
-          cancel: !current?.allowed || connections.get(current.connection.environmentId) !== current.connection,
+          cancel:
+            !current?.allowed ||
+            connections.get(current.connection.environmentId) !== current.connection,
         });
       });
       networkGuards.add(session);
@@ -1087,7 +1089,9 @@ export const make = Effect.gen(function* () {
         const current = networkSessions.get(session);
         if (current?.connection !== connection) continue;
         current.allowed = false;
-        current.ready = current.ready.catch(() => undefined).then(() => session.closeAllConnections());
+        current.ready = current.ready
+          .catch(() => undefined)
+          .then(() => session.closeAllConnections());
         drains.push(current.ready);
       }
       connection.networkSessions.clear();
@@ -1136,9 +1140,10 @@ export const make = Effect.gen(function* () {
           if (closed || subscribed) return Stream.empty;
           subscribed = true;
           const previous = connections.get(targetEnvironmentId);
-          if (previous) yield* Effect.promise(() => previous.close(false));
+          const previousClosed = previous?.close(false);
           connections.set(targetEnvironmentId, connection);
           yield* Effect.addFinalizer(() => Effect.promise(() => close()));
+          if (previousClosed) yield* Effect.promise(() => previousClosed);
           const subscription = yield* PubSub.subscribe(outbox);
           yield* announceAll(connection);
           announceEnvironments();

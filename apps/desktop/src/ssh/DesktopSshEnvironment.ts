@@ -222,11 +222,11 @@ export const make = Effect.gen(function* () {
                     Effect.gen(function* () {
                       if (receipt.environmentId !== descriptor.environmentId)
                         return yield* new SshCommandError({
-                            command: ["desktop-browser"],
-                            exitCode: null,
-                            stderr: "",
-                            message: "The browser target environment changed.",
-                          });
+                          command: ["desktop-browser"],
+                          exitCode: null,
+                          stderr: "",
+                          message: "The browser target environment changed.",
+                        });
                       // Subscribe before consuming commands coalesced with Ready in the same chunk.
                       yield* activeConnection.events.pipe(
                         Stream.runForEach((event) => Queue.offer(outgoing, event)),

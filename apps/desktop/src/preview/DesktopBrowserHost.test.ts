@@ -578,14 +578,24 @@ describe("DesktopBrowserHost", () => {
       let beforeRequest: ((callback: (result: { cancel: boolean }) => void) => void) | undefined;
       const requestBlocked = () => {
         let cancelled = false;
-        beforeRequest?.((result) => { cancelled = result.cancel; });
+        beforeRequest?.((result) => {
+          cancelled = result.cancel;
+        });
         return cancelled;
       };
       const session = {
         webRequest: {
-          onBeforeRequest: vi.fn((_filter: unknown, listener: (_request: unknown, callback: (result: { cancel: boolean }) => void) => void) => {
-            beforeRequest = (callback) => listener({}, callback);
-          }),
+          onBeforeRequest: vi.fn(
+            (
+              _filter: unknown,
+              listener: (
+                _request: unknown,
+                callback: (result: { cancel: boolean }) => void,
+              ) => void,
+            ) => {
+              beforeRequest = (callback) => listener({}, callback);
+            },
+          ),
         },
         setProxy: vi.fn(async () => {
           entered.resolve();
