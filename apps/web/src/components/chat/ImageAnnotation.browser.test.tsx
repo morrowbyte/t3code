@@ -61,13 +61,14 @@ describe("image annotation", () => {
           onSend={onSend}
           onZoom={(factor) => zoom.current?.zoom(factor)}
           onFit={() => zoom.current?.fit()}
-          renderImage={(overlay) => (
+          renderImage={(overlay, drawing) => (
             <ZoomableImage
               ref={zoom}
               src={src}
               name="touch.png"
               onError={() => {}}
               overlay={overlay}
+              drawing={drawing}
             />
           )}
         />
@@ -77,7 +78,18 @@ describe("image annotation", () => {
     const canvas = container.querySelector("canvas")!;
     await vi.waitFor(() => expect(canvas.width).toBe(160));
     const session: CDPSession = cdp();
-    await session.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+    const drag = async (from: { x: number; y: number }, to: { x: number; y: number }) => {
+      await session.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+      try {
+        await act(async () => {
+          await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [from] });
+          await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [to] });
+          await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        });
+      } finally {
+        await session.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+      }
+    };
     const stroke = async () => {
       const box = canvas.getBoundingClientRect();
       const frame = window.frameElement?.getBoundingClientRect();
@@ -85,36 +97,39 @@ describe("image annotation", () => {
         x: (frame?.left ?? 0) + box.left + box.width * fraction,
         y: (frame?.top ?? 0) + box.top + box.height * fraction,
       });
-      await act(() =>
-        session.send("Input.dispatchTouchEvent", {
-          type: "touchStart",
-          touchPoints: [touch(0.25)],
-        }),
-      );
-      await act(() =>
-        session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [touch(0.75)] }),
-      );
-      await act(() =>
-        session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }),
-      );
+      await drag(touch(0.25), touch(0.75));
     };
-    try {
-      await act(() => userEvent.click(button("Thick stroke")));
-      const beforeWidth = canvas.getBoundingClientRect().width;
-      await stroke();
-      expect(canvas.getContext("2d")!.getImageData(80, 50, 1, 1).data[3]).toBeGreaterThan(0);
-      await act(() => userEvent.click(button("Undo mark")));
-      await act(() => userEvent.click(button("Zoom in")));
-      expect(canvas.getBoundingClientRect().width).toBeGreaterThan(beforeWidth);
-      await stroke();
-      await act(() => userEvent.click(button("Send annotation")));
-      await vi.waitFor(() => expect(onSend).toHaveBeenCalledOnce());
-      const marked = await pixel(onSend.mock.calls[0]![0], 80, 50);
-      expect(marked[1]).toBeLessThan(200);
-      expect(await pixel(onSend.mock.calls[0]![0], 10, 90)).toEqual([255, 255, 255, 255]);
-    } finally {
-      await session.send("Emulation.setTouchEmulationEnabled", { enabled: false });
-    }
+    await act(() => userEvent.click(button("Thick stroke")));
+    const beforeWidth = canvas.getBoundingClientRect().width;
+    await stroke();
+    expect(canvas.getContext("2d")!.getImageData(80, 50, 1, 1).data[3]).toBeGreaterThan(0);
+    await act(() => userEvent.click(button("Undo mark")));
+    await act(() => userEvent.click(button("Zoom in")));
+    expect(canvas.getBoundingClientRect().width).toBeGreaterThan(beforeWidth);
+    await stroke();
+    await act(() => userEvent.click(button("Send annotation")));
+    await vi.waitFor(() => expect(onSend).toHaveBeenCalledOnce());
+    const marked = await pixel(onSend.mock.calls[0]![0], 80, 50);
+    expect(marked[1]).toBeLessThan(200);
+    expect(await pixel(onSend.mock.calls[0]![0], 10, 90)).toEqual([255, 255, 255, 255]);
+
+    container.style.setProperty("--media-width", "120px");
+    await act(() => userEvent.click(button("Move")));
+    expect(button("Move").getAttribute("aria-pressed")).toBe("true");
+    const marks = canvas.getContext("2d")!.getImageData(0, 0, 160, 100).data;
+    const viewer = container.querySelector<HTMLElement>('[role="region"]')!;
+    await vi.waitFor(() => expect(viewer.scrollWidth).toBeGreaterThan(viewer.clientWidth));
+    const bounds = viewer.getBoundingClientRect();
+    const frame = window.frameElement?.getBoundingClientRect();
+    const x = (frame?.left ?? 0) + bounds.left + 90;
+    const y = (frame?.top ?? 0) + bounds.top + 40;
+    const beforeScroll = viewer.scrollLeft;
+    await drag({ x, y }, { x: x - 60, y });
+    expect(viewer.scrollLeft).toBeGreaterThan(beforeScroll);
+    expect(canvas.getContext("2d")!.getImageData(0, 0, 160, 100).data).toEqual(marks);
+    await act(() => userEvent.click(button("Draw")));
+    expect(button("Draw").getAttribute("aria-pressed")).toBe("true");
+    expect(canvas.style.pointerEvents).toBe("");
   });
 
   it("exports the visible marks into new raster pixels and leaves original bytes unchanged", async () => {
