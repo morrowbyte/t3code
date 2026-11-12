@@ -149,7 +149,11 @@ import { isMarkdownFileLinkLabel } from "@t3tools/shared/markdownLinks";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { cn } from "../lib/utils";
-import { resolveRemoteOpenState, useRemoteOpenResolution } from "../remoteOpen";
+import {
+  resolveRemoteOpenState,
+  useRemoteCapableEditors,
+  useRemoteOpenResolution,
+} from "../remoteOpen";
 import { useRightPanelStore } from "../rightPanelStore";
 import { readThreadShell, useProjects } from "../state/entities";
 import { serverEnvironment } from "../state/server";
@@ -634,7 +638,15 @@ function useChatMarkdownState({
     markdownServerConfigFieldsAtom(environmentId),
   );
   const projects = useProjects();
-  const [preferredEditor] = usePreferredEditor(availableEditors);
+  const clientEditors = useRemoteCapableEditors();
+  const effectiveEditors = !remoteOpen.isResolved
+    ? []
+    : remoteOpen.state.mode === "local-exec"
+      ? availableEditors
+      : remoteOpen.state.mode === "remote-links"
+        ? clientEditors
+        : [];
+  const [preferredEditor] = usePreferredEditor(effectiveEditors);
   const preferredEditorMenuLabel = openInEditorMenuLabel(preferredEditor);
   const openInPreferredEditor = useOpenInPreferredEditor(environmentId, availableEditors);
   const fileApps = useFileApps(environmentId);
@@ -862,7 +874,11 @@ function useChatMarkdownState({
         theme={resolvedTheme}
         threadRef={threadRef}
         onOpen={
-          canUseShellActions
+          (canUseShellActions ||
+            (canOperateHost &&
+              remoteOpen.isResolved &&
+              remoteOpen.state.mode === "remote-links")) &&
+          preferredEditor !== null
             ? async () =>
                 openInPreferredEditor(
                   markdownFileEditorTarget(fileLinkMeta, await resolveHostPath()),
