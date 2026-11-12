@@ -352,6 +352,7 @@ function makeMockRuntime(input: {
               ...(typeof input.environment === "function"
                 ? input.environment(runtimeOrdinal)
                 : input.environment),
+              ...runtimeInput.processEnvironment,
             },
           },
           authMethodId: "test",
@@ -3273,16 +3274,17 @@ describe("AcpAdapterV2", () => {
         );
         const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
         const instanceId = ProviderInstanceId.make("acp-test-eager-resume");
+        const runtimeInputs: Array<AcpAdapterV2RuntimeInput> = [];
+        const makeRuntime = makeMockRuntime({ childProcessSpawner, mockAgentPath, protocolEvents });
         const adapter = yield* makeAcpAdapterV2({
           instanceId,
           flavor: {
             driver: ACP_TEST_DRIVER,
             capabilities: AcpProviderCapabilitiesV2,
-            makeRuntime: makeMockRuntime({
-              childProcessSpawner,
-              mockAgentPath,
-              protocolEvents,
-            }),
+            makeRuntime: (runtimeInput) =>
+              Effect.sync(() => runtimeInputs.push(runtimeInput)).pipe(
+                Effect.andThen(makeRuntime(runtimeInput)),
+              ),
           },
           selfInvocation,
         });
@@ -3307,6 +3309,7 @@ describe("AcpAdapterV2", () => {
         });
 
         assert.equal(providerThread.nativeThreadRef?.nativeId, "persisted-session");
+        assert.equal(runtimeInputs[0]?.processEnvironment?.T3CODE_THREAD_ID, threadId);
         assert.isNull(providerThread.nativeMetadata);
         const startupMethods = yield* pollProtocolMethods(protocolEvents);
         assert.include(startupMethods, "session/resume");
@@ -3338,6 +3341,16 @@ describe("AcpAdapterV2", () => {
             nativeTurnId: "persisted-session:turn:1",
           }),
         );
+        const targetThreadId = ThreadId.make("thread-acp-eager-resume-target");
+        const resumed = yield* runtime.resumeThread({
+          providerThread,
+          threadId: targetThreadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.equal(resumed.appThreadId, targetThreadId);
+        assert.lengthOf(runtimeInputs, 2);
+        assert.equal(runtimeInputs[1]?.processEnvironment?.T3CODE_THREAD_ID, targetThreadId);
       }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
@@ -3585,6 +3598,8 @@ describe("AcpAdapterV2", () => {
         runtimePolicy,
       });
       assert.equal(runtimeOrdinalSeen, 1);
+      assert.equal(runtimeInputs[0]?.processEnvironment?.T3CODE_THREAD_ID, threadId);
+      assert.deepEqual(runtimeInputs[0]?.mcpServers, []);
       yield* runtimeInputs[0]!.onTermination!(
         new EffectAcpErrors.AcpTransportError({
           detail: "Injected unexpected writer termination",
@@ -3607,6 +3622,7 @@ describe("AcpAdapterV2", () => {
       );
       assert.equal(runtimeOrdinalSeen, 2);
       assert.lengthOf(runtimeInputs, 2);
+      assert.equal(runtimeInputs[1]?.processEnvironment?.T3CODE_THREAD_ID, threadId);
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
@@ -4388,6 +4404,8 @@ describe("AcpAdapterV2", () => {
         runtimeInputs[1]?.processEnvironment?.T3_ACP_MCP_AUTHORIZATION,
         "Bearer rollback-target-token",
       );
+      assert.equal(runtimeInputs[0]?.processEnvironment?.T3CODE_THREAD_ID, threadId);
+      assert.equal(runtimeInputs[1]?.processEnvironment?.T3CODE_THREAD_ID, rollbackThreadId);
       const replacementMcpServer = runtimeInputs[1]?.mcpServers[0];
       const replacementMcpEnvironment =
         replacementMcpServer !== undefined &&

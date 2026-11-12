@@ -25,36 +25,12 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import * as Orchestrator from "./Orchestrator.ts";
 
 export const localComputeContext = (cpuPressure: boolean, explicitLocal = false) =>
   `Compute placement: local. ${cpuPressure ? "CPU usage is high, but memory is sufficient and Boat is not enabled for this project." : "The host is healthy."} T3 execution context, not a user instruction. ${explicitLocal ? "An explicit local selection keeps this thread's assigned execution on the local host." : "T3 automatically selected the local host for this thread's assigned execution."} Use normal local shell tools for that work, including dependency installation, builds, tests and dev servers. Separate VM work explicitly authorized by the user is independent of this placement and may use its own environment and owner. Existing explicit user or project execution constraints, permissions and storage guards still apply.`;
 
-export class StorageRunInterrupt extends Context.Reference<
-  | ((input: {
-      readonly threadId: ThreadId;
-      readonly runId: RunId;
-      readonly reason: string;
-    }) => Effect.Effect<void, unknown>)
-  | undefined
->("t3/orchestration-v2/StorageRunInterrupt", { defaultValue: () => undefined }) {}
-
-export const storageRunInterrupt =
-  (orchestrator: Orchestrator.OrchestratorV2["Service"]) =>
-  (input: { readonly threadId: ThreadId; readonly runId: RunId; readonly reason: string }) =>
-    orchestrator
-      .dispatch({
-        type: "run.interrupt",
-        commandId: CommandId.make(`storage-pressure-interrupt:${input.runId}`),
-        threadId: input.threadId,
-        runId: input.runId,
-        reason: input.reason,
-      })
-      .pipe(Effect.asVoid);
-
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import * as StoragePressure from "../storagePressure.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -174,7 +150,6 @@ export const layer: Layer.Layer<
   | Path.Path
   | ServerConfig.ServerConfig
   | ServerSettings.ServerSettingsService
-  | StoragePressure.StoragePressure
   | GitWorkflowService.GitWorkflowService
   | ProjectService.ProjectService
   | ProviderAuthService.ProviderAuthService
@@ -191,8 +166,6 @@ export const layer: Layer.Layer<
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig.ServerConfig;
-    const storagePressure = yield* StoragePressure.StoragePressure;
-    const storageRunInterrupt = yield* StorageRunInterrupt;
     const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
     const projects = yield* ProjectService.ProjectService;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
@@ -755,27 +728,6 @@ export const layer: Layer.Layer<
       }
       const resolvedRuntimePolicy = resolvedPolicy.success;
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
-      const storagePaths = [serverConfig.stateDir, resolvedRuntimePolicy.cwd ?? serverConfig.cwd];
-      const storageError = yield* Effect.promise(() => storagePressure.check(storagePaths));
-      if (!(yield* isCurrentAttemptInStatus("starting"))) return;
-      if (storageError !== null) {
-        yield* settleRunBeforeStart({
-          signal: "storage-pressure",
-          status: "failed",
-          now: yield* DateTime.now,
-          providerInstanceId: run.providerInstanceId,
-          itemProviderThreadId: providerThread.id,
-          item: {
-            type: "error",
-            title:
-              storageError.code === "storage_measurement_failed"
-                ? "Cannot measure storage capacity to start work"
-                : "Not enough disk space to start work",
-            failure: makeProviderFailure({ class: "validation_error", ...storageError }),
-          },
-        });
-        return;
-      }
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
       );
@@ -1828,11 +1780,6 @@ export const layer: Layer.Layer<
         },
         modelSelection: run.modelSelection,
         runtimePolicy: resolvedRuntimePolicy,
-        storagePressure: {
-          guard: storagePressure,
-          paths: storagePaths,
-          ...(storageRunInterrupt === undefined ? {} : { interrupt: storageRunInterrupt }),
-        },
       });
     });
 

@@ -19,6 +19,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
 import * as CursorSdk from "./CursorSdk.ts";
+import { makeCursorSdkProcessRunner } from "./CursorSdkProcess.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 
 export const CURSOR_AGENT_SDK_PROTOCOL = "cursor-agent-sdk.local" as const;
@@ -83,6 +84,7 @@ export interface CursorAgentSdkOpenInput {
   readonly options: AgentOptions;
   readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
+  readonly environment?: NodeJS.ProcessEnv;
 }
 
 export interface CursorAgentSdkSendInput<Error> {
@@ -438,8 +440,16 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
           const pendingUpdates: Array<InteractionUpdate> = [];
           let callbackFailure: { readonly cause: unknown } | undefined;
           let callbackChain = Promise.resolve();
+          let pendingCallbacks = 0;
           let runId = "";
           const dispatchUpdate = (update: InteractionUpdate): Promise<void> => {
+            if (pendingCallbacks >= 256) {
+              callbackFailure ??= {
+                cause: new Error("Cursor SDK exceeded the pending delta limit."),
+              };
+              return Promise.resolve();
+            }
+            pendingCallbacks += 1;
             callbackChain = callbackChain
               .then(() => {
                 if (callbackFailure !== undefined) {
@@ -459,6 +469,9 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
               })
               .catch((cause) => {
                 callbackFailure ??= { cause };
+              })
+              .finally(() => {
+                pendingCallbacks -= 1;
               });
             return callbackChain;
           };
@@ -470,6 +483,8 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
                   ...sendInput.options,
                   onDelta: async ({ update }) => {
                     if (!callbacksReady) {
+                      if (pendingUpdates.length >= 256)
+                        throw new Error("Cursor SDK exceeded the early delta limit.");
                       pendingUpdates.push(update);
                       return;
                     }
@@ -631,7 +646,7 @@ export const layer = Layer.effect(
   CursorAgentSdkRunner,
   Effect.gen(function* () {
     const { native: nativeEventLogger } = yield* ProviderEventLoggers.ProviderEventLoggers;
-    return yield* makeCursorAgentSdkRunner((input) =>
+    return yield* makeCursorSdkProcessRunner((input) =>
       makeCursorAgentSdkProtocolLogger({
         nativeEventLogger,
         threadId: input.threadId,

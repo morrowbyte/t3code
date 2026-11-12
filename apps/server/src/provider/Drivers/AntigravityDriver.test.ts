@@ -3,6 +3,8 @@ import { expect, it } from "@effect/vitest";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   ProviderInstanceId,
+  ProviderSessionId,
+  ThreadId,
   type AntigravitySettings,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -120,6 +122,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
     credentialKeys: ReadonlyArray<string>;
     geminiApiKey: string | undefined;
     tempDirectory: string | undefined;
+    threadId: string | undefined;
     handle: ChildProcessSpawner.ChildProcessHandle;
   }> = [];
 
@@ -172,6 +175,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
           blockedCredentialKeys.has(key.toUpperCase()),
         ),
         geminiApiKey: environment.GEMINI_API_KEY,
+        threadId: environment.T3CODE_THREAD_ID,
         tempDirectory:
           environment.ANTIGRAVITY_HARNESS_PATH === undefined ? undefined : environment.TMPDIR,
         handle,
@@ -188,6 +192,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
       { name: "PATH", value: instancePath },
       { name: "T3_ACP_ANTIGRAVITY", value: "1" },
       { name: "T3_ACP_REQUEST_LOG_PATH", value: requestLog },
+      { name: "T3CODE_THREAD_ID", value: "ambient-parent-thread" },
       { name: "GEMINI_API_KEY", value: "must-not-be-used" },
       { name: "google_api_key", value: "must-not-be-used" },
       { name: "GOOGLE_APPLICATION_CREDENTIALS", value: "/must-not-be-used.json" },
@@ -269,6 +274,57 @@ const layerTest = ProviderHostLive.layer.pipe(
 );
 
 it.layer(layerTest)("AntigravityDriver", (it) => {
+  // quarantine: #93 The driver fixture launches POSIX executables.
+  it.effect.skipIf(windowsHost)(
+    "scopes agent starts and replacements without MCP to their thread",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        const adapter = h.instance.orchestrationAdapter;
+        if (adapter === undefined) return yield* Effect.die("Missing Antigravity adapter.");
+        const threadId = ThreadId.make("thread-antigravity-owned");
+        const targetThreadId = ThreadId.make("thread-antigravity-replacement");
+        const modelSelection = {
+          instanceId: h.instance.instanceId,
+          model: ANTIGRAVITY_DEFAULT_MODEL,
+        };
+        const runtimePolicy = {
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          cwd: process.cwd(),
+        };
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const runtime = yield* adapter.openSession({
+              threadId,
+              providerSessionId: ProviderSessionId.make("session-antigravity-owned"),
+              modelSelection,
+              runtimePolicy,
+            });
+            const original = yield* runtime.ensureThread({
+              threadId,
+              modelSelection,
+              runtimePolicy,
+            });
+            yield* runtime.ensureThread({
+              threadId: targetThreadId,
+              modelSelection,
+              runtimePolicy,
+              existingProviderThread: original,
+              forceNewNativeThread: true,
+            });
+          }),
+        );
+        const nativeLaunches = h.launches.filter((launch) => launch.harnessPath !== undefined);
+        expect(nativeLaunches.map((launch) => launch.threadId)).toEqual([threadId, targetThreadId]);
+        expect(
+          (yield* h.readRequests)
+            .filter((request) => request.method === "session/new")
+            .map((request) => request.params?.mcpServers),
+        ).toEqual([[], []]);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect.skipIf(windowsHost)(
     "refreshes through the selected executable and personal Google ACP",
     () =>

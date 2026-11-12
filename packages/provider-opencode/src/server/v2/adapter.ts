@@ -37,6 +37,7 @@ import {
   type ProviderInstanceId,
   type RunId,
   type RuntimeRequestId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import type * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -285,6 +286,7 @@ interface ThreadState {
   agent: string;
   title: string | undefined;
   rules: ReadonlyArray<Rule> | undefined;
+  environmentOwner: ThreadId | null | undefined;
   policy: RulesPolicy;
   readonly grants: Array<Rule>;
   readonly calls: Map<string, SubagentCall>;
@@ -747,6 +749,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       agent: "build",
       title: undefined,
       rules: undefined,
+      environmentOwner: undefined,
       policy: input.runtimePolicy,
       grants: [],
       calls: new Map(),
@@ -2640,7 +2643,10 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       currentScope = scope;
       yield* Scope.close(previous, Exit.void);
       // A restarted server forgot T3's MCP servers; the next turn adds them again.
-      for (const state of threads.values()) state.mcp = undefined;
+      for (const state of threads.values()) {
+        state.mcp = undefined;
+        state.environmentOwner = undefined;
+      }
       yield* lock.withPermit(reconcile).pipe(Effect.timeout(RECONCILE_TIMEOUT));
       return stream;
     }).pipe(
@@ -2775,7 +2781,20 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       );
     });
 
+    const writeEnvironment = Effect.fn("OpenCode2Adapter.writeEnvironment")(function* (
+      state: ThreadState,
+    ) {
+      const threadId = state.providerThread.appThreadId;
+      if (state.environmentOwner === threadId) return;
+      yield* client.session.environment({
+        sessionID: Session.ID.make(state.sessionId),
+        variables: { T3CODE_THREAD_ID: threadId ?? "" },
+      });
+      state.environmentOwner = threadId;
+    });
+
     const writeRules = Effect.fnUntraced(function* (state: ThreadState, policy: RulesPolicy) {
+      yield* writeEnvironment(state);
       const rules = yield* rulesFor(state, policy, rootOf(state).providerThread.appThreadId);
       if (!sameRules(state.rules, rules)) {
         yield* client.session.update({
@@ -3410,6 +3429,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               forkedFrom: null,
               createdAt,
             }),
+            appThreadId: threadInput.threadId,
             providerSessionId: input.providerSessionId,
             nativeThreadRef: ref(created.id),
             nativeConversationHeadRef: null,
@@ -3428,6 +3448,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             directory,
           );
           state.policy = policy;
+          yield* writeEnvironment(state);
           return state.providerThread;
         },
         (effect, threadInput) =>
@@ -3452,6 +3473,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           const native = yield* client.session.get({ sessionID: Session.ID.make(sessionId) });
           const providerThread: OrchestrationV2ProviderThread = {
             ...threadInput.providerThread,
+            appThreadId: threadInput.threadId ?? threadInput.providerThread.appThreadId,
             providerSessionId: input.providerSessionId,
             status: "idle",
             updatedAt: yield* DateTime.now,

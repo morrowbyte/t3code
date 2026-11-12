@@ -2929,6 +2929,7 @@ it.live.each([true, false])("opens an authenticated OpenCode session (external=%
             if (!ChildProcess.isStandardCommand(command)) return Effect.die("Unexpected pipeline");
             assert.include(command.args, "serve");
             assert.equal(command.options.env?.OPENCODE_SERVER_PASSWORD, password);
+            assert.equal(command.options.env?.T3CODE_THREAD_ID, "thread-opencode-auth");
             managedStarts += 1;
             return spawner.spawn(
               ChildProcess.make(
@@ -2954,7 +2955,10 @@ it.live.each([true, false])("opens an authenticated OpenCode session (external=%
         serverUrl: external ? url : "",
         ...(external ? { serverPassword: password } : {}),
       }),
-      environment: { OPENCODE_SERVER_PASSWORD: "environment-password" },
+      environment: {
+        OPENCODE_SERVER_PASSWORD: "environment-password",
+        T3CODE_THREAD_ID: "ambient-parent-thread",
+      },
     }).pipe(Effect.provide(runtimeLayer));
     const session = yield* adapter.openSession({
       threadId: ThreadId.make("thread-opencode-auth"),

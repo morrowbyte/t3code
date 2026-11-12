@@ -152,7 +152,12 @@ describe("OpenCode2Server passwords", () => {
   it("hands the spawned server only the T3 password", () => {
     const password = Redacted.make("t3-generated");
     const environment = OpenCode2Server.serverEnvironment(
-      { PATH: "/bin", OPENCODE_SERVER_PASSWORD: "ambient", OPENCODE_PASSWORD: "ambient" },
+      {
+        PATH: "/bin",
+        OPENCODE_SERVER_PASSWORD: "ambient",
+        OPENCODE_PASSWORD: "ambient",
+        T3CODE_THREAD_ID: "ambient-parent-thread",
+      },
       password,
     );
     assert.deepStrictEqual(environment, { PATH: "/bin", OPENCODE_PASSWORD: "t3-generated" });

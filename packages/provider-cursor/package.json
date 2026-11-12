@@ -23,6 +23,10 @@
       "types": "./src/server/CursorAgentSdk.ts",
       "import": "./src/server/CursorAgentSdk.ts"
     },
+    "./server/CursorSdkWorker": {
+      "types": "./src/server/CursorSdkWorker.ts",
+      "import": "./src/server/CursorSdkWorker.ts"
+    },
     "./server/accountUsage": {
       "types": "./src/server/accountUsage.ts",
       "import": "./src/server/accountUsage.ts"

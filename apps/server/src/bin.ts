@@ -18,7 +18,11 @@ if (
   // Guard sockets before either dispatch path can load outbound-capable modules.
   const { ignoreMacosTypeOfServiceEinval } = await import("./outboundHttp.ts");
   ignoreMacosTypeOfServiceEinval();
-  if (command === "--crew-desktop-restore-probe") {
+  if (command === "__cursor-sdk-worker") {
+    const { runCursorSdkWorker } = await import("@t3tools/provider-cursor/server/CursorSdkWorker");
+    await runCursorSdkWorker();
+    process.exit(0);
+  } else if (command === "--crew-desktop-restore-probe") {
     try {
       const { readFile } = await import("node:fs/promises");
       const metadata = JSON.parse(

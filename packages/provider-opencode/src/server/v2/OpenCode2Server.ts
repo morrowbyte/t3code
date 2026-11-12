@@ -44,7 +44,11 @@ export const serverEnvironment = (
   environment: NodeJS.ProcessEnv,
   password: Redacted.Redacted,
 ): NodeJS.ProcessEnv => {
-  const { OPENCODE_SERVER_PASSWORD: _inherited, ...rest } = environment;
+  const {
+    OPENCODE_SERVER_PASSWORD: _inherited,
+    T3CODE_THREAD_ID: _inheritedThread,
+    ...rest
+  } = environment;
   return { ...rest, OPENCODE_PASSWORD: Redacted.value(password) };
 };
 

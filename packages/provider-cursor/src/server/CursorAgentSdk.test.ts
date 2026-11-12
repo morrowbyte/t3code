@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import type { InteractionUpdate } from "@cursor/sdk";
 import { assert, describe, it } from "@effect/vitest";
 import { ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -7,7 +8,6 @@ import * as Exit from "effect/Exit";
 import * as Cause from "effect/Cause";
 import { vi } from "vite-plus/test";
 
-import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as CursorAgentSdk from "./CursorAgentSdk.ts";
 import * as CursorSdk from "./CursorSdk.ts";
 
@@ -34,7 +34,9 @@ const cursorSdkMock = vi.hoisted(() => {
   const send = vi.fn(
     async (
       _message: unknown,
-      options: { readonly onDelta?: (input: { readonly update: unknown }) => Promise<void> },
+      options: {
+        readonly onDelta?: (input: { readonly update: InteractionUpdate }) => Promise<void>;
+      },
     ) => {
       runOperations.push("run.start");
       if (staleRunActive) {
@@ -42,7 +44,7 @@ const cursorSdkMock = vi.hoisted(() => {
       }
       await options.onDelta?.({
         update: {
-          type: "assistant-message-chunk",
+          type: "text-delta",
           text: "hello",
         },
       });
@@ -111,29 +113,16 @@ vi.mock("./sdk.ts", () => ({
   loadCursorSqlite: () => ({ SqliteLocalAgentStore: { open: vi.fn() } }),
 }));
 
-const layerTest = CursorAgentSdk.layer.pipe(
-  Layer.provide(
-    Layer.succeed(ProviderEventLoggers.ProviderEventLoggers, {
-      native: {
-        filePath: "cursor-agent-sdk-test.log",
-        write: (event: unknown) =>
-          Effect.sync(() => {
-            if (
-              typeof event === "object" &&
-              event !== null &&
-              Reflect.get(Reflect.get(event, "event"), "payload")?.type === "agent.close"
-            ) {
-              cursorSdkMock.closeExecutionOrder.push("protocol:agent.close");
-            }
-          }),
-        close: () => Effect.void,
-      },
-      canonical: undefined,
-    }),
+const layerTest = Layer.effect(
+  CursorAgentSdk.CursorAgentSdkRunner,
+  CursorAgentSdk.makeCursorAgentSdkRunner(
+    () => (event) =>
+      Effect.sync(() => {
+        if (event.payload.type === "agent.close")
+          cursorSdkMock.closeExecutionOrder.push("protocol:agent.close");
+      }),
   ),
-  Layer.provide(CursorSdk.layer),
-  Layer.provide(NodeServices.layer),
-);
+).pipe(Layer.provide(CursorSdk.layer), Layer.provide(NodeServices.layer));
 
 describe("CursorAgentSdkRunner", () => {
   it.effect("constructs without loading and reports first-use load failures as runner errors", () =>
@@ -209,6 +198,77 @@ describe("CursorAgentSdkRunner", () => {
           cwd: process.cwd(),
         },
       ]);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("delivers early deltas in order and fails wait on the final callback failure", () =>
+    Effect.gen(function* () {
+      cursorSdkMock.setStaleRunActive(false);
+      cursorSdkMock.send.mockImplementationOnce(async (_message, options) => {
+        for (const text of ["first", "last"])
+          await options.onDelta?.({ update: { type: "text-delta", text } });
+        return {
+          id: "ordered-run",
+          agentId: "ordered-agent",
+          wait: cursorSdkMock.runWait,
+          cancel: cursorSdkMock.runCancel,
+        };
+      });
+      const runner = yield* CursorAgentSdk.CursorAgentSdkRunner;
+      const session = yield* runner.open({
+        operation: "create",
+        options: {},
+        threadId: ThreadId.make("ordered"),
+        providerSessionId: ProviderSessionId.make("ordered"),
+      });
+      const updates: string[] = [];
+      const callbackError = new CursorAgentSdk.CursorAgentSdkRunnerError({
+        method: "onDelta",
+        cause: new Error("callback failed"),
+      });
+      const run = yield* session.send({
+        message: "test",
+        onDelta: (update) =>
+          Effect.gen(function* () {
+            if (update.type !== "text-delta") return;
+            updates.push(update.text);
+            if (update.text === "last") {
+              return yield* callbackError;
+            }
+          }),
+      });
+      assert.deepStrictEqual(updates, ["first", "last"]);
+      const result = yield* Effect.exit(run.wait);
+      assert(Exit.isFailure(result));
+      assert.strictEqual(Cause.squash(result.cause), callbackError);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("bounds deltas emitted before the SDK returns a run handle", () =>
+    Effect.gen(function* () {
+      cursorSdkMock.setStaleRunActive(false);
+      cursorSdkMock.send.mockImplementationOnce(async (_message, options) => {
+        for (let index = 0; index < 257; index++)
+          await options.onDelta?.({ update: { type: "text-delta", text: "delta" } });
+        return {
+          id: "overflow-run",
+          agentId: "overflow-agent",
+          wait: cursorSdkMock.runWait,
+          cancel: cursorSdkMock.runCancel,
+        };
+      });
+      const runner = yield* CursorAgentSdk.CursorAgentSdkRunner;
+      const session = yield* runner.open({
+        operation: "create",
+        options: {},
+        threadId: ThreadId.make("overflow"),
+        providerSessionId: ProviderSessionId.make("overflow"),
+      });
+      const result = yield* Effect.exit(session.send({ message: "test" }));
+      assert(Exit.isFailure(result));
+      const failure = Cause.squash(result.cause);
+      assert(CursorAgentSdk.isCursorAgentSdkRunnerError(failure));
+      assert.strictEqual(failure.method, "run.start");
     }).pipe(Effect.provide(layerTest)),
   );
 });

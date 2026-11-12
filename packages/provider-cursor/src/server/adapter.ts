@@ -944,6 +944,7 @@ interface ActiveCursorTurn {
 
 interface CursorLiveAgent {
   readonly nativeThreadId: string;
+  readonly threadId: ThreadId;
   readonly session: CursorAgentSdk.CursorAgentSdkSession;
 }
 
@@ -2224,11 +2225,20 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           if (
             existing !== null &&
             openInput.operation === "resume" &&
+            existing.threadId === openInput.threadId &&
             existing.nativeThreadId === openInput.agentId
           ) {
             return existing;
           }
           if (existing !== null) {
+            const running = yield* Ref.get(activeTurn);
+            if (running !== null && !running.finalized) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                detail: `Cursor provider turn ${running.providerTurnId} is still active.`,
+                reason: "previous_turn_active",
+              });
+            }
             yield* existing.session.close.pipe(Effect.ignore);
             yield* Ref.set(liveAgent, null);
           }
@@ -2256,12 +2266,14 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               operation: openInput.operation,
               ...(openInput.agentId === undefined ? {} : { agentId: openInput.agentId }),
               options,
+              environment: adapterOptions.environment,
               threadId: openInput.threadId,
               providerSessionId: input.providerSessionId,
             })
             .pipe(Effect.mapError(classifyCursorModelRejection(openInput.modelSelection)));
           const next = {
             nativeThreadId: sdkSession.agentId,
+            threadId: openInput.threadId,
             session: sdkSession,
           } satisfies CursorLiveAgent;
           yield* Ref.set(liveAgent, next);
@@ -2628,18 +2640,24 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               ),
           ),
           resumeThread: Effect.fn("CursorAdapterV2.resumeThread")(
-            function* (threadInput: { readonly providerThread: OrchestrationV2ProviderThread }) {
+            function* (threadInput: {
+              readonly providerThread: OrchestrationV2ProviderThread;
+              readonly threadId?: ThreadId;
+            }) {
+              const threadId =
+                threadInput.threadId ?? threadInput.providerThread.appThreadId ?? input.threadId;
               const agentId = nativeThreadId(threadInput.providerThread);
               yield* openAgent({
                 operation: "resume",
                 agentId,
-                threadId: threadInput.providerThread.appThreadId ?? input.threadId,
+                threadId,
                 modelSelection: input.modelSelection,
                 runtimePolicy: input.runtimePolicy,
               });
               const now = yield* DateTime.now;
               return {
                 ...threadInput.providerThread,
+                appThreadId: threadId,
                 providerSessionId: input.providerSessionId,
                 status: "idle" as const,
                 updatedAt: now,
