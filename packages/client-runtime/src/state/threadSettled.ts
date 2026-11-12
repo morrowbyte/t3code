@@ -340,8 +340,9 @@ export function snoozeWakeLabel(snoozedUntil: string, options: { readonly now: s
   const remainingMs = wakeMs - nowMs;
   if (remainingMs <= 0) return "now";
   if (remainingMs < HOUR_MS) return `${Math.max(1, Math.ceil(remainingMs / 60_000))}m`;
-  if (remainingMs < DAY_MS) return `${Math.ceil(remainingMs / HOUR_MS)}h`;
-  return `${Math.ceil(remainingMs / DAY_MS)}d`;
+  const remainingMinutes = Math.floor(remainingMs / 60_000);
+  if (remainingMs < DAY_MS) return `${Math.ceil(remainingMinutes / 60)}h`;
+  return `${Math.ceil(remainingMinutes / (24 * 60))}d`;
 }
 
 export type CustomSnoozeInput =

@@ -11,6 +11,7 @@ import {
   hasQueuedTurnStart,
   pickSnoozePreset,
   resolveSnoozePresets,
+  snoozeWakeLabel,
   threadRaisedHandWhileSnoozed,
   threadWokeAt,
   isThreadWokeUnseen,
@@ -386,6 +387,28 @@ describe("resolveSnoozePresets", () => {
         { kind: "at", day: "today", time: "18:00" },
       ]),
     ).toEqual(["In 3 hours 18:00"]);
+  });
+});
+
+describe("snoozeWakeLabel", () => {
+  it.each([
+    ["2026-11-12T15:34:00.001Z", "1m"],
+    ["2026-11-12T15:35:00.001Z", "2m"],
+    ["2026-11-12T16:33:59.999Z", "60m"],
+    ["2026-11-12T16:34:00.000Z", "1h"],
+    ["2026-11-12T16:34:00.001Z", "1h"],
+    ["2026-11-12T16:34:37.331Z", "1h"],
+    ["2026-11-12T16:34:59.999Z", "1h"],
+    ["2026-11-12T16:35:00.000Z", "2h"],
+    ["2026-11-12T17:34:37.331Z", "2h"],
+    ["2026-11-13T14:34:59.999Z", "23h"],
+    ["2026-11-13T15:34:00.000Z", "1d"],
+    ["2026-11-13T15:34:00.001Z", "1d"],
+    ["2026-11-13T15:34:59.999Z", "1d"],
+    ["2026-11-13T15:35:00.000Z", "2d"],
+    ["2026-11-14T15:34:59.999Z", "2d"],
+  ])("labels %s as %s at minute resolution", (snoozedUntil, label) => {
+    expect(snoozeWakeLabel(snoozedUntil, { now: "2026-11-12T15:34:00.000Z" })).toBe(label);
   });
 });
 
