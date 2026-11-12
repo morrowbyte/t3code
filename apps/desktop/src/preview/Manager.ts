@@ -37,6 +37,7 @@ import {
   clipboard,
   nativeImage,
   screen,
+  session as electronSession,
   shell,
   webContents,
 } from "electron";
@@ -889,6 +890,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
         if (!tab || (yield* Ref.get(closingTabIdsRef)).has(tabId)) {
           return yield* new PreviewTabNotFoundError({ tabId });
+        }
+        if (tab.serverTab?.environmentId) {
+          yield* attemptPromise({ operation: "ensureOffscreenHost.targetNetwork", tabId }, () =>
+            browserHost.configureTargetSession(
+              tab.serverTab?.environmentId,
+              electronSession.fromPartition(configuration.partition),
+              true,
+            ),
+          );
         }
         const existing = hostedContents.get(tabId);
         if (existing?.isAlive()) {
@@ -2900,7 +2910,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       }
       if (afterAttach.serverTab) {
         yield* attemptPromise({ operation: "restoreControlSession.targetNetwork", tabId }, () =>
-          browserHost.configureTargetSession(afterAttach.serverTab?.environmentId, wc.session),
+          browserHost.configureTargetSession(
+            afterAttach.serverTab?.environmentId, wc.session,
+            afterAttach.serverTab?.environmentId !== undefined,
+          ),
         );
         yield* listenToBrowserHost;
         const host = hostedContents.get(tabId);

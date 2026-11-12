@@ -170,7 +170,7 @@ export class DesktopBrowserHost extends Context.Service<
   {
     readonly events: Stream.Stream<Uint8Array>;
     readonly createConnection: (targetEnvironmentId?: string, proxyUrl?: string) => DesktopBrowserConnection;
-    readonly configureTargetSession: (environmentId: string | undefined, session: Electron.Session) => Promise<void>;
+    readonly configureTargetSession: (environmentId: string | undefined, session: Electron.Session, required?: boolean) => Promise<void>;
     readonly hostedEnvironmentIds: () => ReadonlyArray<string>;
     readonly hostedEnvironmentsChanged: Stream.Stream<ReadonlyArray<string>>;
     /** One line from the backend's browser control fd. */
@@ -234,9 +234,11 @@ export const make = Effect.gen(function* () {
   const announceEnvironments = () =>
     runFork(PubSub.publish(hostedEnvironmentsChanged, hostedEnvironmentIds()));
   const networkSessions = new WeakMap<Electron.Session, { connection: TargetConnection; proxyUrl: string; ready: Promise<void> }>();
-  const configureTargetSession = (environmentId: string | undefined, session: Electron.Session): Promise<void> => {
+  const configureTargetSession = (environmentId: string | undefined, session: Electron.Session, required = false): Promise<void> => {
     const connection = connections.get(environmentId);
-    if (!connection?.proxyUrl) return Promise.resolve();
+    if (!connection?.proxyUrl) return required
+      ? Promise.reject(new Error("The remote browser network is disconnected."))
+      : Promise.resolve();
     const proxyUrl = connection.proxyUrl;
     const previous = networkSessions.get(session);
     if (previous?.connection === connection && previous.proxyUrl === proxyUrl) return previous.ready;

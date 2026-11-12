@@ -599,6 +599,9 @@ describe("DesktopBrowserHost", () => {
       expect(session.closeAllConnections).toHaveBeenCalledTimes(1);
       expect(session.setProxy).toHaveBeenCalledTimes(1);
       yield* connection.closed;
+      yield* Effect.promise(() => expect(
+        host.configureTargetSession(targetKey.environmentId, debuggee.tab.webContents.session, true),
+      ).rejects.toThrow("The remote browser network is disconnected."));
       const replacement = host.createConnection(targetKey.environmentId, "socks5://127.0.0.1:39001");
       yield* replacement.events.pipe(
         Stream.runForEach((line) => Queue.offer(messages, decodeEvent(new TextDecoder().decode(line)))),
