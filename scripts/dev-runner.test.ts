@@ -582,6 +582,7 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
         readonly host?: string;
         readonly reuse?: boolean;
         readonly stopUnconfirmed?: boolean;
+        readonly naturalExit?: boolean;
       }) =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
@@ -593,6 +594,8 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
           );
           const ready = yield* Deferred.make<void>();
           const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+          const teardownEntered = yield* Deferred.make<void>();
+          const teardownRelease = yield* Deferred.make<void>();
           let captured: Record<string, string | undefined> | undefined;
           let vpArgs: ReadonlyArray<string> = [];
           let vpStarts = 0;
@@ -642,6 +645,17 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
                   getInputFd: () => Sink.drain,
                   getOutputFd: () => Stream.empty,
                 }),
+              ).pipe(
+                Effect.tap(() =>
+                  input.reuse &&
+                  !input.stopUnconfirmed &&
+                  spawned.args.includes("off") &&
+                  tailscaleCalls.filter((args) => args.includes("off")).length === 2
+                    ? Deferred.succeed(teardownEntered, undefined).pipe(
+                        Effect.andThen(Deferred.await(teardownRelease)),
+                      )
+                    : Effect.void,
+                ),
               );
             }),
           );
@@ -709,7 +723,25 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
                 1,
               );
             } else {
-              yield* Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0));
+              const stopping = yield* (
+                input.naturalExit
+                  ? Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0)).pipe(Effect.as(true))
+                  : stopDevRunners({
+                      threadId: "share-owner",
+                      workspacePath,
+                      canStop: Effect.succeed(true),
+                    })
+              ).pipe(Effect.forkChild);
+              yield* Effect.gen(function* () {
+                yield* Deferred.await(teardownEntered);
+                assert.lengthOf(
+                  yield* fs.readDirectory(path.join(workspacePath, ".t3", "dev-runners")),
+                  1,
+                );
+                assert.strictEqual((yield* run.pipe(Effect.scoped, Effect.exit))._tag, "Failure");
+                assert.strictEqual(vpStarts, 1);
+              }).pipe(Effect.ensuring(Deferred.succeed(teardownRelease, undefined)));
+              assert.isTrue(yield* Fiber.join(stopping));
               assert.strictEqual((yield* Fiber.join(first))._tag, "Success");
               assert.lengthOf(
                 tailscaleCalls.filter((args) => args.includes("off")),
@@ -723,10 +755,13 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
           return { env: captured, vpArgs, tailscaleCalls };
         });
 
-      it.effect.each([false, true])(
-        "reuses --built --share and preserves a surviving child mapping: unconfirmed=%s",
-        (stopUnconfirmed) =>
-          Effect.scoped(shareSpawned({ built: true, reuse: true, stopUnconfirmed })),
+      it.effect.each([
+        { stopUnconfirmed: false, naturalExit: false },
+        { stopUnconfirmed: true, naturalExit: false },
+        { stopUnconfirmed: false, naturalExit: true },
+      ])(
+        "keeps shared runner ownership through teardown: unconfirmed=$stopUnconfirmed natural=$naturalExit",
+        (ending) => Effect.scoped(shareSpawned({ built: true, reuse: true, ...ending })),
       );
 
       it.effect("keeps an explicit T3CODE_BUNDLED_DEV=0 opt-out", () =>

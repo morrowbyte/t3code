@@ -10,6 +10,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Hash from "effect/Hash";
 import * as Layer from "effect/Layer";
@@ -17,6 +18,7 @@ import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess } from "effect/process";
 
@@ -812,6 +814,7 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   let sharedUrl: string | undefined;
   let taskChildRunning = Effect.succeed(false);
   let built = false;
+  let finishShare = Effect.void;
   if (input.share) {
     if (input.mode === "dev:server") {
       yield* Effect.logInfo("[dev-runner] --share has no effect for dev:server (no web server).");
@@ -820,6 +823,9 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
         "[dev-runner] --share is not supported for dev:desktop (the renderer is pinned to loopback). Use `dev`, which runs the whole browser stack.",
       );
     } else {
+      const shareScope = yield* Scope.make();
+      yield* Effect.addFinalizer((exit) => Scope.close(shareScope, exit));
+      finishShare = Scope.close(shareScope, Exit.void);
       // acquireRelease, not share-then-addFinalizer: the mapping outlives this
       // process (and reboots), so the cleanup has to be registered atomically
       // with creating it. An interrupt landing in between would otherwise
@@ -859,6 +865,7 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
             ),
           ),
       ).pipe(
+        Effect.provideService(Scope.Scope, shareScope),
         Effect.tapError((error: DevShareError) =>
           Effect.logWarning(
             `[dev-runner] could not share on the tailnet: ${error.message}${
@@ -949,6 +956,7 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   );
   if (control) {
     taskChildRunning = child.isRunning.pipe(Effect.orElseSucceed(() => true));
+    yield* Effect.addFinalizer(() => control.beginTeardown);
     yield* control.ready(
       {
         serverPort: String(env.T3CODE_PORT),
@@ -976,12 +984,14 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
         control.stopRequested.pipe(Effect.as({ kind: "stop" as const, control })),
       )
     : { kind: "exited" as const, exitCode: yield* waitForExit };
+  if (control) yield* control.beginTeardown;
   if (outcome.kind === "stop") {
     const stopped = yield* child
       .kill({ killSignal: "SIGTERM", forceKillAfter: "1500 millis" })
       .pipe(Effect.timeoutOption("5 seconds"), Effect.option);
     const verified =
       Option.isSome(stopped) && Option.isSome(stopped.value) && !(yield* child.isRunning);
+    if (verified) yield* finishShare;
     yield* outcome.control.confirmStopped(verified);
     if (verified) return;
     return yield* new DevRunnerControl.DevRunnerControlError({

@@ -279,6 +279,7 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
       return {
         reused: true as const,
         connection: response.value.connection,
+        beginTeardown: Effect.void,
         prepareChild: Effect.void,
         ready: (
           _value: typeof Connection.Type,
@@ -429,6 +430,9 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
   );
   return {
     reused: false as const,
+    beginTeardown: Effect.sync(() => {
+      stopping = true;
+    }),
     prepareChild: updateReceipt({ ...receipt, launching: true }),
     ready: Effect.fn("devRunnerControl.ready")(function* (
       value: typeof Connection.Type,

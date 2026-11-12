@@ -265,6 +265,24 @@ function autoSettlementConfigured(settings: import("@t3tools/contracts").ServerS
   );
 }
 
+function threadAllowsWorktreeCleanup(
+  thread: OrchestrationV2ThreadShell,
+  stoppingRunner: boolean,
+): boolean {
+  return (
+    thread.settledAt !== null &&
+    thread.settledOverride !== "active" &&
+    thread.activeRunId === null &&
+    !(thread.pendingBackgroundTasks ?? []).some(
+      (task) =>
+        !(stoppingRunner && thread.settledOverride === "settled" && task.kind === "command"),
+    ) &&
+    ["idle", "completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
+      thread.status,
+    )
+  );
+}
+
 /** @internal Exported for tests. */
 export function autoSettlementSettingsKey(
   settings: import("@t3tools/contracts").ServerSettings,
@@ -629,23 +647,7 @@ export const make = Effect.gen(function* () {
           }
           for (const peerId of peers) {
             const current = yield* projections.getThreadShell(peerId);
-            if (
-              current === null ||
-              current.settledAt === null ||
-              current.settledOverride === "active" ||
-              current.activeRunId !== null ||
-              (current.pendingBackgroundTasks ?? []).some(
-                (task) =>
-                  !(
-                    stoppingRunner &&
-                    current.settledOverride === "settled" &&
-                    task.kind === "command"
-                  ),
-              ) ||
-              !["idle", "completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
-                current.status,
-              )
-            )
+            if (current === null || !threadAllowsWorktreeCleanup(current, stoppingRunner))
               return false;
           }
           return true;
@@ -695,13 +697,58 @@ export const make = Effect.gen(function* () {
       ),
   );
 
+  const cleanUpSettledWorktree = Effect.fn("ThreadSettlementServiceV2.cleanUpSettledWorktree")(
+    function* (threadId: ThreadId) {
+      yield* cleanUpSettledThread(threadId);
+      const thread = yield* projections.getThreadShell(threadId);
+      if (
+        thread === null ||
+        thread.worktreePath === null ||
+        !threadAllowsWorktreeCleanup(thread, true)
+      )
+        return;
+      // Discover deferred owners from projections so a restart cannot lose their cleanup retry.
+      const worktreeThreads = yield* projections.getThreadWorktreePaths({ includeArchived: true });
+      const canonicalPath = yield* fileSystem.realPath(thread.worktreePath);
+      for (const peer of worktreeThreads) {
+        if (peer.threadId === threadId) continue;
+        const current = yield* projections.getThreadShell(peer.threadId);
+        if (
+          current === null ||
+          current.worktreePath === null ||
+          current.settledOverride !== "settled" ||
+          !threadAllowsWorktreeCleanup(current, true) ||
+          settleActionRunAt.get(current.id) === toMillis(current.settledAt)
+        )
+          continue;
+        const peerPath = yield* fileSystem.realPath(current.worktreePath).pipe(
+          Effect.map(Option.some),
+          Effect.catchIf(
+            (error) => error.reason._tag === "NotFound",
+            () => Effect.succeed(Option.none<string>()),
+          ),
+        );
+        if (Option.isSome(peerPath) && peerPath.value === canonicalPath) {
+          yield* cleanUpSettledThread(peer.threadId);
+        }
+      }
+    },
+    Effect.catchCauseIf(
+      (cause) => !Cause.hasInterruptsOnly(cause),
+      (cause) =>
+        Effect.logWarning("retrying settled worktree cleanup failed", {
+          cause: Cause.pretty(cause),
+        }),
+    ),
+  );
+
   const retryCleanup = (threadId: ThreadId) =>
-    cleanUpSettledThread(threadId).pipe(Effect.andThen(enqueueThread(threadId)));
+    cleanUpSettledWorktree(threadId).pipe(Effect.andThen(enqueueThread(threadId)));
 
   const processEvent = (event: OrchestrationV2DomainEvent) => {
     switch (event.type) {
       case "thread.settled":
-        return cleanUpSettledThread(event.threadId);
+        return cleanUpSettledWorktree(event.threadId);
       case "thread.pull-request-link-updated":
       case "thread.pull-request-synced":
         return enqueueThread(event.threadId);
