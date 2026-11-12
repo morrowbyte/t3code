@@ -1486,28 +1486,33 @@ describe("CodexAdapterV2 process spawning", () => {
 });
 
 describe("CodexAdapterV2 dynamic tool projection", () => {
-  it.effect("retains both native policy result representations for consistency checks", () =>
-    Effect.gen(function* () {
-      const result = {
-        structuredContent: {
-          schema: 1,
-          observation_mode: "disabled",
-          observation_active: false,
-          observation_generation: 1,
-        },
-        content: [{ type: "text" as const, text: '{"schema":1,"status":"failed"}' }],
-      };
-      const projection = yield* CodexAdapterV2.projectCodexDynamicToolItem({
-        type: "mcpToolCall",
-        id: "policy",
-        server: "weasel_desktop",
-        tool: "desktop_status",
-        status: "completed",
-        arguments: {},
-        result,
-      });
-      assert.deepEqual(projection.output, result);
-    }).pipe(Effect.provide(NodeServices.layer)),
+  it.effect.each(["desktop_status", "desktop_set_observation_mode", "desktop_act"] as const)(
+    "retains both native %s result representations for consistency checks",
+    (tool) =>
+      Effect.gen(function* () {
+        const result = {
+          structuredContent: {
+            schema: 1,
+            observation_mode: "disabled",
+            observation_active: false,
+            observation_generation: 1,
+            task_id: "receipt-task",
+            observation_id: "receipt-observation",
+            actor_release_confirmed: true,
+          },
+          content: [{ type: "text" as const, text: '{"schema":1,"status":"failed"}' }],
+        };
+        const projection = yield* CodexAdapterV2.projectCodexDynamicToolItem({
+          type: "mcpToolCall",
+          id: "policy",
+          server: "weasel_desktop",
+          tool,
+          status: "completed",
+          arguments: {},
+          result,
+        });
+        assert.deepEqual(projection.output, result);
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect.each(["inProgress", "completed", "failed"] as const)(

@@ -55,6 +55,7 @@ export const ComputerRoute = Schema.Struct({
   candidates: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
   nextTools: Schema.Array(Schema.String),
   observationGuidance: Schema.optional(Schema.String),
+  interactionGuidance: Schema.optional(Schema.String),
 });
 export type ComputerRoute = typeof ComputerRoute.Type;
 
@@ -67,6 +68,13 @@ export function selectComputerRoute(
   preview: PreviewAutomationStatus | null,
 ): ComputerRoute {
   const base = { candidates: [] };
+  const nativeGuidance =
+    inventory.platform === "linux"
+      ? {
+          interactionGuidance:
+            "Prefer an authorized app integration. If the host supports desktop_semantic_direct with background=true, use its fresh exact-window handles for desktop_act semantic_click or semantic_set_value without requesting focus, keyboard, pointer or clipboard input. Verify the target window/output and object context, the intended target result, and unchanged user-window focus, user text and pointer. A second monitor or workspace alone is not independent input. If background support is unavailable or the app changes focus, stop that path and report the limitation; do not silently fall back to foreground input. Before a necessary foreground app launch, focus change or input, announce the target app and ask the user to pause keyboard and mouse. App launch itself may move focus. A matching desktop_act task_id/observation_id with actor_release_confirmed=true confirms release at that call only. Before telling the user they can take over, obtain fresh desktop_status with active=null, queued_batches=0 and actor_release_confirmed=true, and verify the launched app has settled. Tool completion, screenshots, accessibility reads, reasoning and waiting do not confirm input release. These native receipts do not attest Sky ownership. Stop/Escape remains effective; never resume automatically.",
+        }
+      : {};
   const nativeTools =
     inventory.platform === "linux"
       ? [
@@ -79,6 +87,7 @@ export function selectComputerRoute(
       : ["start_session"];
   const desktop = {
     ...base,
+    ...nativeGuidance,
     route: "desktop" as const,
     interaction: "capability-dependent" as const,
     nextTools: nativeTools,
@@ -104,6 +113,7 @@ export function selectComputerRoute(
     if (inventory.platform === "linux" && !inventory.complete) {
       return {
         ...base,
+        ...nativeGuidance,
         route: "unavailable",
         reason: "inventory-incomplete",
         interaction: "unavailable",
@@ -133,6 +143,7 @@ export function selectComputerRoute(
     }
     return {
       ...base,
+      ...nativeGuidance,
       route: "unavailable",
       interaction: "unavailable",
       reason: candidates.length > 1 ? "ambiguous-application" : "application-unavailable",
@@ -143,6 +154,7 @@ export function selectComputerRoute(
   if (target.kind === "application") {
     return {
       ...base,
+      ...nativeGuidance,
       route: "unavailable",
       reason: "application-unavailable",
       interaction: "unavailable",

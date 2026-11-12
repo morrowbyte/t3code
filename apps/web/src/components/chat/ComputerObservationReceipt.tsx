@@ -7,6 +7,10 @@ import {
   isNativeObservationTool,
   resolveComputerObservationItem,
 } from "@t3tools/client-runtime/work-log/computer-observation-receipt";
+import {
+  computerInputReceiptLabel,
+  isNativeInputTool,
+} from "@t3tools/client-runtime/work-log/computer-input-receipt";
 
 interface Props {
   readonly projectedItem: OrchestrationV2ProjectedTurnItem;
@@ -16,14 +20,20 @@ interface Props {
 
 export function ComputerObservationReceipt(props: Props) {
   const item = props.projectedItem.item;
-  return item.type === "dynamic_tool" && isNativeObservationTool(item.toolName) ? (
+  return item.type === "dynamic_tool" &&
+    (isNativeObservationTool(item.toolName) || isNativeInputTool(item.toolName)) ? (
     <NativeObservationReceipt {...props} />
   ) : null;
 }
 
 function NativeObservationReceipt({ projectedItem, environmentId, source }: Props) {
   const wire = projectedItem.item;
-  const fetches = wire.type === "dynamic_tool" && wire.status === "completed" && wire.outputOmitted;
+  const fetches =
+    wire.type === "dynamic_tool" &&
+    (wire.status === "completed" ||
+      (isNativeInputTool(wire.toolName) &&
+        ["failed", "cancelled", "interrupted"].includes(wire.status))) &&
+    wire.outputOmitted;
   const detail = useTurnItemDetail(
     fetches
       ? {
@@ -36,7 +46,10 @@ function NativeObservationReceipt({ projectedItem, environmentId, source }: Prop
     source?.detail,
   );
   const item = resolveComputerObservationItem(wire, detail.data?.item, Boolean(detail.error));
-  const label = item.type === "dynamic_tool" ? computerObservationLabel(item) : null;
+  const label =
+    item.type === "dynamic_tool"
+      ? (computerObservationLabel(item) ?? computerInputReceiptLabel(item))
+      : null;
   return label === null ? null : (
     <p
       role="status"

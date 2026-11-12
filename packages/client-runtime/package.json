@@ -492,6 +492,10 @@
       "types": "./src/work-log/computerObservationReceipt.ts",
       "default": "./src/work-log/computerObservationReceipt.ts"
     },
+    "./work-log/computer-input-receipt": {
+      "types": "./src/work-log/computerInputReceipt.ts",
+      "default": "./src/work-log/computerInputReceipt.ts"
+    },
     "./pull-request-link-input": {
       "types": "./src/pullRequestLinkInput.ts",
       "default": "./src/pullRequestLinkInput.ts"

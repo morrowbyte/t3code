@@ -1,5 +1,6 @@
 import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
 import { turnItemDetailRevision } from "./itemDetail.ts";
+import { isNativeInputTool } from "./computerInputReceipt.ts";
 
 type NativeToolItem = Pick<
   Extract<OrchestrationV2TurnItem, { type: "dynamic_tool" }>,
@@ -98,7 +99,9 @@ export function resolveComputerObservationItem(
   detailFailed: boolean,
 ): OrchestrationV2TurnItem {
   return wire.type === "dynamic_tool" &&
-    wire.status === "completed" &&
+    (wire.status === "completed" ||
+      (isNativeInputTool(wire.toolName) &&
+        ["failed", "cancelled", "interrupted"].includes(wire.status))) &&
     wire.outputOmitted &&
     !detailFailed &&
     fetched?.type === "dynamic_tool" &&

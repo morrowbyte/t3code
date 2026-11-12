@@ -46,6 +46,94 @@ const derive = (items: ReadonlyArray<OrchestrationV2TurnItem>) =>
   deriveComputerUseStatus({ items, runId, isWorking: true });
 
 describe("deriveComputerUseStatus", () => {
+  it("keeps Sky input ownership unconfirmed and distinguishes native foreground requests from reads", () => {
+    for (const status of ["pending", "running", "waiting", "completed"] as const) {
+      expect(derive([tool({ status })])).toMatchObject({
+        input: { kind: "unconfirmed", label: "Input state unconfirmed" },
+      });
+    }
+    expect(
+      derive([
+        tool({
+          toolName: "weasel_desktop.desktop_act",
+          toolSource: undefined,
+          input: { actions: [{ kind: "launch_app", app: "chrome" }] },
+        }),
+      ]),
+    ).toMatchObject({
+      target: "Chrome",
+      input: {
+        kind: "foreground-requested",
+        label: "Foreground requested · pause keyboard and mouse",
+      },
+    });
+    expect(
+      derive([
+        tool({ toolName: "weasel_desktop.desktop_semantic_direct", input: { background: true } }),
+      ]),
+    ).toMatchObject({ input: { kind: "read-only", label: "No desktop input requested" } });
+    expect(
+      deriveComputerUseStatus({ items: [tool()], runId, isWorking: true, confirmed: false }),
+    ).toMatchObject({ input: { kind: "unconfirmed", label: "Input state unconfirmed" } });
+  });
+
+  it("requires a matching native receipt for input release even after failed or parallel actions", () => {
+    const receipt = {
+      schema: 1,
+      task_id: "owned-task",
+      observation_id: "owned-observation",
+      actor_release_confirmed: true,
+      background_semantic: true,
+    };
+    const action = tool({
+      toolName: "weasel_desktop.desktop_act",
+      status: "completed",
+      input: {
+        task_id: "owned-task",
+        observation_id: "owned-observation",
+        actions: [{ kind: "click", x: 10, y: 20 }],
+      },
+      output: receipt,
+    });
+    expect(derive([action])).toMatchObject({
+      input: { kind: "released", label: "Background action · input released at this call" },
+    });
+    expect(derive([{ ...action, status: "failed" }])).toMatchObject({
+      phase: "Tool failed",
+      input: { kind: "released" },
+    });
+    for (const output of [
+      undefined,
+      { ...receipt, actor_release_confirmed: false },
+      { ...receipt, task_id: "other-task" },
+      { ...receipt, observation_id: "other-observation" },
+      {
+        structuredContent: receipt,
+        content: [
+          { type: "text", text: JSON.stringify({ ...receipt, actor_release_confirmed: false }) },
+        ],
+      },
+    ]) {
+      expect(derive([{ ...action, output }])).toMatchObject({
+        input: { kind: "unconfirmed", label: "Input release unconfirmed" },
+      });
+    }
+    expect(derive([{ ...action, outputOmitted: true }])).toMatchObject({
+      input: { kind: "unconfirmed", label: "Input release unconfirmed" },
+    });
+    const foreground = tool({
+      id: TurnItemId.make("foreground"),
+      toolName: "weasel_desktop.desktop_act",
+      input: { actions: [{ kind: "focus", window_id: 43 }] },
+      updatedAt: at(1),
+    });
+    expect(
+      derive([foreground, tool({ toolName: "weasel_desktop.desktop_observe", updatedAt: at(5) })]),
+    ).toMatchObject({
+      input: { kind: "foreground-requested" },
+    });
+  });
+
   it("keeps native Stop events while excluding superseded attempts and other runs", () => {
     const current = tool();
     const oldRoot = NodeId.make("old-root");

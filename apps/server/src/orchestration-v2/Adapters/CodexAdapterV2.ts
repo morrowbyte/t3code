@@ -835,13 +835,15 @@ export interface CodexDynamicToolProjection extends McpToolPresentation {
 function codexMcpToolOutput(
   item: Extract<CodexDynamicToolItem, { readonly type: "mcpToolCall" }>,
 ): unknown | undefined {
-  const nativePolicy =
+  const nativeReceipt =
     item.server === "weasel_desktop" &&
-    (item.tool === "desktop_status" || item.tool === "desktop_set_observation_mode");
+    (item.tool === "desktop_status" ||
+      item.tool === "desktop_set_observation_mode" ||
+      item.tool === "desktop_act");
   const resultOutput =
     item.result === null || item.result === undefined
       ? undefined
-      : nativePolicy
+      : nativeReceipt
         ? item.result
         : item.result.structuredContent !== null && item.result.structuredContent !== undefined
           ? item.result.structuredContent

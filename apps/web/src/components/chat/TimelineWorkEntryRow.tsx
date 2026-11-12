@@ -646,7 +646,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         </>
       }
     >
-      {expanded && payload?.type === "dynamic_tool" && workEntry.projectedItem ? (
+      {payload?.type === "dynamic_tool" && workEntry.projectedItem ? (
         <ComputerObservationReceipt
           projectedItem={workEntry.projectedItem}
           environmentId={ctx.activeThreadEnvironmentId}

@@ -10,6 +10,7 @@ import {
   computerObservationReceipt,
   isNativeObservationTool,
 } from "./computerObservationReceipt.ts";
+import { computerInputState, computerInputTarget } from "./computerInputReceipt.ts";
 
 type ComputerTool = Extract<OrchestrationV2TurnItem, { type: "dynamic_tool" }>;
 
@@ -64,6 +65,8 @@ export interface ComputerUseStatusState {
   readonly lastEventAt: number;
   readonly live: boolean;
   readonly failed: boolean;
+  readonly input: ReturnType<typeof computerInputState>;
+  readonly inputItem: ComputerTool;
 }
 
 function actionTitle(tool: ComputerTool): string | null {
@@ -85,13 +88,14 @@ function status(
   event: OrchestrationV2TurnItem,
   phase: string,
   live: boolean,
+  foreground: ComputerTool | undefined,
 ): ComputerUseStatusState {
   return {
     phase,
     target:
       tool.toolSource?.kind === "computer" && tool.toolSource.key !== "computer-use"
         ? tool.toolSource.name
-        : null,
+        : computerInputTarget(tool),
     action: actionTitle(tool),
     startedAt:
       live && (event.type !== "dynamic_tool" || event.status === "running") && event.startedAt
@@ -100,6 +104,8 @@ function status(
     lastEventAt: DateTime.toEpochMillis(event.updatedAt),
     live,
     failed: event.status === "failed",
+    input: computerInputState(foreground ?? tool),
+    inputItem: foreground ?? tool,
   };
 }
 
@@ -148,6 +154,7 @@ export function deriveComputerUseStatus({
   let stopRequest: OrchestrationV2TurnItem | undefined;
   let stopResult: OrchestrationV2TurnItem | undefined;
   let otherWorkActive = false;
+  let foreground: ComputerTool | undefined;
   for (const item of items) {
     if (item.runId !== runId) continue;
     if (later(item, latest)) latest = item;
@@ -161,6 +168,12 @@ export function deriveComputerUseStatus({
       requests.push(item);
     const computer = computerTool(item);
     if (computer) {
+      if (
+        active.has(computer.status) &&
+        computerInputState(computer).kind === "foreground-requested" &&
+        later(computer, foreground)
+      )
+        foreground = computer;
       if (later(computer, lastComputer)) lastComputer = computer;
       if (active.has(computer.status) && later(computer, runningComputer))
         runningComputer = computer;
@@ -172,15 +185,22 @@ export function deriveComputerUseStatus({
     }
   }
   if (!lastComputer || !latest) return null;
+  const present = (
+    tool: ComputerTool,
+    event: OrchestrationV2TurnItem,
+    phase: string,
+    live: boolean,
+  ) => status(tool, event, phase, live, foreground);
   if (!confirmed)
     return {
-      ...status(lastComputer, latest, "Activity unconfirmed", false),
+      ...present(lastComputer, latest, "Activity unconfirmed", false),
       target: null,
       action: null,
+      input: { kind: "unconfirmed", label: "Input state unconfirmed", target: null },
     };
   if (stopResult && !later(lastComputer, stopResult)) return null;
   if (stopRequest && (!stopResult || later(stopRequest, stopResult)))
-    return status(runningComputer ?? lastComputer, stopRequest, "Stopping…", true);
+    return present(runningComputer ?? lastComputer, stopRequest, "Stopping…", true);
   let waitingRequest: OrchestrationV2TurnItem | undefined;
   for (const request of requests) {
     if (refersTo(request, runningComputer ?? lastComputer) && later(request, waitingRequest))
@@ -188,7 +208,7 @@ export function deriveComputerUseStatus({
   }
   if (runningComputer) {
     return waitingRequest
-      ? status(
+      ? present(
           runningComputer,
           waitingRequest,
           waitingRequest.type === "approval_request"
@@ -196,10 +216,10 @@ export function deriveComputerUseStatus({
             : "Waiting for response",
           true,
         )
-      : status(runningComputer, runningComputer, runningPhase(runningComputer), true);
+      : present(runningComputer, runningComputer, runningPhase(runningComputer), true);
   }
   if (waitingRequest)
-    return status(
+    return present(
       lastComputer,
       waitingRequest,
       waitingRequest.type === "approval_request" ? "Waiting for approval" : "Waiting for response",
@@ -214,7 +234,7 @@ export function deriveComputerUseStatus({
     !otherWorkActive
   )
     return {
-      ...status(lastComputer, latest, "Processing result", true),
+      ...present(lastComputer, latest, "Processing result", true),
       target: null,
       action: null,
     };
@@ -236,7 +256,7 @@ export function deriveComputerUseStatus({
           : receipt.active
             ? "Observation allowed; reading at this call"
             : "Observation allowed; idle at this call";
-    return status(lastComputer, lastComputer, phase, false);
+    return present(lastComputer, lastComputer, phase, false);
   }
   const phase =
     lastComputer.status === "failed"
@@ -244,7 +264,7 @@ export function deriveComputerUseStatus({
       : lastComputer.status === "cancelled" || lastComputer.status === "interrupted"
         ? "Tool stopped"
         : "Tool finished";
-  return status(lastComputer, lastComputer, phase, false);
+  return present(lastComputer, lastComputer, phase, false);
 }
 
 export function computerUseProjectionItems(
