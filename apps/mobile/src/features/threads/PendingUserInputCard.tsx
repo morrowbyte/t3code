@@ -218,6 +218,27 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       ) : null}
     </View>
   ) : null;
+  const dismissButton = props.pendingUserInput.dismissible ? (
+    <Button
+      label={
+        props.pendingUserInput.questions.some((question) => question.field)
+          ? "Cancel"
+          : "Dismiss without answering"
+      }
+      tone="text"
+      disabled={isResponding || !props.canOperateThread}
+      onPress={() => {
+        if (
+          origin &&
+          voice.session.ownerKey?.startsWith(
+            questionDictationRequestKey(origin, props.pendingUserInput.requestId),
+          )
+        )
+          voice.session.cancel(voice.session.ownerKey);
+        void props.onDismiss();
+      }}
+    />
+  ) : null;
   const card = renderCard ? (
     <Animated.View
       onLayout={handleCardLayout}
@@ -383,6 +404,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
             </View>
           );
         })}
+        {Platform.OS === "android" ? dismissButton : null}
       </ScrollView>
       <Button
         label="Submit answers"
@@ -404,27 +426,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
           void props.onSubmit();
         }}
       />
-      {props.pendingUserInput.dismissible ? (
-        <Button
-          label={
-            props.pendingUserInput.questions.some((question) => question.field)
-              ? "Cancel"
-              : "Dismiss without answering"
-          }
-          tone="text"
-          disabled={isResponding || !props.canOperateThread}
-          onPress={() => {
-            if (
-              origin &&
-              voice.session.ownerKey?.startsWith(
-                questionDictationRequestKey(origin, props.pendingUserInput.requestId),
-              )
-            )
-              voice.session.cancel(voice.session.ownerKey);
-            void props.onDismiss();
-          }}
-        />
-      ) : null}
+      {Platform.OS === "android" ? null : dismissButton}
       {!props.canOperateThread ? (
         <Text className="font-sans text-xs text-foreground-tertiary">
           This connection cannot submit answers.
