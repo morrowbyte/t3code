@@ -879,19 +879,29 @@ describe("PreviewManager", () => {
       ),
   );
 
-  effectIt.effect(
-    "navigates a newly created Idle tab from initialUrl once through pending navigation",
-    () =>
-      withManager((manager) =>
+  effectIt.effect.each(["ready document", "no document"] as const)(
+    "navigates a newly created Idle tab from initialUrl once through pending navigation: %s",
+    (renderer) =>
+      withManager((manager, host) =>
         Effect.gen(function* () {
           const fixture = makeOffscreenFixture();
+          const serverTab = { threadId: "unit-thread", tabId: "unit-tab" };
+          using attach = vi.spyOn(host, "attach");
+          let currentUrl = renderer === "ready document" ? fixture.wc.getURL() : "";
+          fixture.wc.getURL = () => currentUrl;
+          fixture.wc.debugger.sendCommand.mockImplementation(async () => {
+            if (currentUrl === "") throw new Error("The renderer has no document yet.");
+            return undefined;
+          });
           const loaded = Promise.withResolvers<void>();
-          fixture.wc.loadURL.mockImplementation(async () => {
-            loaded.resolve();
+          fixture.wc.loadURL.mockImplementation(async (url) => {
+            currentUrl = url;
+            if (url === "https://example.com/initial") loaded.resolve();
           });
           yield* manager.setMainWindow(fixture.owner);
           const tab = yield* manager.createTab("osr_tab", {
             initialUrl: "https://example.com/initial",
+            serverTab,
           });
           expect(tab.navStatus).toMatchObject({
             kind: "Loading",
@@ -899,10 +909,23 @@ describe("PreviewManager", () => {
           });
           expect(fixture.wc.loadURL).not.toHaveBeenCalled();
           yield* manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7);
+          expect(attach).toHaveBeenCalledWith(
+            serverTab,
+            expect.objectContaining({
+              webContents: fixture.wc,
+              debugger: fixture.wc.debugger,
+            }),
+          );
+          expect(fixture.wc.debugger.isAttached()).toBe(true);
           yield* Effect.promise(() => loaded.promise);
           yield* manager.createTab("osr_tab", { initialUrl: "https://example.com/stale-snapshot" });
           yield* manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7);
-          expect(fixture.wc.loadURL).toHaveBeenCalledExactlyOnceWith("https://example.com/initial");
+          expect(fixture.wc.loadURL.mock.calls.map(([url]) => url)).toEqual(
+            renderer === "ready document"
+              ? ["https://example.com/initial"]
+              : ["about:blank", "https://example.com/initial"],
+          );
+          expect(fixture.wc.getURL()).toBe("https://example.com/initial");
           expect(browserWindowConstructor).toHaveBeenCalledOnce();
         }),
       ),

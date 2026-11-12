@@ -936,6 +936,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         hostedContents.set(tabId, host);
         ownedOffscreenContents.add(host.webContents);
         const initialize = Effect.gen(function* () {
+          // Electron needs a document before debugger commands can complete on a fresh OSR host.
+          if (host.webContents.getURL() === "") {
+            yield* attemptPromise(
+              { operation: "ensureOffscreenHost.initializeDocument", tabId },
+              () => host.webContents.loadURL("about:blank"),
+            );
+          }
           yield* prepareWebview(host.webContents);
           yield* requireMainSender(senderId);
           const listeners = yield* Ref.get(hostedContentsListenersRef);
