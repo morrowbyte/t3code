@@ -674,6 +674,37 @@ describe("mobile composer drafts", () => {
       expect(answer).toBe("Keep the layout.\n\nLook here.");
       expect(composerAttachmentCleanupMocks.remove).toHaveBeenCalledWith(discarded.fileUri);
     }
+
+    let reviewAttachments = [original, other];
+    let reviewComment = "Check this line.";
+    const reviewInput = {
+      image: input.image,
+      text: "Marked region.",
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      replaceAttachment: (attachment: typeof replacement) => {
+        if (!reviewAttachments.includes(original)) return false;
+        reviewAttachments = reviewAttachments.map((entry) =>
+          entry === original ? attachment : entry,
+        );
+        return true;
+      },
+      onComment: (text: string) => {
+        reviewComment = `${reviewComment}\n\n${text}`;
+      },
+    };
+    composerAttachmentCleanupMocks.create.mockResolvedValueOnce(replacement);
+    expect(await applyComposerImageAnnotation(reviewInput)).toBe(true);
+    expect(reviewAttachments).toEqual([replacement, other]);
+    expect(reviewComment).toBe("Check this line.\n\nMarked region.");
+    expect(getComposerDraftSnapshot(questionKey)).toEqual(questionAfter);
+
+    const rejected = { ...replacement, id: "rejected", fileUri: "file:///rejected.png" };
+    composerAttachmentCleanupMocks.create.mockResolvedValueOnce(rejected);
+    expect(await applyComposerImageAnnotation(reviewInput)).toBe(false);
+    expect(reviewAttachments).toEqual([replacement, other]);
+    expect(reviewComment).toBe("Check this line.\n\nMarked region.");
+    expect(composerAttachmentCleanupMocks.remove).toHaveBeenCalledWith(rejected.fileUri);
   });
 
   it("drops chips and records for attachments a replace no longer keeps", () => {

@@ -1,11 +1,15 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { TextInputWrapper } from "expo-paste-input";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, View, useWindowDimensions } from "react-native";
 import { KeyboardAvoidingView, KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
+import {
+  FilePreviewModal,
+  type FilePreviewItem,
+  type FilePreviewSource,
+} from "../../components/FilePreviewModal";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
@@ -14,6 +18,11 @@ import { ControlPill } from "../../components/ui/ControlPill";
 import { cn } from "../../lib/cn";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import { convertPastedImagesToAttachments, pickComposerImages } from "../../lib/composerImages";
+import { composerImageGallery } from "../../lib/composerImageGallery";
+import { filePreviewKey } from "../../lib/filePreviewGallery";
+import type { SendImageAnnotation } from "../../lib/imageAnnotation";
+import { retainComposerAttachmentFileForPreview } from "../../lib/composerAttachmentPreviewRetention";
+import { applyComposerImageAnnotation } from "../../state/apply-image-annotation";
 import { useNativePaste } from "../../lib/useNativePaste";
 import { setPendingConnectionError } from "../../state/use-remote-environment-registry";
 import { appendReviewCommentToDraft } from "../../state/use-thread-composer-state";
@@ -50,6 +59,84 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
   const [commentText, setCommentText] = useState("");
   const [attachments, setAttachments] = useState<ReadonlyArray<DraftComposerImageAttachment>>([]);
   const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
+  const annotationTarget = useRef({ target, environmentId, threadId, attachments });
+  const annotationScope = useRef({ active: false });
+  const annotationFiles = useRef(new Map<string, () => void>());
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Async annotation callbacks must check the committed review target and image identity.
+  useLayoutEffect(() => {
+    annotationTarget.current = { target, environmentId, threadId, attachments };
+  }, [target, environmentId, threadId, attachments]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Local review images retain their files until transferred to a persistent draft or discarded.
+  useLayoutEffect(() => {
+    const scope = { active: true };
+    annotationScope.current = scope;
+    const files = annotationFiles.current;
+    return () => {
+      scope.active = false;
+      for (const release of files.values()) release();
+      files.clear();
+    };
+  }, []);
+
+  const getImageAnnotation = (item: FilePreviewItem) => {
+    const attachment = attachments.find((entry) =>
+      "attachment" in item
+        ? entry.id === item.attachment.id
+        : "uri" in item && (entry.dataUrl ?? entry.previewUri) === item.uri,
+    );
+    if (!attachment) return undefined;
+    return ((image, text, signal) => {
+      const scope = annotationScope.current;
+      return applyComposerImageAnnotation({
+        image,
+        text,
+        signal,
+        isCurrent: () =>
+          scope.active &&
+          navigation.isFocused() &&
+          target !== null &&
+          annotationTarget.current.target === target &&
+          annotationTarget.current.environmentId === environmentId &&
+          annotationTarget.current.threadId === threadId,
+        replaceAttachment: (prepared) => {
+          const current = annotationTarget.current;
+          if (!current.attachments.includes(attachment)) return false;
+          const { source: _droppedSource, ...file } = prepared;
+          const replacement = {
+            ...file,
+            type: "image" as const,
+            previewUri: prepared.fileUri,
+          } satisfies DraftComposerImageAttachment;
+          annotationFiles.current.set(
+            replacement.id,
+            retainComposerAttachmentFileForPreview(replacement),
+          );
+          const next = current.attachments.map((entry) =>
+            entry === attachment ? replacement : entry,
+          );
+          annotationTarget.current = { ...current, attachments: next };
+          setAttachments(next);
+          annotationFiles.current.get(attachment.id)?.();
+          annotationFiles.current.delete(attachment.id);
+          return true;
+        },
+        onComment: (comment) =>
+          setCommentText((current) => `${current}${current ? "\n\n" : ""}${comment}`),
+      });
+    }) satisfies SendImageAnnotation;
+  };
+  const openPreview = (source: FilePreviewSource) => {
+    const gallery = composerImageGallery(attachments).map((item) => ({
+      ...item,
+      onApplyAnnotation: getImageAnnotation(item),
+    }));
+    setPreviewFile({
+      ...source,
+      gallery,
+      onApplyAnnotation: gallery.find((item) => filePreviewKey(item) === filePreviewKey(source))
+        ?.onApplyAnnotation,
+    });
+  };
 
   const { selectedLines, highlightedLinesById } = useMemo(() => {
     if (!target) return { selectedLines: NO_LINES, highlightedLinesById: NO_HIGHLIGHTS };
@@ -248,9 +335,11 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
                         attachments={attachments}
                         imageBorderRadius={16}
                         imageSize={60}
-                        onPressPreview={setPreviewFile}
+                        onPressPreview={openPreview}
                         removeButtonPlacement="gutter"
                         onRemove={(imageId) => {
+                          annotationFiles.current.get(imageId)?.();
+                          annotationFiles.current.delete(imageId);
                           setAttachments((current) =>
                             current.filter((image) => image.id !== imageId),
                           );
