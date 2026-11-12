@@ -363,6 +363,10 @@
       "types": "./src/node/devRunnerControl.ts",
       "import": "./src/node/devRunnerControl.ts"
     },
+    "./node/devShareOwnership": {
+      "types": "./src/node/devShareOwnership.ts",
+      "import": "./src/node/devShareOwnership.ts"
+    },
     "./node/storagePressure": {
       "types": "./src/node/storagePressure.ts",
       "import": "./src/node/storagePressure.ts"

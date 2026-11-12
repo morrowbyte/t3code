@@ -1,6 +1,8 @@
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as ByteSize from "effect/ByteSize";
+import * as Option from "effect/Option";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
@@ -586,6 +588,8 @@ interface HarnessOptions {
   readonly branchPullRequest?: GitManager.GitManager["Service"]["branchPullRequest"];
   readonly pullRequestSummary?: PullRequestService.PullRequestService["Service"]["summary"];
   readonly existingWorktreePaths?: ReadonlyArray<string>;
+  readonly gitDirectories?: ReadonlyArray<string>;
+  readonly gitFiles?: ReadonlyArray<string>;
   readonly onDispatch?: (command: AutoSettleCommand) => Effect.Effect<void>;
   readonly onScriptRun?: (
     input: ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput,
@@ -622,6 +626,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   const summaryRecovery = yield* Ref.make<ReadonlyArray<boolean | undefined>>([]);
   const invalidatedCwds = yield* Ref.make<ReadonlyArray<string>>([]);
   const domainEvents = yield* PubSub.unbounded<OrchestrationV2DomainEvent>();
+  const domainEventSubscription = yield* PubSub.subscribe(domainEvents);
   const closedIdle = yield* Queue.unbounded<{ readonly threadId: string }>();
   const scriptRuns =
     yield* Queue.unbounded<ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput>();
@@ -753,7 +758,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
       },
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
-      streamDomainEvents: Stream.fromPubSub(domainEvents),
+      streamDomainEvents: Stream.fromSubscription(domainEventSubscription),
       dispatch,
     }),
     Layer.mock(TerminalManager.TerminalManager)({
@@ -781,7 +786,33 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     Layer.succeed(ServerActivation.ServerActivation, Deferred.await(activation)),
     Layer.succeed(Crypto.Crypto, testCrypto),
     FileSystem.layerNoop({
-      exists: (path) => Effect.succeed(options.existingWorktreePaths?.includes(path) ?? false),
+      exists: (path) =>
+        Effect.succeed(
+          (options.existingWorktreePaths?.includes(path) ?? false) ||
+            (options.gitDirectories?.includes(path) ?? false) ||
+            (options.gitFiles?.includes(path) ?? false),
+        ),
+      stat: (path) =>
+        Effect.succeed({
+          type: options.gitFiles?.includes(path) ? ("File" as const) : ("Directory" as const),
+          mtime: Option.none(),
+          atime: Option.none(),
+          birthtime: Option.none(),
+          dev: 0,
+          ino: Option.none(),
+          mode: 0o700,
+          nlink: Option.some(1),
+          uid: Option.none(),
+          gid: Option.none(),
+          rdev: Option.none(),
+          size: ByteSize.zero,
+          blksize: Option.none(),
+          blocks: Option.none(),
+        }),
+      readFileString: (path) =>
+        options.gitFiles?.includes(path)
+          ? Effect.succeed("gitdir: /repo/.git/worktrees/task\n")
+          : Effect.die("Unexpected file read"),
       realPath: (path) =>
         (options.onRealPath?.(path) ?? Effect.void).pipe(
           Effect.as(options.realWorktreePaths?.[path] ?? path),
@@ -1533,6 +1564,112 @@ describe("ThreadSettlementServiceV2 terminals", () => {
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),
+  );
+
+  it.effect.each(["root", "existing_worktree", "linked_worktree"] as const)(
+    "shares canonical resources with archived active subproject peers: %s",
+    (kind) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const linked = kind === "linked_worktree";
+          const resourceRoot = linked ? "/linked" : "/repo";
+          const ownerPath = kind === "root" ? null : `${resourceRoot}/apps/service`;
+          const peerProjectId = ProjectId.make("sibling-project");
+          const projects = [
+            makeProject(PROJECT_ID, "/repo/apps/service"),
+            makeProject(peerProjectId, "/repo/apps/worker"),
+          ];
+          const owner = appThread("subproject-owner", "settled", ownerPath);
+          const activePeer = {
+            ...appThread("archived-peer", "active", linked ? "/linked/apps/worker" : null),
+            projectId: peerProjectId,
+            archivedAt: DateTime.makeUnsafe(NOW),
+          };
+          const peer = {
+            ...activePeer,
+            settledOverride: "settled" as const,
+            settledAt: owner.settledAt,
+          };
+          const markers = ["one", "two", "three"].map((name) =>
+            appThread(`marker-${name}`, "settled", `/markers/${name}`),
+          );
+          const currentThreads = [owner, activePeer, ...markers];
+          const pending = (thread: OrchestrationV2AppThread) =>
+            shell({
+              ...thread,
+              status: "completed",
+              activeRunId: null,
+              pendingBackgroundTasks: [
+                { taskId: `preview:${thread.id}`, kind: "command", description: "dev server" },
+              ],
+            });
+          const runnerReads: string[] = [];
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([pending(owner), pending(activePeer)], projects),
+            currentThreads,
+            existingWorktreePaths: [
+              "/repo",
+              "/linked",
+              "/repo/apps/service",
+              "/repo/apps/worker",
+              "/linked/apps/service",
+              "/linked/apps/worker",
+              ...markers.map((thread) => thread.worktreePath!),
+            ],
+            gitDirectories: ["/repo/.git"],
+            gitFiles: ["/linked/.git"],
+            onRunnerRead: (path) =>
+              Effect.sync(() => {
+                runnerReads.push(path);
+              }),
+          });
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            yield* fixture.publishEvent(settledEvent(owner));
+            yield* fixture.publishEvent(settledEvent(markers[0]!));
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, markers[0]!.id);
+            assert.notInclude(runnerReads, `${resourceRoot}/.t3/dev-runners`);
+            currentThreads[1] = peer;
+            yield* Ref.set(
+              fixture.snapshots,
+              makeSnapshot([pending(owner), pending(peer)], projects),
+            );
+            yield* fixture.publishEvent(settledEvent(peer));
+            yield* fixture.publishEvent(settledEvent(markers[1]!));
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, markers[1]!.id);
+            assert.lengthOf(
+              runnerReads.filter((path) => path === `${resourceRoot}/.t3/dev-runners`),
+              2,
+            );
+            assert.isFalse(runnerReads.some((path) => path.includes("/apps/")));
+            assert.strictEqual(yield* Queue.size(fixture.scriptRuns), 0);
+            yield* Ref.set(fixture.snapshots, makeSnapshot([], projects));
+            yield* fixture.publishEvent({
+              type: "run.background-work-cancelled",
+              id: EventId.make("event:subproject-ended"),
+              threadId: peer.id,
+              occurredAt: DateTime.makeUnsafe(NOW),
+              payload: { runId: RunId.make("preview-run"), restartCancelledBackgroundWork: [] },
+            });
+            yield* fixture.publishEvent(settledEvent(markers[2]!));
+            if (linked) {
+              const peerRun = yield* Queue.take(fixture.scriptRuns);
+              const ownerRun = yield* Queue.take(fixture.scriptRuns);
+              assert.strictEqual(peerRun.threadId, peer.id);
+              assert.strictEqual(peerRun.worktreePath, peer.worktreePath);
+              assert.strictEqual(ownerRun.threadId, owner.id);
+              assert.strictEqual(ownerRun.worktreePath, ownerPath);
+            }
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, markers[2]!.id);
+            assert.lengthOf(
+              runnerReads.filter((path) => path === `${resourceRoot}/.t3/dev-runners`),
+              4,
+            );
+            assert.strictEqual(yield* Queue.size(fixture.scriptRuns), 0);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
   );
 
   it.effect.each(["worktree", "root", "existing root"] as const)(

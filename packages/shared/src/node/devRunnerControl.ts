@@ -14,7 +14,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as HostProcess from "../HostProcess.ts";
 
-const ProcessIdentity = Schema.Struct({
+export const ProcessIdentity = Schema.Struct({
   bootId: Schema.String,
   pid: Schema.Number,
   start: Schema.String,
@@ -37,8 +37,19 @@ const Receipt = Schema.Struct({
   launching: Schema.optionalKey(Schema.Boolean),
   child: Schema.optionalKey(ProcessIdentity),
   sharePort: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
+  shareGeneration: Schema.optionalKey(Schema.String),
 });
 const decodeReceipt = Schema.decodeUnknownOption(Schema.fromJsonString(Receipt));
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const withoutShare = ({
+  sharePort: _port,
+  shareGeneration: _generation,
+  ...receipt
+}: typeof Receipt.Type) => receipt;
+type RuntimeChild = {
+  readonly pid: number;
+  readonly isRunning: ChildProcessSpawner.ChildProcessHandle["isRunning"];
+};
 const ControlAction = Schema.Literals(["prepare-stop", "stop", "status"]);
 const decodeRequest = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ receipt: Receipt, action: ControlAction })),
@@ -57,6 +68,26 @@ const validIdentity = (identity: typeof ProcessIdentity.Type) =>
   Number.isSafeInteger(identity.pid) &&
   identity.pid > 0 &&
   /^\d+$/u.test(identity.start);
+
+export const resolveTaskWorkspace = Effect.fn("devRunnerControl.resolveTaskWorkspace")(function* (
+  cwd: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  let directory = yield* fs.realPath(cwd);
+  for (;;) {
+    const git = NodePath.join(directory, ".git");
+    const info = (yield* fs.exists(git)) ? yield* fs.stat(git).pipe(Effect.option) : Option.none();
+    if (Option.isSome(info)) {
+      if (info.value.type === "Directory") return directory;
+      if (info.value.type === "File" && /^\s*gitdir:\s*\S/mu.test(yield* fs.readFileString(git)))
+        return directory;
+      return undefined;
+    }
+    const parent = NodePath.dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
+  }
+});
 
 const windowsProcessValue = Effect.fn("devRunnerControl.windowsProcessValue")(function* (
   command: string,
@@ -138,7 +169,9 @@ const readProcessStart = Effect.fn("devRunnerControl.readProcessStart")(function
   );
 });
 
-const captureIdentity = Effect.fn("devRunnerControl.captureIdentity")(function* (pid: number) {
+export const captureIdentity = Effect.fn("devRunnerControl.captureIdentity")(function* (
+  pid: number,
+) {
   const bootId = yield* readBootId();
   if (bootId === undefined) return undefined;
   const start = yield* readProcessStart(pid);
@@ -147,7 +180,7 @@ const captureIdentity = Effect.fn("devRunnerControl.captureIdentity")(function* 
   return validIdentity(identity) ? identity : undefined;
 });
 
-const isProvenDead = Effect.fn("devRunnerControl.isProvenDead")(function* (
+export const isProvenDead = Effect.fn("devRunnerControl.isProvenDead")(function* (
   identity: typeof ProcessIdentity.Type | undefined,
 ) {
   if (identity === undefined || !validIdentity(identity)) return false;
@@ -232,21 +265,146 @@ export class DevRunnerControlError extends Schema.TaggedError<DevRunnerControlEr
   }
 }
 
+export const ShareRuntime = Schema.Struct({
+  workspacePath: Schema.String,
+  id: Schema.String,
+  token: Schema.String,
+});
+
+export const shareRuntimeStopped = Effect.fn("devRunnerControl.shareRuntimeStopped")(
+  function* (runtime: typeof ShareRuntime.Type | undefined, port: number, generation: string) {
+    if (runtime === undefined || !/^[a-f0-9]{32}$/u.test(runtime.id) || !validToken(runtime.token))
+      return false;
+    const fs = yield* FileSystem.FileSystem;
+    if ((yield* fs.realPath(runtime.workspacePath)) !== runtime.workspacePath) return false;
+    const path = NodePath.join(directoryFor(runtime.workspacePath), `${runtime.id}.json`);
+    const read = Effect.try({
+      try: () => {
+        const info = NodeFS.lstatSync(path);
+        return info.isFile() && info.nlink === 1 && info.size <= 4096
+          ? NodeFS.readFileSync(path, "utf8")
+          : undefined;
+      },
+      catch: () => undefined,
+    }).pipe(Effect.orElseSucceed(() => undefined));
+    const contents = yield* read;
+    const parsed = contents === undefined ? Option.none() : decodeReceipt(contents);
+    if (Option.isNone(parsed)) return false;
+    const receipt = parsed.value;
+    return (
+      receipt.workspacePath === runtime.workspacePath &&
+      receipt.id === runtime.id &&
+      receipt.token === runtime.token &&
+      receipt.sharePort === port &&
+      receipt.shareGeneration === generation &&
+      (yield* receiptProvenStopped(withoutShare(receipt))) &&
+      (yield* read) === contents
+    );
+  },
+  Effect.orElseSucceed(() => false),
+);
+
+type RecoverShare = (
+  port: number,
+  generation: string | undefined,
+  canRecover: Effect.Effect<boolean>,
+) => Effect.Effect<boolean>;
+
+const recoverStoppedReceipt = Effect.fn("devRunnerControl.recoverStoppedReceipt")(
+  function* (input: {
+    readonly receiptPath: string;
+    readonly contents: string;
+    readonly receipt: typeof Receipt.Type;
+    readonly canStop: Effect.Effect<boolean>;
+    readonly recoverShare?: RecoverShare;
+    readonly remove: boolean;
+  }) {
+    const { receiptPath, contents, receipt } = input;
+    const fs = yield* FileSystem.FileSystem;
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const db = yield* Effect.acquireRelease(
+          Effect.try({
+            try: () => {
+              const db = new NodeSqlite.DatabaseSync(
+                NodePath.join(NodePath.dirname(receiptPath), "..", "dev-runner-control.sqlite"),
+              );
+              try {
+                db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+                return db;
+              } catch (cause) {
+                db.close();
+                throw cause;
+              }
+            },
+            catch: (cause) => new DevRunnerControlError({ operation: "stop", cause }),
+          }),
+          (db) => Effect.sync(() => db.close()),
+        );
+        const current = Effect.try({
+          try: () => {
+            const info = NodeFS.lstatSync(receiptPath);
+            return (
+              info.isFile() &&
+              info.nlink === 1 &&
+              info.size <= 4096 &&
+              NodeFS.readFileSync(receiptPath, "utf8") === contents
+            );
+          },
+          catch: (cause) => new DevRunnerControlError({ operation: "stop", cause }),
+        }).pipe(Effect.orElseSucceed(() => false));
+        const canRecover = Effect.gen(function* () {
+          return (
+            (yield* current) &&
+            (yield* receiptProvenStopped(withoutShare(receipt))) &&
+            (yield* input.canStop) &&
+            (yield* current)
+          );
+        }).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+        if (!(yield* canRecover)) return undefined;
+        if (receipt.sharePort !== undefined) {
+          if (
+            input.recoverShare === undefined ||
+            !(yield* input.recoverShare(receipt.sharePort, receipt.shareGeneration, canRecover))
+          )
+            return undefined;
+        }
+        if (!(yield* canRecover)) return undefined;
+        const next = encodeJson({
+          ...receipt,
+          sharePort: undefined,
+          shareGeneration: undefined,
+        });
+        yield* Effect.try({
+          try: () => {
+            if (input.remove) NodeFS.unlinkSync(receiptPath);
+            else NodeFS.writeFileSync(receiptPath, next, { mode: 0o600 });
+            db.exec("COMMIT;");
+          },
+          catch: (cause) => new DevRunnerControlError({ operation: "stop", cause }),
+        });
+        return next;
+      }),
+    );
+  },
+);
+
 export const registerDevRunner = Effect.fn("devRunnerControl.register")(function* (input: {
   readonly threadId: string;
   readonly workspacePath: string;
   readonly reuseKey?: string;
-  readonly recoverShare?: (port: number) => Effect.Effect<boolean>;
+  readonly recoverShare?: RecoverShare;
 }) {
   const fs = yield* FileSystem.FileSystem;
-  const workspacePath = yield* fs.realPath(input.workspacePath);
+  const workspacePath =
+    (yield* resolveTaskWorkspace(input.workspacePath)) ?? (yield* fs.realPath(input.workspacePath));
   const directory = directoryFor(workspacePath);
   yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
   const id =
     input.reuseKey === undefined
       ? NodeCrypto.randomBytes(16).toString("hex")
       : NodeCrypto.createHash("sha256")
-          .update(JSON.stringify([input.threadId, input.reuseKey]))
+          .update(encodeJson([input.threadId, input.reuseKey]))
           .digest("hex")
           .slice(0, 32);
   const receiptPath = NodePath.join(directory, `${id}.json`);
@@ -282,79 +440,36 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
     )
       return {
         reused: true as const,
+        runtime: undefined,
         connection: response.value.connection,
         beginTeardown: Effect.void,
         prepareChild: Effect.void,
-        prepareShare: (_port: number) => Effect.void,
+        prepareShare: (_port: number, _generation?: string) => Effect.void,
         confirmShareCleared: Effect.void,
-        ready: (
-          _value: typeof Connection.Type,
-          _child?: { readonly pid: number; readonly isRunning: Effect.Effect<boolean, unknown> },
-        ) => Effect.void,
+        ready: (_value: typeof Connection.Type, _child?: RuntimeChild) => Effect.void,
         stopRequested: Effect.never,
         confirmStopped: (_stopped: boolean) => Effect.succeed(false),
       };
-    if (!(yield* receiptProvenStopped({ ...existing.value, sharePort: undefined })))
+    if (!(yield* receiptProvenStopped(withoutShare(existing.value))))
       return yield* new DevRunnerControlError({
         operation: "register",
         cause: "Existing runner is not proven stopped",
       });
     previous = contents;
     if (existing.value.sharePort !== undefined) {
-      if (input.recoverShare === undefined)
+      previous = yield* recoverStoppedReceipt({
+        receiptPath,
+        contents,
+        receipt: existing.value,
+        canStop: Effect.succeed(true),
+        ...(input.recoverShare === undefined ? {} : { recoverShare: input.recoverShare }),
+        remove: false,
+      });
+      if (previous === undefined)
         return yield* new DevRunnerControlError({
           operation: "register",
-          cause: `Tailnet cleanup for port ${existing.value.sharePort} has not been confirmed`,
+          cause: "Tailnet cleanup could not be confirmed",
         });
-      const recoverShare = input.recoverShare;
-      previous = yield* Effect.scoped(
-        Effect.gen(function* () {
-          const db = yield* Effect.acquireRelease(
-            Effect.try({
-              try: () => {
-                const db = new NodeSqlite.DatabaseSync(
-                  NodePath.join(directory, "..", "dev-runner-control.sqlite"),
-                );
-                try {
-                  db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
-                  return db;
-                } catch (cause) {
-                  db.close();
-                  throw cause;
-                }
-              },
-              catch: (cause) => new DevRunnerControlError({ operation: "register", cause }),
-            }),
-            (db) => Effect.sync(() => db.close()),
-          );
-          yield* Effect.try({
-            try: () => {
-              const info = NodeFS.lstatSync(receiptPath);
-              if (
-                !info.isFile() ||
-                info.nlink !== 1 ||
-                NodeFS.readFileSync(receiptPath, "utf8") !== contents
-              )
-                throw new Error("Runner receipt changed during share recovery");
-            },
-            catch: (cause) => new DevRunnerControlError({ operation: "register", cause }),
-          });
-          if (!(yield* recoverShare(existing.value.sharePort!)))
-            return yield* new DevRunnerControlError({
-              operation: "register",
-              cause: `Tailnet cleanup for port ${existing.value.sharePort} failed`,
-            });
-          const next = JSON.stringify({ ...existing.value, sharePort: undefined });
-          yield* Effect.try({
-            try: () => {
-              NodeFS.writeFileSync(receiptPath, next, { mode: 0o600 });
-              db.exec("COMMIT;");
-            },
-            catch: (cause) => new DevRunnerControlError({ operation: "register", cause }),
-          });
-          return next;
-        }),
-      );
     }
   }
   const token = NodeCrypto.randomBytes(32).toString("hex");
@@ -362,7 +477,7 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
   const requests = new Set<NodeNet.Socket>();
   let stopping = false;
   let connection: typeof Connection.Type | undefined;
-  let isRunning: Effect.Effect<boolean, unknown> | undefined;
+  let isRunning: Effect.Effect<boolean> | undefined;
   let confirmedStopped = false;
   let stopRejected = false;
   let requestStop: () => void = () => {};
@@ -402,7 +517,7 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
       }
       if (raw.value.action === "status") {
         socket.end(
-          `${JSON.stringify({
+          `${encodeJson({
             token,
             action: "status",
             accepted: !stopping && connection !== undefined,
@@ -413,7 +528,7 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
       }
       if (raw.value.action === "prepare-stop" && !prepared) {
         prepared = true;
-        socket.write(`${JSON.stringify({ token, action: "prepare-stop", accepted: true })}\n`);
+        socket.write(`${encodeJson({ token, action: "prepare-stop", accepted: true })}\n`);
         return;
       }
       if (raw.value.action !== "stop" || !prepared) {
@@ -456,7 +571,7 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
     ...(owner === undefined ? {} : { owner }),
     launching: false,
   };
-  let contents = JSON.stringify(receipt);
+  let contents = encodeJson(receipt);
   const readCurrentReceipt = () => {
     const info = NodeFS.lstatSync(receiptPath);
     if (!info.isFile() || info.nlink !== 1 || info.size > 4096)
@@ -466,7 +581,7 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
   const updateReceipt = Effect.fn("devRunnerControl.updateReceipt")(function* (
     next: typeof Receipt.Type,
   ) {
-    const nextContents = JSON.stringify(next);
+    const nextContents = encodeJson(next);
     yield* mutateReceipt(directory, () => {
       if (readCurrentReceipt() !== contents) throw new Error("Runner receipt changed");
       NodeFS.writeFileSync(receiptPath, nextContents, { mode: 0o600 });
@@ -505,18 +620,24 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
   );
   return {
     reused: false as const,
+    runtime: { workspacePath, id, token },
     beginTeardown: Effect.sync(() => {
       stopping = true;
     }),
     prepareChild: Effect.suspend(() => updateReceipt({ ...receipt, launching: true })),
-    prepareShare: (sharePort: number) => updateReceipt({ ...receipt, sharePort }),
-    confirmShareCleared: Effect.suspend(() => updateReceipt({ ...receipt, sharePort: undefined })),
+    prepareShare: (sharePort: number, shareGeneration?: string) =>
+      updateReceipt({
+        ...withoutShare(receipt),
+        sharePort,
+        ...(shareGeneration === undefined ? {} : { shareGeneration }),
+      }),
+    confirmShareCleared: Effect.suspend(() => updateReceipt(withoutShare(receipt))),
     ready: Effect.fn("devRunnerControl.ready")(function* (
       value: typeof Connection.Type,
-      child?: { readonly pid: number; readonly isRunning: Effect.Effect<boolean, unknown> },
+      child?: RuntimeChild,
     ) {
       if (child !== undefined) {
-        isRunning = child.isRunning;
+        isRunning = child.isRunning.pipe(Effect.orElseSucceed(() => true));
         const identity = yield* captureIdentity(child.pid);
         yield* updateReceipt({
           ...receipt,
@@ -545,7 +666,7 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
             (socket) =>
               new Promise<void>((resolve) => {
                 socket.once("close", resolve);
-                socket.end(`${JSON.stringify({ token, action: "stop", accepted: stopped })}\n`);
+                socket.end(`${encodeJson({ token, action: "stop", accepted: stopped })}\n`);
               }),
           ),
         ),
@@ -608,7 +729,7 @@ const requestControl = Effect.fn("devRunnerControl.request")(function* (
           socket.once("error", onFailure);
           socket.once("close", onFailure);
           socket.on("data", onData);
-          socket.write(`${JSON.stringify({ receipt, action })}\n`);
+          socket.write(`${encodeJson({ receipt, action })}\n`);
           return Effect.sync(cleanup);
         });
       if (action === "stop") {
@@ -626,14 +747,16 @@ export const stopDevRunners = Effect.fn("devRunnerControl.stop")(function* (inpu
   readonly threadId: string;
   readonly workspacePath: string;
   readonly canStop: Effect.Effect<boolean>;
+  readonly recoverShare?: RecoverShare;
 }) {
   const fs = yield* FileSystem.FileSystem;
-  const workspacePath = yield* fs.realPath(input.workspacePath);
+  const workspacePath =
+    (yield* resolveTaskWorkspace(input.workspacePath)) ?? (yield* fs.realPath(input.workspacePath));
   const directory = directoryFor(workspacePath);
   const names = yield* fs.readDirectory(directory).pipe(
     Effect.catchIf(
       (error) => error.reason._tag === "NotFound",
-      () => Effect.succeed([]),
+      () => Effect.succeed(Array<string>()),
     ),
   );
   const stoppedNames = new Set<string>();
@@ -659,22 +782,17 @@ export const stopDevRunners = Effect.fn("devRunnerControl.stop")(function* (inpu
     if (!(yield* input.canStop)) return false;
     const response = yield* requestControl(receipt, "stop", input.canStop);
     if (Option.isNone(response) || !response.value.accepted) {
-      if (!(yield* receiptProvenStopped(receipt)) || !(yield* input.canStop)) return false;
-      yield* mutateReceipt(
-        directory,
-        () => {
-          const info = NodeFS.lstatSync(receiptPath);
-          if (
-            !info.isFile() ||
-            info.nlink !== 1 ||
-            info.size > 4096 ||
-            NodeFS.readFileSync(receiptPath, "utf8") !== contents
-          )
-            throw new Error("Runner receipt changed during cleanup");
-          NodeFS.unlinkSync(receiptPath);
-        },
-        "stop",
-      );
+      if (
+        (yield* recoverStoppedReceipt({
+          receiptPath,
+          contents,
+          receipt,
+          canStop: input.canStop,
+          ...(input.recoverShare === undefined ? {} : { recoverShare: input.recoverShare }),
+          remove: true,
+        })) === undefined
+      )
+        return false;
     }
     stoppedNames.add(name);
   }

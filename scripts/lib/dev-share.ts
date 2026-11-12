@@ -8,6 +8,8 @@ import {
   type TailscaleCommandError,
   type TailscaleStderrDiagnostic,
 } from "@t3tools/tailscale";
+import type { ShareRuntime } from "@t3tools/shared/node/devRunnerControl";
+import * as DevShareOwnership from "@t3tools/shared/node/devShareOwnership";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { ChildProcessSpawner } from "effect/process";
@@ -81,7 +83,7 @@ export type DevShareError =
   | DevServeFailedError;
 
 /** Finalizer cleanup must be uninterruptible or cancellation can leave stale mappings. */
-export const unshareDevServer = (
+const disableDevShare = (
   webPort: number,
 ): Effect.Effect<
   {
@@ -111,9 +113,24 @@ export const unshareDevServer = (
     Effect.uninterruptible,
   );
 
+export const unshareDevServer = Effect.fn("devShare.unshareDevServer")(function* (
+  webPort: number,
+  generation: string | undefined,
+  canClear: Effect.Effect<boolean> = Effect.succeed(true),
+) {
+  const cleared = yield* DevShareOwnership.clear({
+    port: webPort,
+    generation,
+    canClear,
+    remove: disableDevShare(webPort).pipe(Effect.map((result) => result.cleared)),
+  });
+  return { cleared };
+});
+
 export interface DevShareResult {
   readonly url: string;
   readonly host: string;
+  readonly ownership: DevShareOwnership.Ownership;
 }
 
 /**
@@ -123,6 +140,8 @@ export interface DevShareResult {
  */
 export const shareDevServer = Effect.fn("devShare.shareDevServer")(function* (input: {
   readonly webPort: number;
+  readonly ownership?: DevShareOwnership.Ownership;
+  readonly runtime?: typeof ShareRuntime.Type | undefined;
   readonly localTarget?: { readonly port: number; readonly host: string };
 }) {
   const status = yield* readTailscaleStatus.pipe(
@@ -132,32 +151,55 @@ export const shareDevServer = Effect.fn("devShare.shareDevServer")(function* (in
     return yield* new TailnetNameMissingError();
   }
 
-  const cleared = yield* unshareDevServer(input.webPort);
-  if (!cleared.cleared) {
-    // Refuse stale routes: the page could load while /ws and /api still point at a dead backend.
-    return yield* new DevServeFailedError({
-      stage: "clear-existing",
-      webPort: input.webPort,
-      ...(cleared.explanation !== undefined ? { explanation: cleared.explanation } : {}),
-      ...(cleared.cause !== undefined ? { cause: cleared.cause } : {}),
-    });
-  }
-
-  // Vite's localhost can bind only ::1; a 127.0.0.1 proxy target would return 502.
-  yield* ensureTailscaleServe({
-    localPort: input.localTarget?.port ?? input.webPort,
-    servePort: input.webPort,
-    localHost: input.localTarget?.host ?? "localhost",
-  }).pipe(
-    Effect.mapError((error) => {
-      const explanation = explainCommandFailure(error);
-      return new DevServeFailedError({
-        stage: "serve",
-        webPort: input.webPort,
-        ...(explanation !== undefined ? { explanation } : {}),
-        cause: error,
-      });
+  const ownership = input.ownership ?? DevShareOwnership.makeOwnership(input.webPort);
+  yield* DevShareOwnership.create({
+    ownership,
+    ...(input.runtime === undefined ? {} : { runtime: input.runtime }),
+    expectedRoute: DevShareOwnership.expectedRoute({
+      port: input.webPort,
+      host: status.magicDnsName,
+      proxy: `http://${input.localTarget?.host ?? "localhost"}:${input.localTarget?.port ?? input.webPort}`,
     }),
+    serve: Effect.gen(function* () {
+      const cleared = yield* disableDevShare(input.webPort);
+      if (!cleared.cleared) {
+        // Refuse stale routes: the page could load while /ws and /api still point at a dead backend.
+        return yield* new DevServeFailedError({
+          stage: "clear-existing",
+          webPort: input.webPort,
+          ...(cleared.explanation !== undefined ? { explanation: cleared.explanation } : {}),
+          ...(cleared.cause !== undefined ? { cause: cleared.cause } : {}),
+        });
+      }
+
+      // Vite's localhost can bind only ::1; a 127.0.0.1 proxy target would return 502.
+      yield* ensureTailscaleServe({
+        localPort: input.localTarget?.port ?? input.webPort,
+        servePort: input.webPort,
+        localHost: input.localTarget?.host ?? "localhost",
+      }).pipe(
+        Effect.mapError((error) => {
+          const explanation = explainCommandFailure(error);
+          return new DevServeFailedError({
+            stage: "serve",
+            webPort: input.webPort,
+            ...(explanation !== undefined ? { explanation } : {}),
+            cause: error,
+          });
+        }),
+      );
+    }),
+  }).pipe(
+    Effect.mapError((cause) =>
+      cause instanceof DevServeFailedError
+        ? cause
+        : new DevServeFailedError({
+            stage: "clear-existing",
+            webPort: input.webPort,
+            explanation: "route ownership or the resulting mapping could not be verified",
+            cause,
+          }),
+    ),
   );
 
   return {
@@ -166,5 +208,6 @@ export const shareDevServer = Effect.fn("devShare.shareDevServer")(function* (in
       servePort: input.webPort,
     }),
     host: status.magicDnsName,
+    ownership,
   } satisfies DevShareResult;
 });

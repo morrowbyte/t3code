@@ -27,6 +27,8 @@ import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
 
 import * as DevRunnerControl from "@t3tools/shared/node/devRunnerControl";
+import * as DevShareOwnership from "@t3tools/shared/node/devShareOwnership";
+import { disableTailscaleServe } from "@t3tools/tailscale";
 import * as GitManager from "../git/GitManager.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
@@ -606,22 +608,40 @@ export const make = Effect.gen(function* () {
       return sweepThread(threadId).pipe(FiberSet.run(threadSweeps), Effect.asVoid);
     });
 
+  const resourceRoot = Effect.fn("ThreadSettlementServiceV2.resourceRoot")(function* (
+    workspacePath: string,
+  ) {
+    return (
+      (yield* DevRunnerControl.resolveTaskWorkspace(workspacePath).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+      )) ?? (yield* fileSystem.realPath(workspacePath))
+    );
+  });
+
   const workspaceForThread = Effect.fn("ThreadSettlementServiceV2.workspaceForThread")(function* (
     thread: Pick<OrchestrationV2ThreadShell, "projectId" | "worktreePath">,
   ) {
-    if (thread.worktreePath !== null) return thread.worktreePath;
+    if (thread.worktreePath !== null)
+      return (yield* fileSystem.exists(thread.worktreePath))
+        ? yield* resourceRoot(thread.worktreePath)
+        : null;
     const projects = yield* projectStore.listShells({ projectIds: [thread.projectId] });
-    return projects.find((project) => project.id === thread.projectId)?.workspaceRoot ?? null;
+    const workspaceRoot = projects.find(
+      (project) => project.id === thread.projectId,
+    )?.workspaceRoot;
+    return workspaceRoot === undefined || !(yield* fileSystem.exists(workspaceRoot))
+      ? null
+      : yield* resourceRoot(workspaceRoot);
   });
 
   const workspacePeers = Effect.fn("ThreadSettlementServiceV2.workspacePeers")(function* (
     workspacePath: string,
   ) {
-    const canonicalPath = yield* fileSystem.realPath(workspacePath);
+    const canonicalPath = yield* resourceRoot(workspacePath);
     const peers = new Set<ThreadId>();
     const sameWorkspace = Effect.fn("ThreadSettlementServiceV2.sameWorkspace")(
       (candidate: string) =>
-        fileSystem.realPath(candidate).pipe(
+        resourceRoot(candidate).pipe(
           Effect.map((resolved) => resolved === canonicalPath),
           Effect.catchIf(
             (error) => error.reason._tag === "NotFound",
@@ -693,6 +713,29 @@ export const make = Effect.gen(function* () {
         threadId,
         workspacePath: worktreePath,
         canStop: canCleanUp(true),
+        ...(Option.isNone(processSpawner)
+          ? {}
+          : {
+              recoverShare: (
+                port: number,
+                generation: string | undefined,
+                canRecover: Effect.Effect<boolean>,
+              ) =>
+                DevShareOwnership.clear({
+                  port,
+                  generation,
+                  canClear: canRecover,
+                  remove: disableTailscaleServe({ servePort: port }).pipe(
+                    Effect.as(true),
+                    Effect.orElseSucceed(() => false),
+                  ),
+                }).pipe(
+                  Effect.provideService(
+                    ChildProcessSpawner.ChildProcessSpawner,
+                    processSpawner.value,
+                  ),
+                ),
+            }),
       }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
       const runnersStopped = yield* Option.isSome(processSpawner)
         ? stopRunners.pipe(
@@ -711,7 +754,7 @@ export const make = Effect.gen(function* () {
       const run = yield* projectScripts.runForThread({
         threadId,
         projectId: thread.projectId,
-        worktreePath,
+        worktreePath: thread.worktreePath ?? worktreePath,
         trigger: "settle",
         observeCompletion: {},
       });
