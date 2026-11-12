@@ -169,12 +169,7 @@ describe("buildRemoteOpenUrl", () => {
         "vscode://vscode-remote/ssh-remote+sol/tmp/my%20file.md:37:9",
         { line: 37, column: 9 },
       ],
-      [
-        "cursor",
-        true,
-        "cursor://vscode-remote/ssh-remote+sol/tmp/my%20file.md:37:1",
-        { line: 37 },
-      ],
+      ["cursor", true, "cursor://vscode-remote/ssh-remote+sol/tmp/my%20file.md:37:1", { line: 37 }],
       ["vscode", false, "vscode://vscode-remote/ssh-remote+sol/tmp/my%20file.md"],
       [
         "vscode",
@@ -198,7 +193,7 @@ describe("buildRemoteOpenUrl", () => {
           host: "sol",
           absolutePath: "/tmp/my file.md",
           ...(isFile === undefined ? {} : { isFile }),
-          ...(position ?? {}),
+          ...position,
         }),
         `${editor}, isFile=${isFile}`,
       ).toBe(expected);

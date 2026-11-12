@@ -10,7 +10,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type * as Electron from "electron";
-import { EventEmitter } from "node:events";
+import * as NodeEvents from "node:events";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 vi.mock("electron", () => ({}));
@@ -105,7 +105,7 @@ effectIt.effect.each([
   Effect.gen(function* () {
     const rendered = yield* Deferred.make<void>();
     const opened = yield* Deferred.make<unknown>();
-    const webContents = Object.assign(new EventEmitter(), {
+    const webContents = Object.assign(new NodeEvents.EventEmitter(), {
       setWindowOpenHandler: () => {},
     });
     const window = {
@@ -113,7 +113,7 @@ effectIt.effect.each([
       isDestroyed: () => false,
       once: () => {},
       loadURL: () => {
-        Effect.runFork(Deferred.succeed(rendered, undefined));
+        Deferred.doneUnsafe(rendered, Effect.void);
         return Promise.resolve();
       },
     } as unknown as Electron.BrowserWindow;
