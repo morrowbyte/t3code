@@ -43,7 +43,7 @@ export interface ThreadAnnouncementMemory {
 
 export function deliveryFailureSnapshot(
   entries: ReadonlyArray<TimelineEntry>,
-  runId: RunId | null,
+  _runId: RunId | null,
 ) {
   let latestLocalItemOrdinal = -1;
   const deliveryFailures: Array<NonNullable<ThreadActivitySnapshot["deliveryFailures"]>[number]> =
@@ -62,8 +62,6 @@ export function deliveryFailureSnapshot(
       item.type === "error" &&
       item.status === "failed" &&
       item.failure.class === "transport_error" &&
-      runId !== null &&
-      item.runId === runId &&
       (item.id.startsWith("turn-item:steering-delivery-failure:") ||
         item.id.startsWith("turn-item:runtime-request-delivery-failure:"))
     ) {

@@ -231,10 +231,13 @@ describe("nextThreadAnnouncement", () => {
       turnItems: [...expanded.turnItems, freshFailure.item],
       visibleTurnItems: [...expanded.visibleTurnItems, freshFailure],
     };
-    const snapshot = (projection: {
-      readonly visibleTurnItems: ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
-    }) => ({
-      ...busy(),
+    const snapshot = (
+      projection: {
+        readonly visibleTurnItems: ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
+      },
+      activityRunId: RunId | null = secondRun,
+    ) => ({
+      ...(activityRunId === null ? idle(null, null) : busy("working", activityRunId)),
       ...deliveryFailureSnapshot(
         projection.visibleTurnItems.map((projectedItem) => ({
           kind: "event" as const,
@@ -242,11 +245,23 @@ describe("nextThreadAnnouncement", () => {
           createdAt: "2026-06-20T00:00:00.000Z",
           projectedItem,
         })),
-        secondRun,
+        activityRunId,
       ),
     });
     expect(speak([snapshot(initial), snapshot(expanded), snapshot(expanded)])).toEqual([]);
     expect(speak([snapshot(initial), snapshot(expanded), snapshot(live), snapshot(live)])).toEqual([
+      "Correction delivery not confirmed. Send it again if needed.",
+    ]);
+    const newerRunId = RunId.make("run-newer");
+    expect(
+      speak([
+        snapshot(initial),
+        snapshot(expanded, newerRunId),
+        snapshot(live, newerRunId),
+        snapshot(live, newerRunId),
+      ]),
+    ).toEqual(["Working", "Correction delivery not confirmed. Send it again if needed."]);
+    expect(speak([snapshot(initial, null), snapshot(live, null), snapshot(live, null)])).toEqual([
       "Correction delivery not confirmed. Send it again if needed.",
     ]);
   });
