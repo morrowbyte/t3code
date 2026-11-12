@@ -20,7 +20,6 @@ if (
   ignoreMacosTypeOfServiceEinval();
   if (command === "--crew-desktop-restore-probe") {
     try {
-      // @effect-diagnostics-next-line nodeBuiltinImport:off -- Probe bundled metadata before loading CLI services.
       const { readFile } = await import("node:fs/promises");
       const metadata = JSON.parse(
         await readFile(new URL("../../../package.json", import.meta.url), "utf8"),
