@@ -1259,7 +1259,7 @@ describe("MessagesTimeline agent messages", () => {
       },
     );
     await vi.waitFor(() =>
-      expect(screen.button("Zuklappen: Agentennachricht").getAttribute("aria-expanded")).toBe(
+      expect(screen.button(/^Zuklappen: Agentennachricht:/).getAttribute("aria-expanded")).toBe(
         "true",
       ),
     );
