@@ -34,7 +34,7 @@ cat > "$icon_path" <<'CREW_ICON'
 CREW_ICON
 # crew-icon:end
 chmod 0644 "$icon_path"
-cat > "$applications_dir/com.morrowbyte.t3code.desktop" <<EOF
+cat > "$applications_dir/t3code-morrowbyte.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Crew
@@ -44,6 +44,7 @@ Icon=$icon_path
 Terminal=false
 Categories=Development;IDE;
 MimeType=x-scheme-handler/t3code;
+StartupWMClass=com.morrowbyte.t3code
 EOF
-chmod 0644 "$applications_dir/com.morrowbyte.t3code.desktop"
+chmod 0644 "$applications_dir/t3code-morrowbyte.desktop"
 printf 'Installed user-local AppImage at %s\n' "$install_dir/T3-Code-Morrowbyte.AppImage"
