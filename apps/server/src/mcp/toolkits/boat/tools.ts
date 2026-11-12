@@ -20,6 +20,7 @@ const agentBoatAction = Schema.Union([
     ttlMinutes: BoatDefaults.fields.ttlMinutes,
   }),
   BoatAction.members[2],
+  BoatAction.members[3],
 ]);
 
 const common = {
@@ -63,7 +64,7 @@ export const BoatToolkit = Toolkit.make(
   Tool.make("boat_environment", {
     ...common,
     description:
-      "Manage optional thread-owned Boat VMs: start, prepare, exec, preview, renew, stop, resume or delete. Start, resume and renew require explicit ttlMinutes (usually 60); the VM stops at that deadline even while the agent is idle or awaiting user input. Start uses a unique requestId; reuse it after an uncertain reply. Exec runs a command for up to 20 seconds. Prepare syncs non-ignored working source, including deleted files, preserving the running dev process, dependencies and caches. Wait for idle or ready before prepare; prepare again after local edits. Preview opens the configured web or desktop target; use returned managed controls for UI interaction. Before expiry, renew only for work still needed, or preserve commits and artifacts and stop. Stop retains the disk; delete discards it. A failed VM operation is local to that VM and must not block unrelated work. Account setup belongs in Settings.",
+      "Manage optional thread-owned Boat VMs: start, prepare, exec, preview, renew, stop, resume or delete. Start, resume and renew require explicit ttlMinutes (usually 60); the VM stops at that deadline even while the agent is idle or awaiting user input. Start uses a unique requestId; reuse it after an uncertain reply. Exec normally runs for up to 20 seconds. For a finite background job, set backgroundSeconds (1–86400); it returns the provider processId and commandId in instances[].commands. Use logs or cancel with that processId to inspect or stop only that registered command. Without processId, logs and cancel target the dev server. Running commands retain their VM until they end; VM TTL, budget and explicit stop still apply. Prepare syncs non-ignored working source, including deleted files, preserving the running dev process, dependencies and caches. Wait for idle or ready before prepare; prepare again after local edits. Preview opens the configured web or desktop target; use returned managed controls for UI interaction. Before expiry, renew only for work still needed, or preserve commits and artifacts and stop. Stop retains the disk; delete discards it. A failed VM operation is local to that VM and must not block unrelated work. Account setup belongs in Settings.",
     parameters: Schema.Struct({
       request: agentBoatAction,
       environmentId: OrchestratorMcpEnvironmentTarget,
