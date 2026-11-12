@@ -26,7 +26,9 @@ import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/process";
 
 import {
+  captureIdentity,
   createDevRunnerOutput,
+  isProvenDead,
   reconcileDevRunnerOutputs,
   stopDevRunners,
 } from "@t3tools/shared/node/devRunnerControl";
@@ -408,12 +410,14 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
 
   describe("runDevRunnerWithInput", () => {
     live.each([
-      { detached: false, crashed: false },
-      { detached: true, crashed: false },
-      { detached: true, crashed: true },
-    ])("retains bounded native worker stderr after failure: %j", ({ detached, crashed }) =>
+      { detached: false, crashed: false, descendant: false },
+      { detached: true, crashed: false, descendant: false },
+      { detached: true, crashed: true, descendant: false },
+      { detached: true, crashed: true, descendant: true },
+    ])("retains bounded native worker stderr after failure: %j", (fixture) =>
       Effect.scoped(
         Effect.gen(function* () {
+          const { detached, crashed, descendant } = fixture;
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const platform = yield* HostProcess.Platform;
@@ -473,9 +477,16 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
             executable,
             `#!${process.execPath}
 const net = require("node:net");
+if (process.env.RUNNER_FIXTURE_CRASH && !process.env.RUNNER_FIXTURE_DESCENDANT) process.on("SIGTERM", () => {});
+const connect = () => {
 const socket = net.createConnection({ host: "127.0.0.1", port: Number(process.env.RUNNER_FIXTURE_PORT) }, () => socket.write("ready\\n"));
 socket.once("data", () => process.stdout.write(process.env.RUNNER_FIXTURE_CRASH ? "crash-output\\n" : Buffer.alloc(3 * 1024 * 1024, "x"), () => process.stderr.write("late-stderr-marker\\n", () => { if (!process.env.RUNNER_FIXTURE_CRASH) process.exit(7); })));
 socket.on("end", () => process.exit(0));
+};
+if (process.env.RUNNER_FIXTURE_DESCENDANT) {
+  const child = require("node:child_process").spawn(process.execPath, ["-e", 'const socket = require("node:net").createConnection({ host: "127.0.0.1", port: Number(process.env.RUNNER_FIXTURE_PORT) }, () => process.send("ready")); process.on("SIGTERM", () => {}); socket.on("end", () => process.exit(0));'], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  child.once("message", connect);
+} else connect();
 `,
           );
           yield* fs.chmod(executable, 0o700);
@@ -495,6 +506,7 @@ socket.on("end", () => process.exit(0));
                   PATH: `${root}${NodePath.delimiter}${process.env.PATH ?? ""}`,
                   T3CODE_THREAD_ID: "failed-worker-owner",
                   ...(crashed ? { RUNNER_FIXTURE_CRASH: "1" } : {}),
+                  ...(descendant ? { RUNNER_FIXTURE_DESCENDANT: "1" } : {}),
                   RUNNER_FIXTURE_PORT: String((server.address() as NodeNet.AddressInfo).port),
                 },
               }),
@@ -574,6 +586,43 @@ socket.on("end", () => process.exit(0));
             10,
           );
           assert.isFalse(yield* fs.exists(path.join(directory, "runner-retained0.log")));
+          if (crashed && platform === "linux") {
+            const input = { workspacePath: workspace, threadId: "failed-worker-owner" };
+            const receiptDirectory = path.join(workspace, ".t3", "dev-runners");
+            const [name] = yield* fs.readDirectory(receiptDirectory);
+            const receipt = decodeReceipt(
+              yield* fs.readFileString(path.join(receiptDirectory, name!)),
+            );
+            const child = yield* captureIdentity(receipt.child.pid);
+            assert.isDefined(child);
+            assert.isTrue(
+              yield* stopDevRunners({
+                ...input,
+                threadId: "foreign-owner",
+                canStop: Effect.succeed(true),
+              }),
+            );
+            assert.isFalse(yield* isProvenDead(child));
+            assert.isFalse(yield* stopDevRunners({ ...input, canStop: Effect.succeed(false) }));
+            assert.isFalse(yield* isProvenDead(child));
+            if (descendant) {
+              assert.isFalse(
+                yield* stopDevRunners({
+                  ...input,
+                  canStop: isProvenDead(child).pipe(Effect.map((dead) => !dead)),
+                }),
+              );
+              assert.isTrue(yield* isProvenDead(child));
+              assert.isTrue(yield* fs.exists(path.join(receiptDirectory, name!)));
+            }
+            const stopped = yield* stopDevRunners({ ...input, canStop: Effect.succeed(true) });
+            assert.isTrue(stopped);
+            assert.isTrue(yield* isProvenDead(child));
+            assert.deepEqual(
+              yield* fs.readDirectory(path.join(workspace, ".t3", "dev-runners")),
+              [],
+            );
+          }
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
     );

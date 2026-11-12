@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as HostProcess from "../HostProcess.ts";
@@ -36,6 +37,7 @@ const Receipt = Schema.Struct({
   owner: Schema.optionalKey(ProcessIdentity),
   launching: Schema.optionalKey(Schema.Boolean),
   child: Schema.optionalKey(ProcessIdentity),
+  recoveryMembers: Schema.optionalKey(Schema.Array(ProcessIdentity)),
   sharePort: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
   shareGeneration: Schema.optionalKey(Schema.String),
 });
@@ -236,6 +238,101 @@ const receiptProvenStopped = Effect.fn("devRunnerControl.receiptProvenStopped")(
     (yield* processGroupExited(receipt.child.pid))
   );
 });
+
+const sameIdentity = (
+  current: typeof ProcessIdentity.Type | undefined,
+  expected: typeof ProcessIdentity.Type,
+) =>
+  current?.bootId === expected.bootId &&
+  current.pid === expected.pid &&
+  current.start === expected.start;
+
+const stopOrphanedChild = Effect.fn("devRunnerControl.stopOrphanedChild")(
+  function* (
+    receipt: typeof Receipt.Type,
+    canStop: Effect.Effect<boolean>,
+    persistMembers: (members: ReadonlyArray<typeof ProcessIdentity.Type>) => Effect.Effect<boolean>,
+  ) {
+    const child = receipt.child;
+    if ((yield* HostProcess.Platform) !== "linux" || child === undefined) return false;
+    const fs = yield* FileSystem.FileSystem;
+    let members = receipt.recoveryMembers;
+    if (members === undefined) {
+      if (!sameIdentity(yield* captureIdentity(child.pid), child)) return false;
+      const captured: Array<typeof ProcessIdentity.Type> = [];
+      for (const name of yield* fs.readDirectory("/proc")) {
+        if (!/^\d+$/u.test(name)) continue;
+        const stat = yield* fs.readFileString(`/proc/${name}/stat`).pipe(
+          Effect.catchIf(
+            (error) => error.reason._tag === "NotFound",
+            () => Effect.succeed(null),
+          ),
+        );
+        if (stat === null) continue;
+        const end = stat.lastIndexOf(") ");
+        const fields =
+          end < 0
+            ? []
+            : stat
+                .slice(end + 2)
+                .trim()
+                .split(/\s+/u);
+        if (fields[2] !== String(child.pid)) continue;
+        if (fields[3] !== String(child.pid)) return false;
+        if (fields[0] === "Z" || fields[0] === "X") continue;
+        const identity = { bootId: child.bootId, pid: Number(name), start: fields[19] ?? "" };
+        if (!stat.startsWith(`${name} (`) || !validIdentity(identity)) return false;
+        captured.push(identity);
+      }
+      if (!captured.some((member) => sameIdentity(member, child))) return false;
+      if (!(yield* canStop) || !sameIdentity(yield* captureIdentity(child.pid), child))
+        return false;
+      if (!(yield* persistMembers(captured))) return false;
+      members = captured;
+    }
+    if (
+      !members.some((member) => sameIdentity(member, child)) ||
+      members.some((member) => !validIdentity(member) || member.bootId !== child.bootId)
+    )
+      return false;
+    const ownedMembers = members;
+    const signal = (pid: number, value: NodeJS.Signals) =>
+      Effect.try(() => NodeProcess.kill(pid, value)).pipe(Effect.isSuccess);
+    const signalMembers = Effect.fn("devRunnerControl.signalMembers")(function* (
+      value: NodeJS.Signals,
+    ) {
+      for (const member of ownedMembers) {
+        if (!(yield* canStop)) return false;
+        if (!sameIdentity(yield* captureIdentity(member.pid), member)) continue;
+        const stat = yield* fs.readFileString(`/proc/${member.pid}/stat`);
+        const fields = stat
+          .slice(stat.lastIndexOf(") ") + 2)
+          .trim()
+          .split(/\s+/u);
+        if (
+          fields[2] !== String(child.pid) ||
+          fields[3] !== String(child.pid) ||
+          fields[19] !== member.start
+        )
+          return false;
+        if (!(yield* canStop)) return false;
+        if (!(yield* signal(member.pid, value))) return false;
+      }
+      return true;
+    });
+    if (!(yield* signalMembers("SIGTERM"))) return false;
+    // Adopted processes have no child-handle exit event; keep their proc observation bounded.
+    const awaitExit = processGroupExited(child.pid).pipe(
+      Effect.repeat({ until: (exited) => exited, schedule: Schedule.spaced("25 millis") }),
+      Effect.timeoutOption("1500 millis"),
+      Effect.map((result) => Option.isSome(result) && result.value),
+    );
+    if (yield* awaitExit) return true;
+    if (!(yield* signalMembers("SIGKILL"))) return false;
+    return yield* awaitExit;
+  },
+  Effect.orElseSucceed(() => false),
+);
 
 // SQLite releases the cross-process mutation lock even after abrupt owner death.
 const mutateReceipt = Effect.fn("devRunnerControl.mutateReceipt")(
@@ -439,7 +536,8 @@ const recoverStoppedReceipt = Effect.fn("devRunnerControl.recoverStoppedReceipt"
     readonly recoverShare?: RecoverShare;
     readonly remove: boolean;
   }) {
-    const { receiptPath, contents, receipt } = input;
+    const { receiptPath } = input;
+    let { contents, receipt } = input;
     const fs = yield* FileSystem.FileSystem;
     return yield* Effect.scoped(
       Effect.gen(function* () {
@@ -473,13 +571,36 @@ const recoverStoppedReceipt = Effect.fn("devRunnerControl.recoverStoppedReceipt"
           },
           catch: (cause) => new DevRunnerControlError({ operation: "stop", cause }),
         }).pipe(Effect.orElseSucceed(() => false));
-        const canRecover = Effect.gen(function* () {
+        const canOwn = Effect.gen(function* () {
           return (
             (yield* current) &&
-            (yield* receiptProvenStopped(withoutShare(receipt))) &&
+            (yield* isProvenDead(receipt.owner)) &&
             (yield* input.canStop) &&
             (yield* current)
           );
+        }).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+        const persistMembers = Effect.fn("devRunnerControl.persistMembers")(function* (
+          members: ReadonlyArray<typeof ProcessIdentity.Type>,
+        ) {
+          if (!(yield* canOwn)) return false;
+          const next = { ...receipt, recoveryMembers: members };
+          const nextContents = encodeJson(next);
+          if (new TextEncoder().encode(nextContents).byteLength > 4096) return false;
+          return yield* Effect.try(() => {
+            NodeFS.writeFileSync(receiptPath, nextContents, { mode: 0o600 });
+            receipt = next;
+            contents = nextContents;
+            return true;
+          }).pipe(Effect.orElseSucceed(() => false));
+        });
+        if (!(yield* canOwn)) return undefined;
+        if (
+          !(yield* receiptProvenStopped(withoutShare(receipt))) &&
+          !(yield* stopOrphanedChild(receipt, canOwn, persistMembers))
+        )
+          return undefined;
+        const canRecover = Effect.gen(function* () {
+          return (yield* canOwn) && (yield* receiptProvenStopped(withoutShare(receipt)));
         }).pipe(Effect.provideService(FileSystem.FileSystem, fs));
         if (!(yield* canRecover)) return undefined;
         if (receipt.sharePort !== undefined) {
@@ -570,27 +691,19 @@ export const registerDevRunner = Effect.fn("devRunnerControl.register")(function
         stopRequested: Effect.never,
         confirmStopped: (_stopped: boolean) => Effect.succeed(false),
       };
-    if (!(yield* receiptProvenStopped(withoutShare(existing.value))))
+    previous = yield* recoverStoppedReceipt({
+      receiptPath,
+      contents,
+      receipt: existing.value,
+      canStop: Effect.succeed(true),
+      ...(input.recoverShare === undefined ? {} : { recoverShare: input.recoverShare }),
+      remove: false,
+    });
+    if (previous === undefined)
       return yield* new DevRunnerControlError({
         operation: "register",
-        cause: "Existing runner is not proven stopped",
+        cause: "Existing runner or tailnet cleanup could not be confirmed",
       });
-    previous = contents;
-    if (existing.value.sharePort !== undefined) {
-      previous = yield* recoverStoppedReceipt({
-        receiptPath,
-        contents,
-        receipt: existing.value,
-        canStop: Effect.succeed(true),
-        ...(input.recoverShare === undefined ? {} : { recoverShare: input.recoverShare }),
-        remove: false,
-      });
-      if (previous === undefined)
-        return yield* new DevRunnerControlError({
-          operation: "register",
-          cause: "Tailnet cleanup could not be confirmed",
-        });
-    }
   }
   const token = NodeCrypto.randomBytes(32).toString("hex");
   const sockets = new Set<NodeNet.Socket>();
