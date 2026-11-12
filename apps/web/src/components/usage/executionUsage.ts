@@ -1,15 +1,17 @@
 import type { ExecutionUsageEntry } from "@t3tools/contracts";
 
-export function summarizeExecutions(entries: readonly ExecutionUsageEntry[]) {
+export function isExecutionEstimatePartial(entry: ExecutionUsageEntry) {
+  return entry.partial || entry.unmeasuredSubagents || entry.delegatedChildren > 0;
+}
+
+export function summarizeExecutions(entries: readonly ExecutionUsageEntry[], truncated = false) {
   const known = entries.filter((entry) => entry.estimatedCostUsd !== null);
   return {
     estimatedCostUsd:
       known.length > 0
         ? known.reduce((sum, entry) => sum + (entry.estimatedCostUsd ?? 0), 0)
         : null,
-    incomplete: entries.some(
-      (entry) => entry.partial || entry.unmeasuredSubagents || entry.delegatedChildren > 0,
-    ),
+    incomplete: truncated || entries.some(isExecutionEstimatePartial),
     unknown: entries.filter((entry) => entry.estimatedCostUsd === null).length,
   };
 }

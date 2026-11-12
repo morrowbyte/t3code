@@ -15,6 +15,7 @@ import { Button } from "../ui/button";
 import {
   executionCostLabel,
   executionDurationLabel,
+  isExecutionEstimatePartial,
   peakExecutionCost,
   samePromptExecutions,
   summarizeExecutions,
@@ -132,7 +133,7 @@ function ExecutionEnvironment({
   }, [allowed, connected, connection, revision]);
   const [comparisonKey, setComparisonKey] = useState("");
   const entries = data?.entries ?? [];
-  const summary = summarizeExecutions(entries);
+  const summary = summarizeExecutions(entries, data?.truncated ?? false);
   const comparisons = samePromptExecutions(entries, comparisonKey);
   const projectOptions = new Map(projects.map((project) => [project.id as string, project.title]));
   if (search.project && !projectOptions.has(search.project))
@@ -258,7 +259,7 @@ function ExecutionEnvironment({
                       Main run · {entry.status} · {executionDurationLabel(entry.durationMs)} ·{" "}
                       {executionCostLabel(
                         entry.estimatedCostUsd,
-                        entry.partial || entry.unmeasuredSubagents || entry.delegatedChildren > 0,
+                        isExecutionEstimatePartial(entry),
                       )}
                     </div>
                     <div className="text-xs text-muted-foreground">
@@ -294,7 +295,10 @@ function ExecutionEnvironment({
                         {entry.prompt || entry.threadTitle}
                       </span>
                       <span className="text-sm tabular-nums">
-                        {executionCostLabel(entry.estimatedCostUsd, entry.partial)}
+                        {executionCostLabel(
+                          entry.estimatedCostUsd,
+                          isExecutionEstimatePartial(entry),
+                        )}
                       </span>
                       <span className="min-w-0 truncate text-xs text-muted-foreground">
                         {entry.threadTitle} · {entry.modelSelection.model}
@@ -338,6 +342,9 @@ function ExecutionEnvironment({
                         : ""}
                       {entry.unmeasuredSubagents
                         ? " Native or remote child costs may be missing."
+                        : ""}
+                      {entry.delegatedChildren > 0
+                        ? ` ${entry.delegatedChildren} delegated children; their costs are excluded from this main-run estimate.`
                         : ""}
                     </p>
                     {entry.pricing.map((pricing) => (
@@ -496,7 +503,7 @@ function ExecutionChart({ entries }: { entries: readonly ExecutionUsageEntry[] }
       >
         {points.map((entry, index) => (
           <g key={entry.runId}>
-            <title>{`${entry.requestedAt} · ${entry.threadTitle}: ${executionCostLabel(entry.estimatedCostUsd, entry.partial)}`}</title>
+            <title>{`${entry.requestedAt} · ${entry.threadTitle}: ${executionCostLabel(entry.estimatedCostUsd, isExecutionEstimatePartial(entry))}`}</title>
             {entry.estimatedCostUsd === null ? (
               <text
                 x={((index + 0.5) * 600) / points.length}
@@ -514,7 +521,7 @@ function ExecutionChart({ entries }: { entries: readonly ExecutionUsageEntry[] }
                 width={18}
                 height={Math.max(1, (entry.estimatedCostUsd / peak) * 90)}
                 fill="currentColor"
-                opacity={entry.partial ? 0.45 : 0.8}
+                opacity={isExecutionEstimatePartial(entry) ? 0.45 : 0.8}
               />
             )}
           </g>
