@@ -24,6 +24,7 @@ import {
 } from "../lib/composerImages";
 import { contextImageGallery } from "../lib/contextImageGallery";
 import { FilePreviewModal } from "./FilePreviewModal";
+import type { FilePreviewItem } from "./FilePreviewModal.types";
 import { VideoPreviewModal } from "./VideoPreviewModal";
 import { ComposerContextAttachment } from "./ComposerContextAttachment";
 import { AppText as Text } from "./ui/AppText";
@@ -89,6 +90,7 @@ export function ComposerContextSheet(props: {
   readonly projectId?: ProjectId;
   readonly records?: ReadonlyArray<ComposerContextRecord>;
   readonly attachments?: ReadonlyArray<DraftComposerAttachment>;
+  readonly getImageAnnotation?: (source: FilePreviewItem) => FilePreviewItem["onApplyAnnotation"];
 }) {
   const openPullRequest = useOpenPullRequest({
     context:
@@ -152,17 +154,24 @@ export function ComposerContextSheet(props: {
           ? { uri: inlineUri }
           : remoteSource;
       if (source) {
+        const preview: FilePreviewItem = {
+          kind: record.kind === "image" || previewKind === "image" ? "image" : "pdf",
+          name: record.name,
+          ...source,
+        };
         return (
           <FilePreviewModal
             source={{
-              kind: record.kind === "image" || previewKind === "image" ? "image" : "pdf",
-              name: record.name,
-              ...source,
+              ...preview,
+              onApplyAnnotation: props.getImageAnnotation?.(preview),
               gallery: contextImageGallery(
                 props.records ?? [],
                 props.attachments ?? [],
                 props.environmentId,
-              ),
+              ).map((item) => ({
+                ...item,
+                onApplyAnnotation: props.getImageAnnotation?.(item),
+              })),
               actionsSource: { name: record.name, mimeType, ...source },
             }}
             onRequestClose={props.onClose}

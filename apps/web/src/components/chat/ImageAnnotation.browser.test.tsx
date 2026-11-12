@@ -1,17 +1,15 @@
 import "../../index.css";
 import type { CDPSession } from "@vitest/browser-playwright";
-import { act, useRef } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { useRef } from "react";
 import { cdp, userEvent } from "vite-plus/test/browser";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { act, render } from "../../../test/render";
 import { ImageAnnotationEditor } from "./ImageAnnotationEditor";
 import { exportAnnotatedImage, loadAnnotationImage } from "./ImageAnnotation";
 import { sendImageAnnotation } from "./ImageAnnotationSend";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
 import { ZoomableImage, type ZoomableImageHandle } from "./ZoomableImage";
 
-let root: Root;
-let container: HTMLDivElement;
 function original() {
   const canvas = document.createElement("canvas");
   canvas.width = 160;
@@ -31,21 +29,10 @@ async function pixel(file: Blob, x: number, y: number) {
   image.close();
   return [...ctx.getImageData(x, y, 1, 1).data];
 }
-const button = (name: string) =>
-  [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+const button = (container: HTMLElement, name: string) =>
+  [...container.querySelectorAll<HTMLButtonElement>("button")].find(
     (entry) => (entry.getAttribute("aria-label") ?? entry.textContent) === name,
   )!;
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(() => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
 
 describe("image annotation", () => {
   it("maps trusted touch strokes through the existing zoom and exports them in original image space", async () => {
@@ -74,15 +61,23 @@ describe("image annotation", () => {
         />
       );
     }
-    await act(() => root.render(<TouchEditor />));
+    // The editor has no navigation context.
+    await using screen = await render(<TouchEditor />, { router: false });
+    const container = screen.container;
     const canvas = container.querySelector("canvas")!;
     await vi.waitFor(() => expect(canvas.width).toBe(160));
     const session: CDPSession = cdp();
     const drag = async (from: { x: number; y: number }, to: { x: number; y: number }) => {
-      await session.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+      await session.send("Emulation.setTouchEmulationEnabled", {
+        enabled: true,
+        maxTouchPoints: 1,
+      });
       try {
         await act(async () => {
-          await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [from] });
+          await session.send("Input.dispatchTouchEvent", {
+            type: "touchStart",
+            touchPoints: [from],
+          });
           await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [to] });
           await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
         });
@@ -99,23 +94,23 @@ describe("image annotation", () => {
       });
       await drag(touch(0.25), touch(0.75));
     };
-    await act(() => userEvent.click(button("Thick stroke")));
+    await userEvent.click(button(container, "Thick stroke"));
     const beforeWidth = canvas.getBoundingClientRect().width;
     await stroke();
     expect(canvas.getContext("2d")!.getImageData(80, 50, 1, 1).data[3]).toBeGreaterThan(0);
-    await act(() => userEvent.click(button("Undo mark")));
-    await act(() => userEvent.click(button("Zoom in")));
+    await userEvent.click(button(container, "Undo mark"));
+    await userEvent.click(button(container, "Zoom in"));
     expect(canvas.getBoundingClientRect().width).toBeGreaterThan(beforeWidth);
     await stroke();
-    await act(() => userEvent.click(button("Send annotation")));
+    await userEvent.click(button(container, "Send annotation"));
     await vi.waitFor(() => expect(onSend).toHaveBeenCalledOnce());
     const marked = await pixel(onSend.mock.calls[0]![0], 80, 50);
     expect(marked[1]).toBeLessThan(200);
     expect(await pixel(onSend.mock.calls[0]![0], 10, 90)).toEqual([255, 255, 255, 255]);
 
     container.style.setProperty("--media-width", "120px");
-    await act(() => userEvent.click(button("Move")));
-    expect(button("Move").getAttribute("aria-pressed")).toBe("true");
+    await userEvent.click(button(container, "Move"));
+    expect(button(container, "Move").getAttribute("aria-pressed")).toBe("true");
     const marks = canvas.getContext("2d")!.getImageData(0, 0, 160, 100).data;
     const viewer = container.querySelector<HTMLElement>('[role="region"]')!;
     await vi.waitFor(() => expect(viewer.scrollWidth).toBeGreaterThan(viewer.clientWidth));
@@ -127,8 +122,8 @@ describe("image annotation", () => {
     await drag({ x, y }, { x: x - 60, y });
     expect(viewer.scrollLeft).toBeGreaterThan(beforeScroll);
     expect(canvas.getContext("2d")!.getImageData(0, 0, 160, 100).data).toEqual(marks);
-    await act(() => userEvent.click(button("Draw")));
-    expect(button("Draw").getAttribute("aria-pressed")).toBe("true");
+    await userEvent.click(button(container, "Draw"));
+    expect(button(container, "Draw").getAttribute("aria-pressed")).toBe("true");
     expect(canvas.style.pointerEvents).toBe("");
   });
 
@@ -160,46 +155,47 @@ describe("image annotation", () => {
         }),
     );
     const onCancel = vi.fn();
-    await act(() =>
-      root.render(
-        <ImageAnnotationEditor
-          src={src}
-          name="shot.png"
-          renderImage={(overlay) => (
-            <div style={{ position: "relative", width: 160, height: 100 }}>
-              <img src={src} alt="Original" />
-              <div style={{ position: "absolute", inset: 0 }}>{overlay}</div>
-            </div>
-          )}
-          onZoom={() => {}}
-          onFit={() => {}}
-          onCancel={onCancel}
-          onSend={onSend}
-        />,
-      ),
+    // The editor has no navigation context.
+    await using screen = await render(
+      <ImageAnnotationEditor
+        src={src}
+        name="shot.png"
+        renderImage={(overlay) => (
+          <div style={{ position: "relative", width: 160, height: 100 }}>
+            <img src={src} alt="Original" />
+            <div style={{ position: "absolute", inset: 0 }}>{overlay}</div>
+          </div>
+        )}
+        onZoom={() => {}}
+        onFit={() => {}}
+        onCancel={onCancel}
+        onSend={onSend}
+      />,
+      { router: false },
     );
+    const container = screen.container;
     const canvas = container.querySelector("canvas")!;
     await vi.waitFor(() => expect(canvas.width).toBe(160));
-    await act(() => userEvent.click(canvas));
-    expect(button("Send annotation").disabled).toBe(false);
-    await act(() => userEvent.click(button("Undo mark")));
-    expect(button("Send annotation").disabled).toBe(true);
+    await userEvent.click(canvas, { position: { x: 80.5, y: 50.5 } });
+    expect(button(container, "Send annotation").disabled).toBe(false);
+    await userEvent.click(button(container, "Undo mark"));
+    expect(button(container, "Send annotation").disabled).toBe(true);
     expect([...canvas.getContext("2d")!.getImageData(80, 50, 1, 1).data]).toEqual([0, 0, 0, 0]);
-    await act(() => userEvent.click(canvas));
-    await act(() => userEvent.click(button("Clear marks")));
-    expect(button("Send annotation").disabled).toBe(true);
-    await act(() => userEvent.click(button("Cancel")));
+    await userEvent.click(canvas, { position: { x: 80.5, y: 50.5 } });
+    await userEvent.click(button(container, "Clear marks"));
+    expect(button(container, "Send annotation").disabled).toBe(true);
+    await userEvent.click(button(container, "Cancel"));
     expect(onCancel).toHaveBeenCalledOnce();
     expect(onSend).not.toHaveBeenCalled();
-    await act(() => userEvent.click(canvas));
-    await act(() => userEvent.type(container.querySelector("textarea")!, "Please check this."));
-    await act(() => userEvent.dblClick(button("Send annotation")));
+    await userEvent.click(canvas, { position: { x: 80.5, y: 50.5 } });
+    await userEvent.type(container.querySelector("textarea")!, "Please check this.");
+    await userEvent.dblClick(button(container, "Send annotation"));
     await vi.waitFor(() => expect(onSend).toHaveBeenCalledOnce());
     expect(onSend.mock.calls[0]?.[1]).toBe("Please check this.");
-    expect(button("Sending…").disabled).toBe(true);
+    expect(button(container, "Sending…").disabled).toBe(true);
     await act(() => resolve(false));
     expect(container.querySelector("textarea")?.value).toBe("Please check this.");
-    expect(button("Send annotation").disabled).toBe(false);
+    expect(button(container, "Send annotation").disabled).toBe(false);
     const marked = await pixel(onSend.mock.calls[0]![0], 80, 50);
     expect(marked[0]).toBeGreaterThan(marked[1]!);
     expect(marked[1]).toBeLessThan(255);

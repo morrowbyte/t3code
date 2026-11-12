@@ -3,6 +3,8 @@ import { requireNativeModule } from "expo";
 import { useEffect, useEffectEvent, useId } from "react";
 
 import type { ResolvedFilePreviewSource } from "./FilePreviewModal.types";
+import type { SendImageAnnotation } from "../lib/imageAnnotation";
+import { MediaImagePreview } from "./MediaImagePreview";
 
 const NativeControls = requireNativeModule<{
   presentFile(
@@ -67,9 +69,15 @@ function NativeFilePreview(props: {
 }
 
 export function FilePreview(props: {
+  readonly onSendAnnotation?: SendImageAnnotation;
   readonly source: ResolvedFilePreviewSource;
   readonly onRequestClose: () => void;
   readonly onOpenError?: (error: unknown) => void;
 }) {
+  if (
+    props.source.kind === "image" &&
+    (props.source.actionsSource || props.source.onApplyAnnotation || props.onSendAnnotation)
+  )
+    return <MediaImagePreview {...props} />;
   return <NativeFilePreview {...props} />;
 }

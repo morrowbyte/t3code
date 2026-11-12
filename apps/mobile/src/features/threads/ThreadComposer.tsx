@@ -54,6 +54,7 @@ import { composerImageGallery } from "../../lib/composerImageGallery";
 import { applyComposerImageAnnotation } from "../../state/apply-image-annotation";
 import { filePreviewGallery, filePreviewKey } from "../../lib/filePreviewGallery";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
+import type { FilePreviewItem } from "../../components/FilePreviewModal.types";
 import {
   composerAttachmentUploadBlockReason,
   composerAttachmentsStillUploading,
@@ -669,37 +670,36 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- disposes the pending settings sheet presentation and focus restore on unmount
   useEffect(() => () => disposeSettingsSheetPresentation(), []);
 
+  const getImageAnnotation = (item: FilePreviewItem) => {
+    const attachment =
+      "attachment" in item
+        ? item.attachment
+        : draftAttachments.find(
+            (entry) =>
+              entry.type === "image" &&
+              "uri" in item &&
+              (entry.dataUrl ?? entry.previewUri) === item.uri,
+          );
+    if (!attachment) return undefined;
+    return ((image, text, signal) =>
+      applyComposerImageAnnotation({
+        draftKey: composerDraftKey,
+        attachmentId: attachment.id,
+        image,
+        text,
+        signal,
+        isCurrent: () =>
+          navigation.isFocused() &&
+          annotationTarget.current.key === composerDraftKey &&
+          !annotationTarget.current.locked,
+      })) satisfies SendImageAnnotation;
+  };
+
   const onPressPreview = (source: FilePreviewSource) => {
-    const gallery = composerImageGallery(draftAttachments).map((item) => {
-      const attachment =
-        "attachment" in item
-          ? item.attachment
-          : draftAttachments.find(
-              (entry) =>
-                entry.type === "image" &&
-                "uri" in item &&
-                (entry.dataUrl ?? entry.previewUri) === item.uri,
-            );
-      return {
-        ...item,
-        ...(attachment
-          ? {
-              onApplyAnnotation: ((image, text, signal) =>
-                applyComposerImageAnnotation({
-                  draftKey: composerDraftKey,
-                  attachmentId: attachment.id,
-                  image,
-                  text,
-                  signal,
-                  isCurrent: () =>
-                    navigation.isFocused() &&
-                    annotationTarget.current.key === composerDraftKey &&
-                    !annotationTarget.current.locked,
-                })) satisfies SendImageAnnotation,
-            }
-          : {}),
-      };
-    });
+    const gallery = composerImageGallery(draftAttachments).map((item) => ({
+      ...item,
+      onApplyAnnotation: getImageAnnotation(item),
+    }));
     const selected = {
       ...source,
       gallery,
@@ -1146,6 +1146,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     }
                   }}
                   onOpenAttachment={openDraftDocument}
+                  getImageAnnotation={getImageAnnotation}
                   chipsInert={!isExpanded}
                   onInertChipPress={() => inputRef.current?.focus()}
                   ref={inputRef}

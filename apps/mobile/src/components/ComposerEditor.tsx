@@ -29,6 +29,7 @@ import { mobilePreferencesAtom } from "../state/preferences";
 import { useOpenLinkedThread } from "../features/threads/useOpenLinkedThread";
 import { useLinkedEnvironments } from "../state/peerLinks";
 import { ComposerContextSheet } from "./ComposerContextSheet";
+import type { FilePreviewItem } from "./FilePreviewModal.types";
 import { AppText as Text } from "./ui/AppText";
 import {
   composerDocumentAttachment,
@@ -42,6 +43,7 @@ export type ComposerEditorProps = NativeComposerEditorProps & {
   readonly environmentId?: EnvironmentId;
   readonly onOpenMention?: (path: string) => void;
   readonly onOpenAttachment?: (attachment: ComposerDocumentAttachment) => void;
+  readonly getImageAnnotation?: (source: FilePreviewItem) => FilePreviewItem["onApplyAnnotation"];
   readonly chipsInert?: boolean;
   readonly onInertChipPress?: () => void;
 };
@@ -52,6 +54,7 @@ export function ComposerEditor({
   environmentId,
   onOpenMention,
   onOpenAttachment,
+  getImageAnnotation,
   chipsInert,
   onInertChipPress,
   ...props
@@ -251,6 +254,7 @@ export function ComposerEditor({
           projectId={draft.project?.projectId}
           records={draft.context?.records}
           attachments={draft.attachments}
+          getImageAnnotation={getImageAnnotation}
           onClose={() => setSelected(null)}
           onRemove={
             props.readOnly || props.editable === false
