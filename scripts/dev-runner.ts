@@ -750,6 +750,12 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   const workspacePath = yield* resolveTaskWorkspace(yield* HostProcess.WorkingDirectory);
   const hostEnvironment = yield* HostProcess.Environment;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const worktreeHome = yield* resolveWorktreeT3Home(yield* HostProcess.WorkingDirectory);
+  const resolvedT3Home =
+    (input.t3Home?.trim() || undefined) ??
+    worktreeHome ??
+    (hostEnvironment.T3CODE_DEV_HOME?.trim() || undefined);
+  const effectiveT3Home = yield* resolveBaseDir(resolvedT3Home);
   const ownerThreadId = hostEnvironment.T3CODE_THREAD_ID;
   const registration =
     !input.dryRun && ownerThreadId && workspacePath
@@ -765,7 +771,7 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
             input.mode,
             portOffset,
             devInstance,
-            input.t3Home,
+            effectiveT3Home,
             input.host,
             input.port,
             input.devUrl?.href,
@@ -774,7 +780,6 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
             input.runArgs,
             hostEnvironment.T3CODE_PORT,
             hostEnvironment.PORT,
-            hostEnvironment.T3CODE_HOME,
             input.logWebSocketEvents,
             input.autoBootstrapProjectFromCwd,
             input.browser,
@@ -807,17 +812,6 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
     checkPortAvailability: makeDefaultCheckPortAvailability(input.host),
   });
 
-  // A dev server started inside a worktree defaults to that worktree's own
-  // (gitignored) `.t3` — see @t3tools/shared/devHome for why this must
-  // outrank an ambient T3CODE_HOME. `--home-dir` still wins.
-  const worktreeHome = yield* resolveWorktreeT3Home(yield* HostProcess.WorkingDirectory);
-  // Trim before choosing: `--home-dir ""` is not a selection, and treating it
-  // as one would skip the worktree default and land on the shared home —
-  // exactly the outcome this precedence exists to prevent.
-  const resolvedT3Home =
-    (input.t3Home?.trim() || undefined) ??
-    worktreeHome ??
-    (hostEnvironment.T3CODE_DEV_HOME?.trim() || undefined);
   const env = yield* createDevRunnerEnv({
     mode: input.mode,
     baseEnv: hostEnvironment,

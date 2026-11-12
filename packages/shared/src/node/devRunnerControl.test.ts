@@ -11,7 +11,14 @@ import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
 
 import * as HostProcess from "../HostProcess.ts";
-import { DevRunnerControlError, registerDevRunner, stopDevRunners } from "./devRunnerControl.ts";
+import {
+  captureIdentity,
+  createDevRunnerOutput,
+  DevRunnerControlError,
+  reconcileDevRunnerOutputs,
+  registerDevRunner,
+  stopDevRunners,
+} from "./devRunnerControl.ts";
 import * as DevShareOwnership from "./devShareOwnership.ts";
 it.layer(NodeServices.layer, { excludeTestServices: true })("task dev-runner reuse", (it) => {
   it.effect("reuses identical task runners without retaining another control server", () =>
@@ -52,6 +59,56 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("task dev-runner reu
 });
 
 it.layer(NodeServices.layer, { excludeTestServices: true })("task dev-runner control", (it) => {
+  it.effect("bounds unverified output owners while preserving active and foreign logs", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const workspacePath = yield* fs.makeTempDirectoryScoped();
+        const input = { workspacePath, threadId: "owner" };
+        const outputs = yield* Effect.forEach(
+          Array.from({ length: 8 }, (_, index) => index),
+          (index) =>
+            createDevRunnerOutput({
+              ...input,
+              threadId: index === 0 ? "foreign-owner" : input.threadId,
+            }).pipe(Effect.provideService(HostProcess.Platform, "darwin")),
+        );
+        for (const [index, output] of outputs.entries()) {
+          yield* fs.writeFileString(output.path, `active output ${index}`);
+          yield* Effect.addFinalizer(() => output.remove.pipe(Effect.orDie));
+        }
+        yield* reconcileDevRunnerOutputs(input);
+        const before = yield* fs.readDirectory(
+          path.join(workspacePath, ".t3", "dev-runner-output"),
+        );
+        const result = yield* createDevRunnerOutput(input).pipe(
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.exit,
+        );
+        assert.isTrue(Exit.isFailure(result));
+        assert.deepEqual(
+          yield* fs.readDirectory(path.join(workspacePath, ".t3", "dev-runner-output")),
+          before,
+        );
+        for (const [index, output] of outputs.entries())
+          assert.strictEqual(yield* fs.readFileString(output.path), `active output ${index}`);
+        if (yield* captureIdentity(process.pid)) {
+          const identified = yield* createDevRunnerOutput(input);
+          yield* identified.remove;
+        }
+        const released = outputs[1]!;
+        yield* released.fail;
+        const replacement = yield* createDevRunnerOutput(input).pipe(
+          Effect.provideService(HostProcess.Platform, "darwin"),
+        );
+        yield* replacement.remove;
+        assert.strictEqual(yield* fs.readFileString(released.path), "active output 1");
+        assert.strictEqual(yield* fs.readFileString(outputs[0]!.path), "active output 0");
+      }),
+    ),
+  );
+
   it.effect.each([
     "takeover",
     "takeover start",

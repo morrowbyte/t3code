@@ -43,7 +43,11 @@ import {
 
 const emptyConfigLayer = ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }));
 const decodeReady = Schema.decodeUnknownSync(
-  Schema.Struct({ reused: Schema.Boolean, outputPath: Schema.String }),
+  Schema.Struct({
+    reused: Schema.Boolean,
+    outputPath: Schema.String,
+    connection: Schema.Struct({ baseDir: Schema.String }),
+  }),
 );
 const decodeFailure = Schema.decodeUnknownSync(
   Schema.Struct({ error: Schema.String, outputPath: Schema.String }),
@@ -609,7 +613,10 @@ if (process.env.RUNNER_FIXTURE_DESCENDANT) {
               assert.isFalse(
                 yield* stopDevRunners({
                   ...input,
-                  canStop: isProvenDead(child).pipe(Effect.map((dead) => !dead)),
+                  canStop: isProvenDead(child).pipe(
+                    Effect.map((dead) => !dead),
+                    Effect.provideService(FileSystem.FileSystem, fs),
+                  ),
                 }),
               );
               assert.isTrue(yield* isProvenDead(child));
@@ -654,18 +661,30 @@ if (process.env.RUNNER_FIXTURE_DESCENDANT) {
         ),
     );
 
-    live.each(["SIGINT", "SIGTERM"] as const)(
-      "retains the real scoped runner and controller across caller %s until settlement",
-      (signal) =>
+    live.each([
+      { signal: "SIGINT", home: "explicit" },
+      { signal: "SIGTERM", home: "explicit" },
+      { signal: "SIGINT", home: "environment" },
+      { signal: "SIGINT", home: "worktree" },
+    ] as const)(
+      "retains the real scoped runner and controller across caller interruption: %j",
+      (fixture) =>
         Effect.scoped(
           Effect.gen(function* () {
+            const { signal, home } = fixture;
             const fs = yield* FileSystem.FileSystem;
             const path = yield* Path.Path;
             const platform = yield* HostProcess.Platform;
             const root = yield* fs.makeTempDirectoryScoped();
             const workspacePath = path.join(root, "workspace");
             const cwd = path.join(workspacePath, "src");
-            yield* fs.makeDirectory(path.join(workspacePath, ".git"), { recursive: true });
+            yield* fs.makeDirectory(workspacePath, { recursive: true });
+            if (home === "worktree")
+              yield* fs.writeFileString(
+                path.join(workspacePath, ".git"),
+                "gitdir: /repo/.git/worktrees/task\n",
+              );
+            else yield* fs.makeDirectory(path.join(workspacePath, ".git"));
             yield* fs.makeDirectory(cwd);
             const fixtureStarted = yield* Deferred.make<number>();
             const fixtureClosed = yield* Deferred.make<void>();
@@ -715,15 +734,14 @@ process.on("SIGTERM", () => socket.end());
                 path.join(root, "vp.cmd"),
                 `@"${process.execPath}" "%~dp0runner-fixture.cjs" %*\r\n`,
               );
-            const launch = Effect.fn("test.launchTaskRunner")(function* () {
+            const launch = Effect.fn("test.launchTaskRunner")(function* (selection = "a") {
               const child = yield* Effect.acquireRelease(
                 Effect.sync(() =>
                   NodeChildProcess.fork(
                     path.join(import.meta.dirname, "dev-runner.ts"),
                     [
                       "dev:server",
-                      "--home-dir",
-                      path.join(root, "state"),
+                      ...(home === "explicit" ? ["--home-dir", path.join(root, "state")] : []),
                       "--port",
                       "13773",
                       "--no-seed",
@@ -735,6 +753,11 @@ process.on("SIGTERM", () => socket.end());
                         ...process.env,
                         PATH: `${root}${NodePath.delimiter}${process.env.PATH ?? ""}`,
                         T3CODE_THREAD_ID: "real-runner-owner",
+                        T3CODE_DEV_HOME: path.join(root, `dev-home-${selection}`),
+                        T3CODE_HOME: path.join(
+                          root,
+                          home === "environment" ? "ignored-home" : `ignored-home-${selection}`,
+                        ),
                         RUNNER_FIXTURE_PORT: String((server.address() as NodeNet.AddressInfo).port),
                       },
                       stdio: ["ignore", "ignore", "ignore", "ipc"],
@@ -760,6 +783,12 @@ process.on("SIGTERM", () => socket.end());
             });
             const first = yield* launch();
             assert.isFalse(first.ready.reused);
+            assert.strictEqual(
+              first.ready.connection.baseDir,
+              home === "worktree"
+                ? path.join(workspacePath, ".t3")
+                : path.join(root, home === "explicit" ? "state" : "dev-home-a"),
+            );
             const childPid = yield* Deferred.await(fixtureStarted);
             const directory = path.join(workspacePath, ".t3", "dev-runners");
             const [receiptName] = yield* fs.readDirectory(directory);
@@ -778,6 +807,19 @@ process.on("SIGTERM", () => socket.end());
             assert.strictEqual(second.ready.outputPath, first.ready.outputPath);
             assert.deepEqual(yield* Effect.promise(() => second.exit), [0, null]);
             assert.strictEqual(starts, 1);
+            const changed = yield* launch("b");
+            assert.strictEqual(changed.ready.reused, home !== "environment");
+            assert.strictEqual(
+              changed.ready.connection.baseDir,
+              home === "environment"
+                ? path.join(root, "dev-home-b")
+                : first.ready.connection.baseDir,
+            );
+            if (home === "environment") {
+              assert.notStrictEqual(changed.ready.outputPath, first.ready.outputPath);
+              changed.child.kill(signal);
+              yield* Effect.promise(() => changed.exit);
+            } else assert.deepEqual(yield* Effect.promise(() => changed.exit), [0, null]);
             assert.isFalse(
               yield* stopDevRunners({
                 threadId: "real-runner-owner",
