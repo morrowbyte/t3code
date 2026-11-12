@@ -47,13 +47,14 @@ it.effect.each(
       [true, "settled only"],
       [false, "during continuation"],
       [false, "rejected while running"],
+      [true, "rejected while running"],
     ] as const
   ).map(([mailbox, timing]) => ({
     mailbox,
     timing,
     testName:
       timing === "rejected while running"
-        ? "reports a correction rejected while running"
+        ? `reports a ${mailbox ? "mailbox notification" : "correction"} rejected while running`
         : `delivers ${mailbox ? "mailbox notification" : "steering"} when completion wins ${timing}`,
   })),
 )("$testName", ({ mailbox, timing }) =>
@@ -269,21 +270,25 @@ it.effect.each(
             ],
           });
         }
+        const attachments =
+          mailbox && timing === "rejected while running"
+            ? []
+            : [
+                {
+                  type: "image" as const,
+                  id: "steering-screenshot",
+                  name: "image.png",
+                  mimeType: "image/png",
+                  sizeBytes: 10,
+                },
+              ];
         const dispatchSteer = orchestrator.dispatch({
           type: "message.dispatch",
           commandId: CommandId.make("steer"),
           threadId,
           messageId,
           text: "fix the popover",
-          attachments: [
-            {
-              type: "image",
-              id: "steering-screenshot",
-              name: "image.png",
-              mimeType: "image/png",
-              sizeBytes: 10,
-            },
-          ],
+          attachments,
           dispatchMode: mailbox
             ? { type: "queue_after_active" }
             : { type: "steer_active", targetRunId: first.runId },
@@ -323,15 +328,27 @@ it.effect.each(
           assert.equal(failedDelivery.runs[0]?.status, "running");
           const errors = failedDelivery.turnItems.filter((item) => item.type === "error");
           assert.lengthOf(errors, 1);
-          assert.equal(errors[0]?.title, "Correction delivery not confirmed");
+          assert.equal(
+            errors[0]?.title,
+            mailbox ? "Result delivery not confirmed" : "Correction delivery not confirmed",
+          );
           assert.isNull(errors[0]?.parentItemId);
           assert.include(String(errors[0]?.id), String(messageId));
           assert.equal(
-            failedDelivery.turnItems.find(
-              (item) => item.type === "user_message" && item.messageId === messageId,
+            failedDelivery.turnItems.find((item) =>
+              mailbox
+                ? item.type === "notification"
+                : item.type === "user_message" && item.messageId === messageId,
             )?.status,
             "failed",
           );
+          if (mailbox) {
+            assert.equal(failedDelivery.subagents[0]?.completionDelivery?.state, "claimed");
+            assert.equal(
+              failedDelivery.runs[0]?.delegatedCompletion?.delivery?.messageId,
+              messageId,
+            );
+          }
           yield* orchestrator.dispatch({
             type: "message.steering.settle",
             commandId: CommandId.make("repeat-delivery-failure"),
@@ -344,7 +361,7 @@ it.effect.each(
           assert.equal(repeated.turnItems.filter((item) => item.type === "error").length, 1);
           yield* worker.drain();
           assert.equal(steerCalls, 5);
-          return;
+          if (!mailbox) return;
         }
         if (timing === "during continuation") {
           const projection = yield* orchestrator.getThreadProjection(threadId);
@@ -433,6 +450,10 @@ it.effect.each(
               delivered.turnItems.filter((item) => item.type === "notification").length,
               1,
             );
+            assert.equal(
+              delivered.turnItems.find((item) => item.type === "notification")?.status,
+              "completed",
+            );
             yield* orchestrator.dispatch({
               type: "notification.delivery.accept",
               commandId: CommandId.make("duplicate-acceptance"),
@@ -453,20 +474,31 @@ it.effect.each(
           }
           return;
         }
+        if (mailbox && timing === "rejected while running") {
+          const requeued = yield* watch(
+            (event) => event.type === "run.created" && event.payload.userMessageId === messageId,
+          );
+          const resumed = yield* watch(
+            (event) =>
+              event.type === "provider-turn.updated" &&
+              event.payload.runAttemptId !== first.attemptId &&
+              event.payload.status === "running",
+          );
+          yield* orchestrator.recoverDelegatedTasks;
+          yield* Fiber.join(requeued);
+          yield* worker.drain();
+          yield* Fiber.join(resumed);
+          yield* worker.drain();
+        }
         assert.equal(started.length, 2);
         assert.equal(started[1]?.message.messageId, messageId);
         if (mailbox) assert.include(started[1]?.message.text ?? "", String(taskId));
         else assert.equal(started[1]?.message.text, "fix the popover");
-        assert.deepEqual(started[1]?.message.attachments, [
-          {
-            type: "image",
-            id: "steering-screenshot",
-            name: "image.png",
-            mimeType: "image/png",
-            sizeBytes: 10,
-          },
-        ]);
-        assert.equal(steerCalls, timing === "during delivery" ? 1 : 0);
+        assert.deepEqual(started[1]?.message.attachments, attachments);
+        assert.equal(
+          steerCalls,
+          timing === "rejected while running" ? 5 : timing === "during delivery" ? 1 : 0,
+        );
         const final = yield* orchestrator.getThreadProjection(threadId);
         if (!mailbox) {
           assert.equal(
@@ -491,6 +523,42 @@ it.effect.each(
         );
         yield* worker.drain();
         assert.equal(started.length, 2);
+        if (mailbox && timing === "rejected while running") {
+          assert.equal(final.subagents[0]?.completionDelivery?.state, "claimed");
+          const recoveredTurn = final.providerTurns.find(
+            (providerTurn) => providerTurn.runAttemptId === started[1]!.attemptId,
+          )!;
+          const recovered = yield* watch(
+            (event) =>
+              event.type === "run.updated" &&
+              event.payload.id === started[1]!.runId &&
+              event.payload.status === "waiting",
+          );
+          yield* Queue.offer(events, {
+            type: "provider_turn.updated",
+            driver,
+            providerTurn: {
+              ...recoveredTurn,
+              status: "completed",
+              completedAt: yield* DateTime.now,
+            },
+          });
+          yield* Queue.offer(events, {
+            type: "turn.terminal",
+            driver,
+            providerThreadId: recoveredTurn.providerThreadId,
+            providerTurnId: recoveredTurn.id,
+            runOrdinal: started[1]!.runOrdinal,
+            status: "completed",
+            failure: null,
+            threadDisposition: "reusable",
+          });
+          yield* Fiber.join(recovered);
+          yield* worker.drain();
+          const settled = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(settled.subagents[0]?.completionDelivery?.state, "delivered");
+          assert.equal(started.length, 2);
+        }
       }).pipe(
         Effect.provide(
           ProviderReplayHarness.layerWithRegistry(
@@ -498,6 +566,7 @@ it.effect.each(
             ProviderAdapterRegistry.layerSingle(adapter),
             {
               runEffectWorker: false,
+              runContinuationWorker: mailbox && timing === "rejected while running",
               projectServiceLayer: layerForProject(
                 ProjectId.make("project:steering-completion"),
                 cwd,

@@ -9784,9 +9784,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         })
         .pipe(mapDispatchError(command));
       if (
-        item?.type !== "user_message" ||
+        (item?.type !== "user_message" && item?.type !== "notification") ||
         item.providerTurnId !== command.providerTurnId ||
-        (item.inputIntent !== "steer" && item.inputIntent !== "promoted_queued_to_steer") ||
+        (item.type === "user_message" &&
+          item.inputIntent !== "steer" &&
+          item.inputIntent !== "promoted_queued_to_steer") ||
         (item.status !== "pending" && item.status !== "completed") ||
         item.status === command.status ||
         (command.status === "completed" && item.status !== "pending")
@@ -9822,7 +9824,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           parentItemId: null,
           ordinal: yield* nextTurnItemOrdinal({ thread }),
           status: "failed",
-          title: "Correction delivery not confirmed",
+          title:
+            item.type === "notification"
+              ? "Result delivery not confirmed"
+              : "Correction delivery not confirmed",
           startedAt: now,
           completedAt: now,
           updatedAt: now,
@@ -9830,7 +9835,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           failure: {
             class: "transport_error",
             message:
-              "The agent did not confirm this correction. Send it again if it is still needed.",
+              item.type === "notification"
+                ? "The agent did not confirm this background result. It remains available in the thread."
+                : "The agent did not confirm this correction. Send it again if it is still needed.",
             code: null,
             retryable: null,
           },

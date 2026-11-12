@@ -2126,6 +2126,7 @@ export type OrchestrationV2ShellThreadStatus = typeof OrchestrationV2ShellThread
 export const OrchestrationV2PendingRuntimeRequestSummary = Schema.Struct({
   id: RuntimeRequestId,
   kind: OrchestrationV2RuntimeRequest.fields.kind,
+  label: Schema.optional(Schema.String),
   createdAt: Schema.DateTimeUtc,
   /** False for async questions the run keeps working past. Absent from older servers. */
   blocking: Schema.optional(Schema.Boolean),

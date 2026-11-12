@@ -289,17 +289,15 @@ export const layerExecutor: Layer.Layer<
                     );
                     const message = projection.messages.find((row) => row.id === messageId);
                     if (message === undefined) return;
-                    if (message.delegatedCompletion === undefined) {
-                      yield* threads.dispatch({
-                        type: "message.steering.settle",
-                        commandId: CommandId.make(`${effect.commandId}:steering-delivery-accepted`),
-                        threadId: effect.threadId,
-                        messageId,
-                        providerTurnId: effect.request.providerTurnId,
-                        status: "completed",
-                      });
-                      return;
-                    }
+                    yield* threads.dispatch({
+                      type: "message.steering.settle",
+                      commandId: CommandId.make(`${effect.commandId}:steering-delivery-accepted`),
+                      threadId: effect.threadId,
+                      messageId,
+                      providerTurnId: effect.request.providerTurnId,
+                      status: "completed",
+                    });
+                    if (message.delegatedCompletion === undefined) return;
                     yield* threads.dispatch({
                       type: "notification.delivery.accept",
                       commandId: CommandId.make(`command:mailbox-accepted:${effect.id}`),

@@ -92,6 +92,12 @@ describe("nextThreadAnnouncement", () => {
         "Correction rejected. Answer rejected",
         "Done",
       ]);
+      const ended = { ...failed, ...idle(secondRun, "completed") };
+      expect(speak([working, ended, ended])).toEqual([`Done. ${deliveryFailure.message}`]);
+      expect(
+        speak([working, { ...working, ...idle(secondRun, "completed") }, ended, ended]),
+      ).toEqual(["Done", deliveryFailure.message]);
+      expect(speak([ended, ended])).toEqual([]);
     },
   );
 

@@ -225,7 +225,7 @@ export function nextThreadAnnouncement(
 ) {
   const result = nextThreadStatusAnnouncement(previous, next);
   const newFailures =
-    previous !== null && next.status !== "idle" && ACTIVE_RUN_STATUSES.has(next.runStatus)
+    previous !== null
       ? (next.deliveryFailures ?? []).filter(
           (failure) => failure.ordinal > previous.latestLocalItemOrdinal,
         )
