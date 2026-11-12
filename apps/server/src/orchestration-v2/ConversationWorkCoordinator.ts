@@ -148,25 +148,37 @@ const make = Effect.gen(function* () {
     if (prior !== undefined) {
       if (prior.runId !== run.id || prior.text !== input.message)
         return yield* new ConversationWorkError({ ...input, reason: "task_mismatch" });
-      return { taskId: input.taskId, threadId: projection.thread.id, runId: run.id };
+    } else {
+      if (
+        projection.thread.archivedAt !== null ||
+        !["starting", "running", "waiting"].includes(run.status)
+      )
+        return yield* new ConversationWorkError({ ...input, reason: "inactive" });
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: input.commandId,
+        threadId: projection.thread.id,
+        messageId: input.messageId,
+        text: input.message,
+        attachments: [],
+        dispatchMode: { type: "steer_active", targetRunId: run.id, onInactive: "reject" },
+        createdBy: "user",
+        creationSource: input.creationSource,
+      });
     }
-    if (
-      projection.thread.archivedAt !== null ||
-      !["starting", "running", "waiting"].includes(run.status)
-    )
-      return yield* new ConversationWorkError({ ...input, reason: "inactive" });
-    yield* threads.dispatch({
-      type: "message.dispatch",
-      commandId: input.commandId,
+    const updated = yield* threads.getThreadRecords(projection.thread.id, ["turnItems"]);
+    const item = updated.turnItems.find(
+      (item) => item.type === "user_message" && item.messageId === input.messageId,
+    );
+    const runtimeAccepted =
+      item?.status === "completed" &&
+      (yield* threads.hasReceipt(CommandId.make(`${input.commandId}:steering-delivery-accepted`)));
+    return {
+      taskId: input.taskId,
       threadId: projection.thread.id,
-      messageId: input.messageId,
-      text: input.message,
-      attachments: [],
-      dispatchMode: { type: "steer_active", targetRunId: run.id, onInactive: "reject" },
-      createdBy: "user",
-      creationSource: input.creationSource,
-    });
-    return { taskId: input.taskId, threadId: projection.thread.id, runId: run.id };
+      runId: run.id,
+      delivery: item?.status === "failed" ? "failed" : runtimeAccepted ? "steered" : "accepted",
+    };
   });
   return { delegate, read, steer };
 });

@@ -2794,7 +2794,7 @@ export type OrchestrationV2PendingRuntimeRequestSummaryJson =
 export const OrchestrationV2RequestDeliveryFailureSummaryJson =
   OrchestrationV2RequestDeliveryFailureSummary.mapFields((fields) => ({
     ...fields,
-    occurredAt: IsoDateTime,
+    occurredAt: Schema.DateTimeUtcFromString,
   }));
 export type OrchestrationV2RequestDeliveryFailureSummaryJson =
   typeof OrchestrationV2RequestDeliveryFailureSummaryJson.Type;

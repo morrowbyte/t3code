@@ -174,19 +174,25 @@ function tool(overrides: Partial<DynamicTool> = {}): DynamicTool {
 }
 
 describe("readAgentSend", () => {
-  it("reads actual structured calls and preserves the exact outbound text", () => {
-    const text = " \r\nKurz: Maßnahme geprüft. 🦦\r\n\r\nDetails: üöä\r\n ";
-    const item = tool({ input: { threadId: "target", message: text } });
-    expect(readAgentSend(item)).toEqual({
-      targetThreadId: "target",
-      text,
-      delivery: "steered",
-      accepted: true,
-      failed: false,
-      truncated: false,
-    });
-    expect(item.input).toEqual({ threadId: "target", message: text });
-  });
+  it.each(["accepted", "steered"])(
+    "reads %s receipts and preserves the exact outbound text",
+    (delivery) => {
+      const text = " \r\nKurz: Maßnahme geprüft. 🦦\r\n\r\nDetails: üöä\r\n ";
+      const item = tool({
+        input: { threadId: "target", message: text },
+        output: { threadId: "target", messageId: "message-1", delivery, status: "running" },
+      });
+      expect(readAgentSend(item)).toEqual({
+        targetThreadId: "target",
+        text,
+        delivery,
+        accepted: true,
+        failed: false,
+        truncated: false,
+      });
+      expect(item.input).toEqual({ threadId: "target", message: text });
+    },
+  );
 
   it.each([
     { threadId: "target", messageId: "message-1", delivery: "queued" },
@@ -279,6 +285,8 @@ describe("readAgentSend", () => {
   it("treats MCP errors returned as data as failure despite completed tool status", () => {
     const receipt = { threadId: "target", messageId: "message-1", delivery: "started" };
     for (const output of [
+      { ...receipt, delivery: "failed", status: "running" },
+      { structuredContent: { ...receipt, delivery: "failed", status: "running" } },
       { isError: true, structuredContent: receipt },
       {
         content: [

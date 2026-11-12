@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import {
   AuthOrchestrationOperateScope,
   AuthSessionId,
+  TurnItemId,
   NodeId,
   RunId,
   ThreadId,
@@ -137,6 +138,8 @@ it.effect.each([false, true])(
       let authorizedRestarts = 0;
       const childIntakeSteers: string[] = [];
       let rejectSteerAtAdmission = false;
+      const steeringCommands = new Map<string, string>();
+      const steeringAckReceipts = new Set<string>();
       let beforeMainCommit: (() => void) | undefined;
       let mainDispatchCandidate: string | undefined;
       let quietSpeechSignal: Deferred.Deferred<void> | undefined;
@@ -633,6 +636,7 @@ it.effect.each([false, true])(
             }),
         } as unknown as ProviderSessionManager.ProviderSessionManagerV2Shape),
         Layer.succeed(ThreadManagementService.ThreadManagementService, {
+          hasReceipt: (commandId: string) => Effect.succeed(steeringAckReceipts.has(commandId)),
           getThreadProjection: (id: typeof threadId) =>
             Effect.gen(function* () {
               if (independentJobs.has(id)) return independentJobs.get(id)!;
@@ -766,8 +770,35 @@ it.effect.each([false, true])(
                     cause: "Target run ended at admission.",
                   });
                 steers += 1;
+                steeringCommands.set(command.messageId, command.commandId);
                 const updated = {
                   ...target,
+                  turnItems: [
+                    ...target.turnItems,
+                    {
+                      id: TurnItemId.make(`turn-item:message:${command.messageId}`),
+                      threadId: command.threadId,
+                      runId: run.id,
+                      nodeId: run.rootNodeId ?? null,
+                      providerThreadId: null,
+                      providerTurnId: null,
+                      nativeItemRef: null,
+                      parentItemId: null,
+                      ordinal: target.turnItems.length + 1,
+                      type: "user_message" as const,
+                      status: "pending" as const,
+                      title: null,
+                      startedAt: null,
+                      completedAt: null,
+                      updatedAt: yield* DateTime.now,
+                      createdBy: command.createdBy,
+                      creationSource: command.creationSource,
+                      messageId: command.messageId,
+                      inputIntent: "steer" as const,
+                      text: command.text,
+                      attachments: [],
+                    },
+                  ],
                   messages: [
                     ...target.messages,
                     {
@@ -1839,6 +1870,34 @@ it.effect.each([false, true])(
           priority,
           yield* control("steer", "priority-1", "durable-run-1", "Prioritize the small fix."),
         );
+        assert.include(decodeJson(priority) as Record<string, unknown>, {
+          accepted: true,
+          delivery: "accepted",
+        });
+        const pendingPriority = durableProjection;
+        const priorityMessage = pendingPriority.messages.at(-1)!;
+        for (const status of ["failed", "completed"] as const) {
+          durableProjection = {
+            ...pendingPriority,
+            turnItems: pendingPriority.turnItems.map((item) =>
+              item.type === "user_message" && item.messageId === priorityMessage.id
+                ? { ...item, status }
+                : item,
+            ),
+          };
+          if (status === "completed")
+            steeringAckReceipts.add(
+              `${steeringCommands.get(priorityMessage.id)!}:steering-delivery-accepted`,
+            );
+          const settled = decodeJson(
+            yield* control("steer", "priority-1", "durable-run-1", "Prioritize the small fix."),
+          ) as Record<string, unknown>;
+          assert.include(settled, {
+            accepted: status !== "failed",
+            delivery: status === "failed" ? "failed" : "steered",
+          });
+          assert.equal(durableProjection.runs[0]!.status, "running");
+        }
         assert.equal(steers, 1);
         const changedSteerIntent = yield* Effect.exit(
           control("steer", "priority-1", "durable-run-1", "A different instruction."),
@@ -3234,6 +3293,33 @@ it.effect.each([false, true])(
           "Keep the findings concise.",
         );
         const firstSteerMessage = independentJobs.get(firstChild)!.messages.at(-1)!;
+        assert.include(decodeJson(firstSteerReceipt) as Record<string, unknown>, {
+          accepted: true,
+          delivery: "accepted",
+        });
+        const firstPendingSteer = independentJobs.get(firstChild)!;
+        for (const status of ["failed", "completed"] as const) {
+          independentJobs.set(firstChild, {
+            ...firstPendingSteer,
+            turnItems: firstPendingSteer.turnItems.map((item) =>
+              item.type === "user_message" && item.messageId === firstSteerMessage.id
+                ? { ...item, status }
+                : item,
+            ),
+          });
+          if (status === "completed")
+            steeringAckReceipts.add(
+              `${steeringCommands.get(firstSteerMessage.id)!}:steering-delivery-accepted`,
+            );
+          assert.include(
+            decodeJson(
+              yield* taskControl(0, "steer", "refine-first", "Keep the findings concise."),
+            ) as Record<string, unknown>,
+            { accepted: status !== "failed", delivery: status === "failed" ? "failed" : "steered" },
+          );
+          assert.equal(independentJobs.get(firstChild)!.runs[0]!.status, "running");
+        }
+        independentJobs.set(firstChild, firstPendingSteer);
         const steersBefore = steers;
         yield* taskControl(1, "steer", "refine-second", "Focus on the smaller issue.");
         yield* taskControl(1, "steer", "refine-second", "Focus on the smaller issue.");

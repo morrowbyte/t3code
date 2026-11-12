@@ -2051,7 +2051,7 @@ export const layer: Layer.Layer<
             })
             .pipe(
               Effect.map((steered) =>
-                encodeReceipt({ accepted: true, delivery: "steered", ...steered }),
+                encodeReceipt({ accepted: steered.delivery !== "failed", ...steered }),
               ),
               Effect.catchTags({
                 ConversationWorkError: Effect.fn("ConversationWorkError")((error) =>
@@ -2225,35 +2225,39 @@ export const layer: Layer.Layer<
             prior.text !== input.message.trim()
           )
             return yield* liveError("dispatch_conflict");
-          return encodeReceipt({
-            accepted: true,
-            delivery: "steered",
-            threadId: row.thread_id,
-            runId: run.id,
-          });
+        } else {
+          if (!["starting", "running", "waiting"].includes(run.status))
+            return yield* liveError("invalid_state");
+          yield* threads
+            .dispatch({
+              type: "message.dispatch",
+              commandId,
+              messageId,
+              threadId: projection.thread.id,
+              text: input.message.trim(),
+              attachments: [],
+              dispatchMode: {
+                type: "steer_active",
+                targetRunId: RunId.make(run.id),
+                onInactive: "reject",
+              },
+              createdBy: "user",
+              creationSource: "voice",
+            })
+            .pipe(Effect.mapError(() => liveError("dispatch_conflict")));
         }
-        if (!["starting", "running", "waiting"].includes(run.status))
-          return yield* liveError("invalid_state");
-        yield* threads
-          .dispatch({
-            type: "message.dispatch",
-            commandId,
-            messageId,
-            threadId: projection.thread.id,
-            text: input.message.trim(),
-            attachments: [],
-            dispatchMode: {
-              type: "steer_active",
-              targetRunId: RunId.make(run.id),
-              onInactive: "reject",
-            },
-            createdBy: "user",
-            creationSource: "voice",
-          })
-          .pipe(Effect.mapError(() => liveError("dispatch_conflict")));
+        const updated = yield* threads.getThreadRecords(row.thread_id, ["turnItems"]);
+        const item = updated.turnItems.find(
+          (item) => item.type === "user_message" && item.messageId === messageId,
+        );
+        const runtimeAccepted =
+          item?.status === "completed" &&
+          (yield* threads.hasReceipt(CommandId.make(`${commandId}:steering-delivery-accepted`)));
+        const delivery =
+          item?.status === "failed" ? "failed" : runtimeAccepted ? "steered" : "accepted";
         return encodeReceipt({
-          accepted: true,
-          delivery: "steered",
+          accepted: delivery !== "failed",
+          delivery,
           threadId: row.thread_id,
           runId: run.id,
         });
