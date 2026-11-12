@@ -420,14 +420,20 @@ describe("ServerBrowserSurface native controls", () => {
     const released = new Promise<void>((resolve) => {
       releaseViewer = resolve;
     });
-    mocks.preparePrivateEntry.mockReturnValueOnce(released);
+    let preparationAbortStack = "";
+    mocks.preparePrivateEntry.mockImplementationOnce((_generation, signal) => {
+      signal.addEventListener("abort", () => {
+        preparationAbortStack = new Error("Preparation aborted").stack ?? "";
+      });
+      return released;
+    });
     const clientsBeforePreparation = mocks.createClient.mock.calls.length;
     const stopsBeforePreparation = mocks.stopClient.mock.calls.length;
     await requestFocus("prepare-entry", { preparation: "begin" });
     expect(mocks.preparePrivateEntry).toHaveBeenCalledExactlyOnceWith(1, expect.any(AbortSignal));
     expect(mocks.createClient).toHaveBeenCalledTimes(clientsBeforePreparation);
     expect(mocks.stopClient).toHaveBeenCalledTimes(stopsBeforePreparation);
-    expect(mocks.preparePrivateEntry.mock.calls[0]![1].aborted).toBe(false);
+    expect(mocks.preparePrivateEntry.mock.calls[0]![1].aborted, preparationAbortStack).toBe(false);
     expect(document.activeElement).toBe(input);
     expect(input.disabled).toBe(false);
     expect(input.readOnly).toBe(true);
