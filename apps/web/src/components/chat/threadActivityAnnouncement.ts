@@ -1,5 +1,6 @@
 import type { OrchestrationV2Run, OrchestrationV2RunStatus, RunId } from "@t3tools/contracts";
 import { latestExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
+import type { TimelineEntry } from "../../session-logic";
 
 export type ThreadActivityStatus = "working" | "approval" | "input" | "idle";
 
@@ -18,6 +19,12 @@ export interface ThreadActivitySnapshot {
   readonly requestId: string | null;
   readonly runId: RunId | null;
   readonly runStatus: OrchestrationV2RunStatus | null;
+  readonly deliveryFailures?: ReadonlyArray<{
+    readonly id: string;
+    readonly ordinal: number;
+    readonly message: string;
+  }>;
+  readonly latestLocalItemOrdinal?: number;
 }
 
 export interface ThreadAnnouncementMemory {
@@ -31,6 +38,41 @@ export interface ThreadAnnouncementMemory {
   readonly settledRunId: RunId | null;
   /** The run shown while idle belongs to the last turn, even if it is still settling. */
   readonly idleRunId: RunId | null;
+  readonly latestLocalItemOrdinal: number;
+}
+
+export function deliveryFailureSnapshot(
+  entries: ReadonlyArray<TimelineEntry>,
+  _runId: RunId | null,
+) {
+  let latestLocalItemOrdinal = -1;
+  const deliveryFailures: Array<NonNullable<ThreadActivitySnapshot["deliveryFailures"]>[number]> =
+    [];
+  for (const entry of entries) {
+    const projected =
+      entry.kind === "work"
+        ? entry.entry.projectedItem
+        : "projectedItem" in entry
+          ? entry.projectedItem
+          : undefined;
+    if (projected === undefined || projected.visibility !== "local") continue;
+    const item = projected.item;
+    latestLocalItemOrdinal = Math.max(latestLocalItemOrdinal, item.ordinal);
+    if (
+      item.type === "error" &&
+      item.status === "failed" &&
+      item.failure.class === "transport_error" &&
+      (item.id.startsWith("turn-item:steering-delivery-failure:") ||
+        item.id.startsWith("turn-item:runtime-request-delivery-failure:"))
+    ) {
+      deliveryFailures.push({
+        id: item.id,
+        ordinal: item.ordinal,
+        message: `${item.title ?? "Delivery not confirmed"}. ${item.failure.message}`,
+      });
+    }
+  }
+  return { deliveryFailures, latestLocalItemOrdinal };
 }
 
 const ACTIVE_RUN_STATUSES: ReadonlySet<OrchestrationV2RunStatus | null> = new Set([
@@ -96,7 +138,7 @@ export function announcedRun(
  * The first snapshot of a thread is a silent baseline, so opening or switching
  * threads never replays what already happened.
  */
-export function nextThreadAnnouncement(
+function nextThreadStatusAnnouncement(
   previous: ThreadAnnouncementMemory | null,
   next: ThreadActivitySnapshot,
 ): { readonly memory: ThreadAnnouncementMemory; readonly announcement: string | null } {
@@ -118,6 +160,7 @@ export function nextThreadAnnouncement(
         turnRunId: idle ? null : (newRunId ?? "unknown"),
         settledRunId: runOutcomeText(next.runStatus) === null ? null : next.runId,
         idleRunId,
+        latestLocalItemOrdinal: -1,
       },
       announcement: null,
     };
@@ -171,5 +214,33 @@ export function nextThreadAnnouncement(
   return {
     memory: { ...memory, turnRunId: null, settledRunId: next.runId },
     announcement: outcome,
+  };
+}
+
+export function nextThreadAnnouncement(
+  previous: ThreadAnnouncementMemory | null,
+  next: ThreadActivitySnapshot,
+) {
+  const result = nextThreadStatusAnnouncement(previous, next);
+  const newFailures =
+    previous !== null
+      ? (next.deliveryFailures ?? []).filter(
+          (failure) => failure.ordinal > previous.latestLocalItemOrdinal,
+        )
+      : [];
+  return {
+    memory: {
+      ...result.memory,
+      latestLocalItemOrdinal: Math.max(
+        previous?.latestLocalItemOrdinal ?? -1,
+        next.latestLocalItemOrdinal ?? -1,
+      ),
+    },
+    announcement:
+      newFailures.length > 0
+        ? [result.announcement, ...newFailures.map((failure) => failure.message)]
+            .filter((part) => part !== null)
+            .join(". ")
+        : result.announcement,
   };
 }

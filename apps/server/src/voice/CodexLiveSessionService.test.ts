@@ -2,6 +2,8 @@ import { assert, it } from "@effect/vitest";
 import {
   AuthOrchestrationOperateScope,
   AuthSessionId,
+  MessageId,
+  TurnItemId,
   NodeId,
   RunId,
   ThreadId,
@@ -137,6 +139,8 @@ it.effect.each([false, true])(
       let authorizedRestarts = 0;
       const childIntakeSteers: string[] = [];
       let rejectSteerAtAdmission = false;
+      const steeringCommands = new Map<string, string>();
+      const steeringAckReceipts = new Set<string>();
       let beforeMainCommit: (() => void) | undefined;
       let mainDispatchCandidate: string | undefined;
       let quietSpeechSignal: Deferred.Deferred<void> | undefined;
@@ -206,14 +210,19 @@ it.effect.each([false, true])(
       const waitForFinalDelivery = (messageId: string) =>
         new Promise<void>((resolve) => finalDeliveryWaiters.set(messageId, resolve));
       let nativeEventHandled: (() => void) | undefined;
+      let failedRuntimeStarted: (() => void) | undefined;
+      let failedRuntimeFinished: (() => void) | undefined;
       const deliveryTracer = Tracer.make({
         span: (options) => {
           const span = new Tracer.NativeSpan(options);
+          if (span.name === "CodexLiveSessionService.stopFailedRuntime") failedRuntimeStarted?.();
           const end = span.end.bind(span);
           span.end = (time, exit) => {
             end(time, exit);
             if (span.name === "VoiceIntake.processLatest") notifyIntakeProcessed?.();
             if (span.name === "CodexLiveSessionService.handleNativeEvent") nativeEventHandled?.();
+            if (span.name === "CodexLiveSessionService.stopFailedRuntime")
+              failedRuntimeFinished?.();
             if (span.attributes.has("voice.output.delivery")) {
               deliveryWaiters.get(String(span.attributes.get("voice.output.message_id")))?.();
               if (span.attributes.get("voice.output.kind") === "final")
@@ -238,6 +247,10 @@ it.effect.each([false, true])(
       const independentQueues = new Map<
         string,
         Map<string, Queue.Queue<OrchestrationV2StoredEvent>>
+      >();
+      const independentStreams = new Map<
+        string,
+        Map<string, Stream.Stream<OrchestrationV2StoredEvent>>
       >();
       let admitIndependent:
         | ((
@@ -285,6 +298,18 @@ it.effect.each([false, true])(
         ["message.updated", yield* Queue.unbounded<OrchestrationV2StoredEvent>()],
         ["turn-item.updated", yield* Queue.unbounded<OrchestrationV2StoredEvent>()],
       ]);
+      const t3EventStreams = new Map<string, Stream.Stream<OrchestrationV2StoredEvent>>();
+      // Stored event subscriptions broadcast; settled runs must not steal a later run's events.
+      for (const [type, queue] of t3EventQueues)
+        t3EventStreams.set(
+          type,
+          yield* Stream.broadcast(Stream.fromQueue(queue), {
+            capacity: "unbounded",
+            replay: 1,
+          }),
+        );
+      const readbackSubscriptions = new Map<string, Set<symbol>>();
+      let readbackSubscribed: ((count: number) => void) | undefined;
       let plannerCalls = 0;
       let plannerAttempts = 0;
       let plannerFailure: "managed_account_required" | "planner_restriction_failed" | undefined;
@@ -633,6 +658,7 @@ it.effect.each([false, true])(
             }),
         } as unknown as ProviderSessionManager.ProviderSessionManagerV2Shape),
         Layer.succeed(ThreadManagementService.ThreadManagementService, {
+          hasReceipt: (commandId: string) => Effect.succeed(steeringAckReceipts.has(commandId)),
           getThreadProjection: (id: typeof threadId) =>
             Effect.gen(function* () {
               if (independentJobs.has(id)) return independentJobs.get(id)!;
@@ -662,10 +688,27 @@ it.effect.each([false, true])(
               return durableProjection;
             }),
           getThreadEventSequence: () => Effect.succeed(0),
-          streamStoredEventsFrom: (input: { threadId: string; eventType?: string }) =>
-            Stream.fromQueue(
-              (independentQueues.get(input.threadId) ?? t3EventQueues).get(input.eventType ?? "")!,
-            ),
+          streamStoredEventsFrom: (input: { threadId: string; eventType?: string }) => {
+            const subscription = Symbol();
+            return (independentStreams.get(input.threadId) ?? t3EventStreams)
+              .get(input.eventType ?? "")!
+              .pipe(
+                Stream.onStart(
+                  Effect.sync(() => {
+                    const subscriptions =
+                      readbackSubscriptions.get(input.threadId) ?? new Set<symbol>();
+                    subscriptions.add(subscription);
+                    readbackSubscriptions.set(input.threadId, subscriptions);
+                    readbackSubscribed?.(subscriptions.size);
+                  }),
+                ),
+                Stream.ensuring(
+                  Effect.sync(() => {
+                    readbackSubscriptions.get(input.threadId)?.delete(subscription);
+                  }),
+                ),
+              );
+          },
           sendToThread: (
             input: Parameters<
               ThreadManagementService.ThreadManagementServiceShape["sendToThread"]
@@ -766,8 +809,35 @@ it.effect.each([false, true])(
                     cause: "Target run ended at admission.",
                   });
                 steers += 1;
+                steeringCommands.set(command.messageId, command.commandId);
                 const updated = {
                   ...target,
+                  turnItems: [
+                    ...target.turnItems,
+                    {
+                      id: TurnItemId.make(`turn-item:message:${command.messageId}`),
+                      threadId: command.threadId,
+                      runId: run.id,
+                      nodeId: run.rootNodeId ?? null,
+                      providerThreadId: null,
+                      providerTurnId: null,
+                      nativeItemRef: null,
+                      parentItemId: null,
+                      ordinal: target.turnItems.length + 1,
+                      type: "user_message" as const,
+                      status: "pending" as const,
+                      title: null,
+                      startedAt: null,
+                      completedAt: null,
+                      updatedAt: yield* DateTime.now,
+                      createdBy: command.createdBy,
+                      creationSource: command.creationSource,
+                      messageId: command.messageId,
+                      inputIntent: "steer" as const,
+                      text: command.text,
+                      attachments: [],
+                    },
+                  ],
                   messages: [
                     ...target.messages,
                     {
@@ -1276,6 +1346,53 @@ it.effect.each([false, true])(
           "native output acknowledgement must not hold work admission",
         );
         assert.isFalse(yield* Deferred.isDone(heldContext));
+        const normalMainSend = mainSend;
+        let rejectedSubmissionCalls = 0;
+        mainSend = () =>
+          Effect.sync(() => {
+            rejectedSubmissionCalls += 1;
+            return {
+              delivery: "failed",
+              run: durableProjection.runs[0]!,
+            } as Effect.Success<ReturnType<NonNullable<typeof mainSend>>>;
+          });
+        for (const loseReceipt of [false, true]) {
+          const turnId = `voice-nack-${loseReceipt ? "lost-receipt" : "stored-receipt"}`;
+          if (loseReceipt)
+            yield* sql.unsafe(`CREATE TEMP TRIGGER reject_nack_receipt BEFORE UPDATE ON codex_live_voice_intents
+              WHEN NEW.planner_turn_id = '${turnId}' AND NEW.dispatch_state = 'admitted'
+              BEGIN SELECT RAISE(FAIL, 'synthetic receipt write failure'); END`);
+          const submitRejected = () =>
+            submitWork!({
+              plannerNativeThreadId: "planner-native-1",
+              plannerTurnId: turnId,
+              callId: turnId,
+              message: "Correct the active task, but this delivery is rejected.",
+            });
+          const rejected = decodeJson(yield* submitRejected());
+          assert.deepEqual(rejected, {
+            accepted: false,
+            delivery: "failed",
+            runId: "durable-run-1",
+          });
+          const callsBeforeReplay = rejectedSubmissionCalls;
+          if (loseReceipt) {
+            const pending = yield* sql<{ dispatch_state: string }>`SELECT dispatch_state
+              FROM codex_live_voice_intents WHERE planner_turn_id = ${turnId}`;
+            assert.equal(pending[0]!.dispatch_state, "reserved");
+            yield* sql.unsafe("DROP TRIGGER reject_nack_receipt");
+          }
+          assert.deepEqual(decodeJson(yield* submitRejected()), rejected);
+          assert.equal(rejectedSubmissionCalls, callsBeforeReplay + (loseReceipt ? 1 : 0));
+          const stored = yield* sql<{ receipt_json: string }>`SELECT receipt_json
+            FROM codex_live_voice_intents WHERE planner_turn_id = ${turnId} AND dispatch_state = 'admitted'`;
+          assert.deepEqual(decodeJson(stored[0]!.receipt_json), rejected);
+          assert.deepEqual(decodeJson(yield* submitRejected()), rejected);
+          assert.equal(rejectedSubmissionCalls, callsBeforeReplay + (loseReceipt ? 1 : 0));
+          assert.equal(durableProjection.runs[0]!.status, "running");
+          assert.equal(durableProjection.runs.length, 1);
+        }
+        mainSend = normalMainSend;
         yield* sql`UPDATE codex_live_voice_intents SET receipt_json = json_set(receipt_json, '$.intakeIntent', json('{"id":"concurrent-intake-marker"}')) WHERE lease_id = ${prepared.leaseId} AND planner_turn_id = 'planner-turn-1'`;
         const progressSettled = waitForDelivery("commentary-message-durable-run-1");
         yield* Deferred.succeed(heldContext, undefined);
@@ -1360,6 +1477,96 @@ it.effect.each([false, true])(
           [streamedFirst, streamedSecond],
           "repeated projection updates do not redeliver the first paragraph",
         );
+        durableProjection = beforeStreaming;
+        const deliveryTemplate = beforeStreaming.turnItems.find(
+          (item) => item.type === "assistant_message",
+        )!;
+        const deliveryFailureItems = [
+          [
+            "turn-item:steering-delivery-failure:correction",
+            "The agent did not confirm this correction.",
+          ],
+          [
+            "turn-item:runtime-request-delivery-failure:answer",
+            "The agent did not confirm this answer.",
+          ],
+        ].map(([id, message], index) => ({
+          ...deliveryTemplate,
+          id: id as never,
+          type: "error" as const,
+          status: "failed" as const,
+          ordinal: 100 + index,
+          title: "Delivery not confirmed",
+          parentItemId: null,
+          failure: {
+            class: "transport_error" as const,
+            message: message!,
+            code: null,
+            retryable: null,
+          },
+        }));
+        for (const [index, item] of deliveryFailureItems.entries()) {
+          const progressText = `Delivery handling continues ${index}.`;
+          const originalMessage = beforeStreaming.messages[0]!;
+          const progressMessage = {
+            ...originalMessage,
+            id: `delivery-progress-message-${index}` as never,
+            nodeId: `delivery-progress-node-${index}` as never,
+            text: progressText,
+          };
+          const progressNode = {
+            ...beforeStreaming.nodes.find((node) => node.id === originalMessage.nodeId)!,
+            id: progressMessage.nodeId,
+          };
+          const progressItem = {
+            ...deliveryTemplate,
+            id: `delivery-progress-item-${index}` as never,
+            type: "assistant_message" as const,
+            nodeId: progressNode.id,
+            messageId: progressMessage.id,
+            text: progressText,
+            ordinal: 0,
+            streaming: false,
+          };
+          const received = yield* Deferred.make<void>();
+          contextSignals.set(progressText, received);
+          durableProjection = {
+            ...beforeStreaming,
+            messages: [...beforeStreaming.messages, progressMessage],
+            nodes: [...beforeStreaming.nodes, progressNode],
+            turnItems: [
+              ...beforeStreaming.turnItems,
+              ...deliveryFailureItems.slice(0, index + 1),
+              progressItem,
+            ],
+          };
+          yield* Queue.offer(
+            t3EventQueues.get("turn-item.updated")!,
+            eventFor({
+              type: "turn-item.updated",
+              id: `delivery-failure-event-${index}`,
+              threadId,
+              runId: "durable-run-1",
+              occurredAt: "2026-10-14T00:00:03.000Z",
+              payload: item,
+            } as never),
+          );
+          yield* Deferred.await(received);
+          assert.equal(
+            contexts.filter((message) => message.text.includes("background_task_delivery_failed"))
+              .length,
+            index + 1,
+          );
+        }
+        assert.equal(
+          contexts.filter((message) => message.text.includes("background_task_delivery_failed"))
+            .length,
+          2,
+        );
+        assert.equal(completedWork, 0);
+        assert.equal(durableProjection.runs[0]?.status, "running");
+        assert.equal(spoken.length, 0);
+        contexts.splice(1);
         durableProjection = beforeStreaming;
         const secondContext = yield* Deferred.make<void>();
         contextSignals.set(question, secondContext);
@@ -1752,6 +1959,34 @@ it.effect.each([false, true])(
           priority,
           yield* control("steer", "priority-1", "durable-run-1", "Prioritize the small fix."),
         );
+        assert.include(decodeJson(priority) as Record<string, unknown>, {
+          accepted: true,
+          delivery: "accepted",
+        });
+        const pendingPriority = durableProjection;
+        const priorityMessage = pendingPriority.messages.at(-1)!;
+        for (const status of ["failed", "completed"] as const) {
+          durableProjection = {
+            ...pendingPriority,
+            turnItems: pendingPriority.turnItems.map((item) =>
+              item.type === "user_message" && item.messageId === priorityMessage.id
+                ? { ...item, status }
+                : item,
+            ),
+          };
+          if (status === "completed")
+            steeringAckReceipts.add(
+              `${steeringCommands.get(priorityMessage.id)!}:steering-delivery-accepted`,
+            );
+          const settled = decodeJson(
+            yield* control("steer", "priority-1", "durable-run-1", "Prioritize the small fix."),
+          ) as Record<string, unknown>;
+          assert.include(settled, {
+            accepted: status !== "failed",
+            delivery: status === "failed" ? "failed" : "steered",
+          });
+          assert.equal(durableProjection.runs[0]!.status, "running");
+        }
         assert.equal(steers, 1);
         const changedSteerIntent = yield* Effect.exit(
           control("steer", "priority-1", "durable-run-1", "A different instruction."),
@@ -1842,9 +2077,14 @@ it.effect.each([false, true])(
           [{ runId: "durable-run-1", status: "completed", resultReady: false, commentary: null }],
         );
 
+        const terminalCorrection = {
+          ...deliveryFailureItems[0]!,
+          id: TurnItemId.make("turn-item:steering-delivery-failure:terminal-correction"),
+        };
         durableProjection = {
           ...durableProjection,
           subagents: [{ ...durableProjection.subagents[0]!, status: "completed" }],
+          turnItems: [...durableProjection.turnItems, terminalCorrection],
           checkpoints: [
             { id: "checkpoint-durable-run-1", runId: "durable-run-1", status: "missing" },
           ],
@@ -1894,6 +2134,48 @@ it.effect.each([false, true])(
             AND planner_turn_id = ${"planner-turn-1"}
         `;
         assert.equal(readbackState(sentReceipt[0]!.receipt_json), "sent");
+        const terminalFailureText = (item: typeof terminalCorrection) =>
+          JSON.stringify({
+            type: "background_task_delivery_failed",
+            runId: "durable-run-1",
+            status: "completed",
+            message: item.failure.message,
+            resultReady: false,
+          });
+        assert.equal(
+          contexts.filter((message) => message.text === terminalFailureText(terminalCorrection))
+            .length,
+          1,
+          "a delivery failure is forwarded before a coalesced terminal result",
+        );
+        for (const [index, template] of deliveryFailureItems.entries()) {
+          const item = { ...template, id: TurnItemId.make(`${template.id}:after-final`) };
+          const received = yield* Deferred.make<void>();
+          // Use distinct messages so each canonical error has its own completion signal.
+          item.failure = { ...item.failure, message: `Late terminal delivery failure ${index}` };
+          contextSignals.set(terminalFailureText(item), received);
+          durableProjection = {
+            ...durableProjection,
+            turnItems: [...durableProjection.turnItems, item],
+          };
+          const lateEvent = eventFor({
+            type: "turn-item.updated",
+            id: `late-terminal-${index}`,
+            threadId,
+            runId: "durable-run-1",
+            occurredAt: "2026-10-14T00:00:05.000Z",
+            payload: item,
+          } as never);
+          yield* Queue.offer(t3EventQueues.get("turn-item.updated")!, lateEvent);
+          yield* Queue.offer(t3EventQueues.get("turn-item.updated")!, lateEvent);
+          yield* Deferred.await(received);
+          assert.equal(
+            contexts.filter((message) => message.text === terminalFailureText(item)).length,
+            1,
+          );
+          assert.equal(durableProjection.runs[0]!.status, "completed");
+          assert.equal(completedWork, 1);
+        }
         appendOutputFails = true;
         yield* invoke("call-next", "Queue follow-up work", "planner-turn-2");
         assert.equal(sends, 2);
@@ -2208,15 +2490,45 @@ it.effect.each([false, true])(
           "an old planner notification cannot resurrect the ended call",
         );
 
+        const completedSubscriptions = new Promise<void>((resolve) => {
+          readbackSubscribed = (count) => {
+            if (count === 5) resolve();
+          };
+        });
+        yield* invokeWithPlanner(
+          "planner-native-2",
+          "call-completed-before-native-error",
+          "Finish this task before the native connection fails",
+          "planner-turn-completed-before-native-error",
+        );
+        const completedBeforeFailure = `durable-run-${sends}`;
+        durableProjection = makeReadyProjection(completedBeforeFailure, sends);
+        const deliveredBeforeFailure = waitForFinalDelivery(`final-${completedBeforeFailure}`);
+        yield* Queue.offer(
+          t3EventQueues.get("run.updated")!,
+          eventFor({
+            type: "run.updated",
+            id: "event-completed-before-native-error",
+            threadId,
+            runId: completedBeforeFailure,
+            payload: durableProjection.runs[0]!,
+          } as never),
+        );
+        yield* Effect.promise(() => deliveredBeforeFailure);
+        yield* Effect.promise(() => completedSubscriptions);
+        readbackSubscribed = undefined;
+        const failureCleanup = new Promise<void>((resolve) => {
+          failedRuntimeFinished = resolve;
+        });
         const raceReceipt = yield* invokeWithPlanner(
           "planner-native-2",
           "call-native-error-race",
           "Queue readback before a native failure",
           "planner-turn-native-error-race",
         );
-        assert.equal(sends, 5);
+        assert.equal(sends, 6);
         const raceRunId = `durable-run-${sends}`;
-        durableProjection = makeReadyProjection(raceRunId, 5);
+        durableProjection = makeReadyProjection(raceRunId, 6);
         const principalGate = holdDispatchPrincipalLookup();
         const raceGateRead = waitForGateRead();
         yield* Queue.offer(
@@ -2234,10 +2546,70 @@ it.effect.each([false, true])(
         );
         yield* raceGateRead;
         yield* Effect.promise(() => principalGate.started);
+        const lateSendStarted = yield* Deferred.make<void>();
+        const releaseLateSend = yield* Deferred.make<void>();
+        const subscriptionsBeforeLateSend = readbackSubscriptions.get(threadId)!.size;
+        const lateSubscriptions = new Promise<void>((resolve) => {
+          readbackSubscribed = (count) => {
+            if (count === subscriptionsBeforeLateSend + 5) resolve();
+          };
+        });
+        const beforeLateSend = mainSend;
+        mainSend = () =>
+          Effect.gen(function* () {
+            sends += 1;
+            const queuedRun = {
+              ...durableProjection.runs[0]!,
+              id: RunId.make(`durable-run-${sends}`),
+              ordinal: sends,
+              userMessageId: MessageId.make(`user-durable-run-${sends}`),
+              rootNodeId: null,
+              activeAttemptId: null,
+              status: "queued" as const,
+              startedAt: null,
+              completedAt: null,
+              checkpointId: null,
+            };
+            durableProjection = {
+              ...durableProjection,
+              runs: [...durableProjection.runs, queuedRun],
+            };
+            yield* Deferred.succeed(lateSendStarted, undefined);
+            yield* Deferred.await(releaseLateSend);
+            return {
+              delivery: "queued" as const,
+              run: queuedRun,
+              dispatch: { sequence: 0, storedEvents: [] },
+              projection: durableProjection,
+              message: {
+                ...durableProjection.messages[0]!,
+                id: queuedRun.userMessageId,
+                runId: queuedRun.id,
+              },
+              turnItem: null,
+            };
+          });
+        const lateSubmit = yield* invokeWithPlanner(
+          "planner-native-2",
+          "call-admitted-before-native-error",
+          "Queue another task before the native connection fails",
+          "planner-turn-admitted-before-native-error",
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(lateSendStarted);
+        const failureStarted = new Promise<void>((resolve) => {
+          failedRuntimeStarted = resolve;
+        });
         yield* Queue.offer(secondNativeEvents, {
           type: "error",
           plannerNativeThreadId: "planner-native-2",
         });
+        yield* Effect.promise(() => failureStarted);
+        failedRuntimeStarted = undefined;
+        yield* Deferred.succeed(releaseLateSend, undefined);
+        yield* Fiber.join(lateSubmit);
+        mainSend = beforeLateSend;
+        yield* Effect.promise(() => lateSubscriptions);
+        readbackSubscribed = undefined;
         yield* waitForEvent(
           (event) =>
             event.type === "status" &&
@@ -2255,10 +2627,10 @@ it.effect.each([false, true])(
         );
         assert.equal(duplicateRaceReceipt, raceReceipt);
         yield* Effect.promise(() => refusalSettled);
-        assert.equal(sends, 5);
+        assert.equal(sends, 7);
         assert.equal(
           appendAttempts,
-          attemptsBeforeFinal + 2,
+          attemptsBeforeFinal + 3,
           "a native failure committed during principal lookup prevents native output",
         );
         const refusedReceipt = yield* sql<{ receipt_json: string }>`
@@ -2276,6 +2648,13 @@ it.effect.each([false, true])(
           "a native error releases its runtime after confirmed stop",
         );
         yield* Deferred.await(runtimeReleases.get(secondPrepared.providerSessionId!)!);
+        yield* Effect.promise(() => failureCleanup);
+        failedRuntimeFinished = undefined;
+        assert.equal(
+          readbackSubscriptions.get(threadId)?.size ?? 0,
+          0,
+          "native failure releases completed, in-flight and late-registered readback subscriptions without a closed event",
+        );
         assert.isTrue(runtimes.has(runtime.providerSessionId));
 
         for (const code of ["managed_account_required", "planner_restriction_failed"] as const) {
@@ -2917,6 +3296,7 @@ it.effect.each([false, true])(
         };
         const independentSeeds = new Map<string, OrchestrationV2ThreadProjection>();
         let admissions = 0;
+        const admissionScope = yield* Effect.scope;
         admitIndependent = (command) =>
           Effect.gen(function* () {
             const index = ++admissions;
@@ -2973,6 +3353,16 @@ it.effect.each([false, true])(
             for (const eventType of t3EventQueues.keys())
               queues.set(eventType, yield* Queue.unbounded<OrchestrationV2StoredEvent>());
             independentQueues.set(childId, queues);
+            const streams = new Map<string, Stream.Stream<OrchestrationV2StoredEvent>>();
+            for (const [type, queue] of queues)
+              streams.set(
+                type,
+                yield* Stream.broadcast(Stream.fromQueue(queue), {
+                  capacity: "unbounded",
+                  replay: 1,
+                }),
+              );
+            independentStreams.set(childId, streams);
             const task = {
               ...seed.subagents[0]!,
               id: taskId,
@@ -3011,7 +3401,7 @@ it.effect.each([false, true])(
                 } as never),
               ],
             };
-          });
+          }).pipe(Effect.provideService(Scope.Scope, admissionScope));
         const parallelLease = yield* service.prepare(session, {
           threadId,
           clientRequestId: "parallel-voice-replay",
@@ -3147,6 +3537,33 @@ it.effect.each([false, true])(
           "Keep the findings concise.",
         );
         const firstSteerMessage = independentJobs.get(firstChild)!.messages.at(-1)!;
+        assert.include(decodeJson(firstSteerReceipt) as Record<string, unknown>, {
+          accepted: true,
+          delivery: "accepted",
+        });
+        const firstPendingSteer = independentJobs.get(firstChild)!;
+        for (const status of ["failed", "completed"] as const) {
+          independentJobs.set(firstChild, {
+            ...firstPendingSteer,
+            turnItems: firstPendingSteer.turnItems.map((item) =>
+              item.type === "user_message" && item.messageId === firstSteerMessage.id
+                ? { ...item, status }
+                : item,
+            ),
+          });
+          if (status === "completed")
+            steeringAckReceipts.add(
+              `${steeringCommands.get(firstSteerMessage.id)!}:steering-delivery-accepted`,
+            );
+          assert.include(
+            decodeJson(
+              yield* taskControl(0, "steer", "refine-first", "Keep the findings concise."),
+            ) as Record<string, unknown>,
+            { accepted: status !== "failed", delivery: status === "failed" ? "failed" : "steered" },
+          );
+          assert.equal(independentJobs.get(firstChild)!.runs[0]!.status, "running");
+        }
+        independentJobs.set(firstChild, firstPendingSteer);
         const steersBefore = steers;
         yield* taskControl(1, "steer", "refine-second", "Focus on the smaller issue.");
         yield* taskControl(1, "steer", "refine-second", "Focus on the smaller issue.");
@@ -3360,12 +3777,70 @@ it.effect.each([false, true])(
           failureArrived,
         );
         const third = independentJobs.get(failedChild)!;
+        const failedDelivery = {
+          ...third.turnItems.find((item) => item.type === "assistant_message")!,
+          id: TurnItemId.make("turn-item:steering-delivery-failure:failed-child"),
+          type: "error" as const,
+          status: "failed" as const,
+          failure: {
+            class: "transport_error" as const,
+            message: "Correction not delivered before task failure",
+            code: null,
+            retryable: null,
+          },
+        };
         independentJobs.set(failedChild, {
           ...third,
           runs: third.runs.map((run) => ({ ...run, status: "failed" })),
+          turnItems: [...third.turnItems, failedDelivery],
         });
         yield* publishChild(2, "run.updated");
         yield* Deferred.await(failureArrived);
+        assert.isTrue(
+          contexts.some((message) => message.text.includes(failedDelivery.failure.message)),
+          "terminal state and its delivery failure both reach the planner",
+        );
+        const lateChildFailure = {
+          ...failedDelivery,
+          id: TurnItemId.make("turn-item:runtime-request-delivery-failure:failed-child"),
+          failure: {
+            ...failedDelivery.failure,
+            message: "Answer not delivered after task failure",
+          },
+        };
+        const lateChildText = JSON.stringify({
+          type: "background_task_output",
+          taskId: receipts[2]!.taskId,
+          requestId: receipts[2]!.requestId,
+          runId: receipts[2]!.runId,
+          kind: "update",
+          resultReady: false,
+          text: JSON.stringify({
+            type: "background_task_delivery_failed",
+            runId: receipts[2]!.runId,
+            status: "failed",
+            message: lateChildFailure.failure.message,
+            resultReady: false,
+          }),
+        });
+        const lateChildReceived = yield* Deferred.make<void>();
+        contextSignals.set(lateChildText, lateChildReceived);
+        const failedProjection = independentJobs.get(failedChild)!;
+        independentJobs.set(failedChild, {
+          ...failedProjection,
+          turnItems: [...failedProjection.turnItems, lateChildFailure],
+        });
+        yield* Queue.offer(
+          independentQueues.get(failedChild)!.get("turn-item.updated")!,
+          eventFor({
+            type: "turn-item.updated",
+            threadId: failedChild,
+            runId: receipts[2]!.runId,
+            payload: lateChildFailure,
+          } as never),
+        );
+        yield* Deferred.await(lateChildReceived);
+        assert.equal(contexts.filter((message) => message.text === lateChildText).length, 1);
         const failedReceipt = decodeJson(
           yield* taskControl(2, "steer", "failed-task", "Do not replace failed work"),
         ) as Record<string, unknown>;
@@ -3384,6 +3859,12 @@ it.effect.each([false, true])(
         assert.equal(independentJobs.get(failedChild)!.runs[0]!.status, "failed");
         assert.equal(admissions, 3, "failure and rejected steering never create replacement tasks");
         yield* service.stop(session, { ...parallelLease, clientRequestId: "parallel-end" });
+        for (const receipt of receipts)
+          assert.equal(
+            readbackSubscriptions.get(receipt.threadId!)?.size ?? 0,
+            0,
+            "EndCall releases terminal and active task readback subscriptions",
+          );
         assert.equal(
           independentJobs.get(receipts[1]!.threadId!)!.runs[0]!.status,
           "running",
@@ -3638,8 +4119,35 @@ it.effect.each([false, true])(
                     },
                   ],
                 };
+                const deliveryFailed = reuseRuntime && mainInputs.length === 1;
+                if (deliveryFailed)
+                  durableProjection = {
+                    ...durableProjection,
+                    turnItems: [
+                      ...durableProjection.turnItems,
+                      {
+                        ...durableProjection.turnItems.find(
+                          (item) => item.type === "assistant_message",
+                        )!,
+                        type: "user_message" as const,
+                        id: TurnItemId.make(`turn-item:message:${input.messageId}`),
+                        messageId: input.messageId,
+                        runId: run.id,
+                        status: "failed" as const,
+                        text: input.text,
+                        inputIntent: "steer" as const,
+                        createdBy: "user" as const,
+                        creationSource: "voice" as const,
+                        attachments: [],
+                      },
+                    ],
+                  };
                 const result = {
-                  delivery: mainInputs.length === 1 ? "started" : "steered",
+                  delivery: deliveryFailed
+                    ? "failed"
+                    : mainInputs.length === 1
+                      ? "started"
+                      : "steered",
                   run,
                 } as Effect.Success<ReturnType<NonNullable<typeof mainSend>>>;
                 mainReceipts.set(input.commandId, result);
@@ -3723,8 +4231,13 @@ it.effect.each([false, true])(
         );
         const mainReceipt = decodeJson(mainStored[0]!.receipt_json) as {
           previewContext: string;
+          accepted: boolean;
+          delivery: string;
           intakeIntent: { id: string; threadId: string; provisional: boolean };
         };
+        assert.equal(mainReceipt.accepted, !reuseRuntime);
+        assert.equal(mainReceipt.delivery, reuseRuntime ? "failed" : "accepted");
+        assert.equal(durableProjection.runs[0]!.status, "running");
         assert.equal(mainReceipt.previewContext, selected);
         assert.equal(mainReceipt.intakeIntent.threadId, threadId);
         assert.isFalse(mainReceipt.intakeIntent.provisional);

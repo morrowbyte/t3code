@@ -1,15 +1,24 @@
 import {
   MessageId,
+  type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2Run,
   ProviderInstanceId,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
+import { mergeOlderHistoryIntoProjection } from "@t3tools/client-runtime/state/thread-history-merge";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
+import {
+  v2Projection,
+  v2ThreadId,
+  v2Now,
+} from "../../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures";
 
 import {
   announcedRun,
+  deliveryFailureSnapshot,
   nextThreadAnnouncement,
   type ThreadActivitySnapshot,
   type ThreadAnnouncementMemory,
@@ -41,11 +50,56 @@ function speak(snapshots: ReadonlyArray<ThreadActivitySnapshot>) {
 }
 
 describe("nextThreadAnnouncement", () => {
-  it("follows a turn from start to finish", () => {
-    expect(
-      speak([idle(firstRun, "completed"), busy(), busy(), idle(secondRun, "completed")]),
-    ).toEqual(["Working", "Done"]);
-  });
+  it.each(["steering-delivery-failure", "runtime-request-delivery-failure"])(
+    "follows a turn through one %s announcement to its result",
+    (kind) => {
+      const deliveryFailure = {
+        id: `turn-item:${kind}:message-1`,
+        ordinal: 11,
+        message: "Delivery not confirmed. Send it again if it is still needed.",
+      };
+      const working = { ...busy(), latestLocalItemOrdinal: 10 };
+      const failed = {
+        ...working,
+        latestLocalItemOrdinal: 11,
+        deliveryFailures: [deliveryFailure],
+      };
+      const batched = {
+        ...working,
+        latestLocalItemOrdinal: 13,
+        deliveryFailures: [
+          { ...deliveryFailure, id: "message-2", ordinal: 12, message: "Correction rejected" },
+          { ...deliveryFailure, id: "message-3", ordinal: 13, message: "Answer rejected" },
+        ],
+      };
+      expect(
+        speak([
+          idle(firstRun, "completed"),
+          working,
+          failed,
+          failed,
+          working,
+          failed,
+          { ...failed, deliveryFailures: [{ ...deliveryFailure, id: "historical", ordinal: 3 }] },
+          failed,
+          batched,
+          batched,
+          idle(secondRun, "completed"),
+        ]),
+      ).toEqual([
+        "Working",
+        deliveryFailure.message,
+        "Correction rejected. Answer rejected",
+        "Done",
+      ]);
+      const ended = { ...failed, ...idle(secondRun, "completed") };
+      expect(speak([working, ended, ended])).toEqual([`Done. ${deliveryFailure.message}`]);
+      expect(
+        speak([working, { ...working, ...idle(secondRun, "completed") }, ended, ended]),
+      ).toEqual(["Done", deliveryFailure.message]);
+      expect(speak([ended, ended])).toEqual([]);
+    },
+  );
 
   it("says Working once when a send looks idle before its run appears", () => {
     expect(
@@ -119,6 +173,97 @@ describe("nextThreadAnnouncement", () => {
   it("stays silent when a thread opens mid-turn or after one", () => {
     expect(speak([idle(firstRun, "completed"), idle(firstRun, "completed")])).toEqual([]);
     expect(speak([busy(), busy()])).toEqual([]);
+    const row = (
+      ordinal: number,
+      position: number,
+      visibility: "local" | "inherited" = "local",
+    ): OrchestrationV2ProjectedTurnItem => {
+      const id = TurnItemId.make(`turn-item:steering-delivery-failure:message-${ordinal}`);
+      const sourceThreadId = visibility === "local" ? v2ThreadId : ThreadId.make("other-thread");
+      return {
+        position,
+        visibility,
+        sourceThreadId,
+        sourceItemId: id,
+        item: {
+          id,
+          threadId: sourceThreadId,
+          runId: secondRun,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal,
+          status: "failed",
+          title: "Correction delivery not confirmed",
+          startedAt: v2Now,
+          completedAt: v2Now,
+          updatedAt: v2Now,
+          type: "error",
+          failure: {
+            class: "transport_error",
+            message: "Send it again if needed.",
+            code: null,
+            retryable: null,
+          },
+        },
+      };
+    };
+    const historicalFailure = row(100, 0);
+    const initial = {
+      ...v2Projection,
+      turnItems: [historicalFailure.item],
+      visibleTurnItems: [historicalFailure, row(200, 1, "inherited")],
+    };
+    const expanded = mergeOlderHistoryIntoProjection(
+      initial,
+      Array.from({ length: 20 }, (_, index) => row(index + 1, index)),
+    );
+    expect(
+      expanded.visibleTurnItems.find(
+        (entry) => entry.sourceItemId === historicalFailure.sourceItemId,
+      )?.position,
+    ).toBe(20);
+    const freshFailure = row(101, 22);
+    const live = {
+      ...expanded,
+      turnItems: [...expanded.turnItems, freshFailure.item],
+      visibleTurnItems: [...expanded.visibleTurnItems, freshFailure],
+    };
+    const snapshot = (
+      projection: {
+        readonly visibleTurnItems: ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
+      },
+      activityRunId: RunId | null = secondRun,
+    ) => ({
+      ...(activityRunId === null ? idle(null, null) : busy("working", activityRunId)),
+      ...deliveryFailureSnapshot(
+        projection.visibleTurnItems.map((projectedItem) => ({
+          kind: "event" as const,
+          id: projectedItem.item.id,
+          createdAt: "2026-06-20T00:00:00.000Z",
+          projectedItem,
+        })),
+        activityRunId,
+      ),
+    });
+    expect(speak([snapshot(initial), snapshot(expanded), snapshot(expanded)])).toEqual([]);
+    expect(speak([snapshot(initial), snapshot(expanded), snapshot(live), snapshot(live)])).toEqual([
+      "Correction delivery not confirmed. Send it again if needed.",
+    ]);
+    const newerRunId = RunId.make("run-newer");
+    expect(
+      speak([
+        snapshot(initial),
+        snapshot(expanded, newerRunId),
+        snapshot(live, newerRunId),
+        snapshot(live, newerRunId),
+      ]),
+    ).toEqual(["Working", "Correction delivery not confirmed. Send it again if needed."]);
+    expect(speak([snapshot(initial, null), snapshot(live, null), snapshot(live, null)])).toEqual([
+      "Correction delivery not confirmed. Send it again if needed.",
+    ]);
   });
 
   it("announces the end of a turn that was already running when the thread opened", () => {

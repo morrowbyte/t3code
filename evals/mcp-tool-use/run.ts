@@ -1921,6 +1921,7 @@ export const runCrewSample = Effect.fn("evaluateMcpToolUse.runCrewSample")(funct
           ? item.content.map((block: Block) => valueText(block.text)).join("\n")
           : valueText(item.content),
       ),
+    "The callable JavaScript fixture function is crew_fixture_exec. Every reference to exec({code: ...}) in the replay means crew_fixture_exec({code: ...}); no tool named exec is registered. ALL_TOOLS and tools are available inside that function.",
   ].join("\n\n");
   const calls: Array<Call> = [];
   const transcript: Array<ProviderEvalResponse> = [];
@@ -1950,7 +1951,7 @@ export const runCrewSample = Effect.fn("evaluateMcpToolUse.runCrewSample")(funct
     ).pipe(Effect.orDie)}`,
     tools: [
       {
-        name: "exec",
+        name: "crew_fixture_exec",
         description:
           "Execute JavaScript in the fixture. Supply JSON {code: string}. This native JSON transport replaces the custom Lark envelope. Use text(value) for output, tools[name](arguments) for simulated tools, and ALL_TOOLS (name/description entries) to discover their current schemas. No real shell or project operations run on the provider host.",
         inputSchema: {
@@ -1981,7 +1982,7 @@ export const runCrewSample = Effect.fn("evaluateMcpToolUse.runCrewSample")(funct
     evaluationId = response.evaluationId;
     if (step === limit) break;
     if (
-      response.name !== "exec" ||
+      response.name !== "crew_fixture_exec" ||
       !isRecord(response.arguments) ||
       typeof response.arguments.code !== "string"
     ) {

@@ -8,19 +8,29 @@ import {
 } from "./toolOutput.ts";
 
 describe("compactDynamicToolOutput", () => {
-  it("extracts IDs through the MCP result envelopes used by T3 summaries", () => {
-    const metadata = { threadId: "thread-1", messageId: "message-1" };
-    const json = JSON.stringify({ ...metadata, response: "Private response body" });
-    for (const value of [
-      { ...metadata, response: "Private response body" },
-      { structuredContent: JSON.parse(json), content: "Ignored alternative body" },
-      [{ type: "text", text: json }],
-      { content: [{ text: { text: json } }], isError: false },
-      json,
-    ]) {
-      expect(compactDynamicToolOutput(value)).toEqual(metadata);
-    }
-  });
+  it.each([undefined, "accepted", "started", "queued", "steered", "restarted", "failed"] as const)(
+    "extracts IDs and %s delivery through the MCP result envelopes used by T3 summaries",
+    (delivery) => {
+      const metadata = {
+        threadId: "thread-1",
+        messageId: "message-1",
+        ...(delivery === undefined ? {} : { delivery }),
+      };
+      const json = JSON.stringify({ ...metadata, response: "Private response body" });
+      for (const value of [
+        { ...metadata, response: "Private response body" },
+        { structuredContent: JSON.parse(json), content: "Ignored alternative body" },
+        [{ type: "text", text: json }],
+        { content: [{ text: { text: json } }], isError: false },
+        json,
+      ]) {
+        expect(compactDynamicToolOutput(value)).toEqual(metadata);
+      }
+      expect(compactDynamicToolOutput({ threadId: "known", delivery: "untrusted text" })).toEqual({
+        threadId: "known",
+      });
+    },
+  );
 
   it("keeps nested thread identity and scalar task IDs without result bodies", () => {
     const output = {

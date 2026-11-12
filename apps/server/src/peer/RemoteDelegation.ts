@@ -607,7 +607,7 @@ const make = Effect.gen(function* () {
         timeoutMs: FOLLOW_WAIT_MS,
         // A thread there whose run ended may still be waiting on its own
         // tasks to wake it for the answer, which a task here waits for too.
-        // An older peer ignores this and reports the run alone.
+        // A settled result is explicit; older peers can only confirm the initial run ended.
         untilDelegatedWorkSettled: true,
       })
       .pipe(Effect.raceFirst(endedHere));
@@ -628,6 +628,16 @@ const make = Effect.gen(function* () {
       return yield* settled(parentThreadId, taskId);
     }
     if (!isTerminal(waited.status)) return false;
+    if (waited.status === "completed" && waited.resultRun === undefined) {
+      yield* complete(
+        parentThreadId,
+        taskId,
+        "failed",
+        "The linked environment cannot confirm that this task's delegated work has finished. Update Crew there before relying on its result; its thread remains available for follow-up or cancellation.",
+        undefined,
+      );
+      return yield* settled(parentThreadId, taskId);
+    }
     const resultRun = waited.resultRun ?? {
       runId: remote.runId ?? waited.runId,
       status: waited.status,

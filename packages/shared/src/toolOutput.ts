@@ -36,6 +36,7 @@ interface CompactToolOutput {
   isError?: true;
   threadId?: string;
   messageId?: string;
+  delivery?: "accepted" | "started" | "queued" | "steered" | "restarted" | "failed";
   taskId?: string;
   scheduledTaskId?: string;
   status?: "rolled_back";
@@ -125,6 +126,15 @@ export function compactDynamicToolOutput(value: unknown): CompactToolOutput | un
       if (id !== undefined) output[key] = id;
     }
     if (data.status === "rolled_back") output.status = "rolled_back";
+    switch (data.delivery) {
+      case "accepted":
+      case "started":
+      case "queued":
+      case "steered":
+      case "restarted":
+      case "failed":
+        output.delivery = data.delivery;
+    }
     for (const key of ["linkedCount", "unlinkedCount"] as const) {
       const count = data[key];
       if (typeof count === "number" && Number.isSafeInteger(count)) output[key] = count;

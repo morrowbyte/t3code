@@ -140,6 +140,7 @@ import {
 } from "./timelineViewport";
 import { useThreadFindPositionReader } from "./useThreadFindPositionReader";
 import { ThreadActivityAnnouncer } from "./ThreadActivityAnnouncer";
+import { deliveryFailureSnapshot } from "./threadActivityAnnouncement";
 import { useStableHandoffRuns, useIncrementalTimelineRows, useStableRows } from "./useTimelineRows";
 import { useClientSettings } from "../../hooks/useSettings";
 
@@ -1203,6 +1204,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       requestId={awaitingRequestId}
       runId={announcedRun?.runId ?? null}
       runStatus={announcedRun?.status ?? null}
+      {...deliveryFailureSnapshot(timelineEntries, announcedRun?.runId ?? null)}
       detailBehind={detailBehindShell}
     />
   );

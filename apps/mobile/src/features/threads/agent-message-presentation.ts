@@ -4,7 +4,7 @@ import { resolveT3McpToolId } from "@t3tools/shared/t3McpToolPresentation";
 
 type MessageStatus = "info" | "fertig" | "blockiert" | "frage" | "entscheidung";
 type SectionKind = "result" | "open" | "next" | "decision" | "technical" | "detail";
-type Delivery = "started" | "queued" | "steered" | "restarted";
+type Delivery = "accepted" | "started" | "queued" | "steered" | "restarted";
 
 export function agentMessagePreview(text: string): string {
   return text.trim().split(/\r?\n[\t ]*\r?\n/u, 1)[0] ?? "";
@@ -207,6 +207,7 @@ function identifier(value: unknown) {
 
 function deliveryMode(value: unknown): Delivery | null {
   switch (value) {
+    case "accepted":
     case "started":
     case "queued":
     case "steered":
@@ -247,6 +248,7 @@ export function readAgentSend(item: Extract<OrchestrationV2TurnItem, { type: "dy
   const failed =
     ["failed", "cancelled", "interrupted", "rolled_back"].includes(item.status) ||
     output.failed ||
+    output.data?.delivery === "failed" ||
     mismatch;
   const accepted =
     !failed &&

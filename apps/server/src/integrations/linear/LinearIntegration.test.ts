@@ -50,6 +50,7 @@ function fixture(configured = true) {
     archived: false,
     deleted: false,
     failAfterCommit: false,
+    delivery: "steered" as Threads.ThreadManagementSendResult["delivery"],
   };
   const issue = () => ({
     id: upstream.issueId,
@@ -104,15 +105,28 @@ function fixture(configured = true) {
             },
           ],
           providerThreads: [{ id: "owner", goal: target.paused ? { status: "paused" } : null }],
+          turnItems: sends.map((send) => ({
+            type: "user_message",
+            messageId: send.messageId,
+            runId: RunId.make("existing-run"),
+            status:
+              target.delivery === "failed"
+                ? "failed"
+                : target.delivery === "steered"
+                  ? "completed"
+                  : "pending",
+          })),
         };
       }),
     sendToThread: (input: Threads.ThreadManagementSendInput) =>
       Effect.gen(function* () {
         sends.push(input);
         receipts.add(input.commandId);
+        if (target.delivery === "steered")
+          receipts.add(`${input.commandId}:steering-delivery-accepted`);
         if (target.failAfterCommit)
           return yield* new LinearIntegrationError({ reason: "target_unavailable" });
-        return { run: { id: RunId.make("existing-run") }, delivery: "steered" };
+        return { run: { id: RunId.make("existing-run") }, delivery: target.delivery };
       }),
   } as unknown as Threads.ThreadManagementService["Service"];
   const permissions = new Map<string, number>();
@@ -259,10 +273,11 @@ it.effect(
   },
 );
 
-it.effect(
-  "a signed bound event durably deduplicates delivery IDs and digests and steers once",
-  () => {
+it.effect.each(["accepted", "started", "queued", "steered", "restarted", "failed"] as const)(
+  "a signed bound event durably deduplicates delivery IDs and digests and sends once (%s)",
+  (delivery) => {
     const f = fixture();
+    f.target.delivery = delivery;
     return Effect.gen(function* () {
       const service = yield* LinearIntegration.LinearIntegration;
       yield* connect;
@@ -274,8 +289,17 @@ it.effect(
       assert.equal(f.sends.length, 1);
       assert.equal(f.sends[0]?.mode, "steer");
       assert.equal(f.sends[0]?.threadId, threadId);
-      assert.equal((yield* service.settings).deliveries[0]?.outcome, "delivered");
+      const expectedOutcome = delivery === "failed" ? "failed" : "delivered";
+      assert.equal((yield* service.settings).deliveries[0]?.outcome, expectedOutcome);
+      assert.equal((yield* service.settings).deliveries[0]?.dispatch, delivery);
       assert.equal((yield* service.settings).deliveries[0]?.runId, "existing-run");
+      if (delivery === "failed") {
+        const failed = (yield* service.settings).deliveries[0]!;
+        yield* service.action({ type: "retry", deliveryId: failed.id });
+        assert.equal((yield* service.settings).deliveries[0]?.outcome, "failed");
+        assert.equal((yield* service.settings).deliveries[0]?.dispatch, "failed");
+        assert.equal(f.sends.length, 1);
+      }
       assert.equal(yield* service.receive(request), "duplicate");
       assert.equal(
         yield* service.receive({
@@ -292,6 +316,9 @@ it.effect(
       yield* reopened.drain;
       assert.equal(f.sends.length, 1);
       const status = yield* reopened.settings;
+      assert.equal(status.deliveries[0]?.outcome, expectedOutcome);
+      assert.equal(status.deliveries[0]?.dispatch, delivery);
+      assert.equal(status.deliveries[0]?.runId, "existing-run");
       assert.equal(status.bindings[0]?.workspaceId, "workspace-one");
       assert.equal(status.bindings[0]?.teamId, "team-one");
       assert.equal(status.bindings[0]?.linearProjectId, "linear-project-one");
@@ -506,19 +533,25 @@ it.effect("turning OFF holds accepted work across re-enable until an explicit re
   }).pipe(Effect.provide(f.layer), Effect.scoped);
 });
 
-it.effect("a committed dispatch is not sent again after an acknowledgement failure", () => {
-  const f = fixture();
-  return Effect.gen(function* () {
-    const service = yield* LinearIntegration.LinearIntegration;
-    yield* connect;
-    f.target.failAfterCommit = true;
-    yield* service.receive(yield* event());
-    yield* service.drain;
-    const delivery = (yield* service.settings).deliveries[0]!;
-    assert.equal(f.sends.length, 1);
-    f.target.failAfterCommit = false;
-    yield* service.action({ type: "retry", deliveryId: delivery.id });
-    assert.equal(f.sends.length, 1);
-    assert.equal((yield* service.settings).deliveries[0]?.outcome, "delivered");
-  }).pipe(Effect.provide(f.layer), Effect.scoped);
-});
+it.effect.each(["steered", "accepted", "failed"] as const)(
+  "a committed dispatch is not sent again after an acknowledgement failure (%s)",
+  (dispatch) => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      const service = yield* LinearIntegration.LinearIntegration;
+      yield* connect;
+      f.target.delivery = dispatch;
+      f.target.failAfterCommit = true;
+      yield* service.receive(yield* event());
+      yield* service.drain;
+      const delivery = (yield* service.settings).deliveries[0]!;
+      assert.equal(f.sends.length, 1);
+      f.target.failAfterCommit = false;
+      yield* service.action({ type: "retry", deliveryId: delivery.id });
+      assert.equal(f.sends.length, 1);
+      const restored = (yield* service.settings).deliveries[0]!;
+      assert.equal(restored.outcome, dispatch === "failed" ? "failed" : "delivered");
+      assert.equal(restored.dispatch, dispatch);
+    }).pipe(Effect.provide(f.layer), Effect.scoped);
+  },
+);

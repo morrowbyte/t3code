@@ -2843,7 +2843,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             execute: (effect) =>
               effect.request.type === "delegated-tasks.stop"
                 ? Deferred.succeed(stopStarted, undefined).pipe(Effect.andThen(Effect.never))
-                : Deferred.succeed(turnStarted, undefined),
+                : Deferred.succeed(turnStarted, undefined).pipe(Effect.asVoid),
           }),
         );
         const layerWorker = EffectWorker.layerWithOptions({
