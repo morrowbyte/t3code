@@ -80,6 +80,7 @@ import { AssistantSelectionToolbar } from "./AssistantSelectionToolbar";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
 import { type AssistantCitationRequest } from "./AssistantCitationSource";
 import { useAssistantCitationTarget } from "./useAssistantCitationTarget";
+import { reportReplyNavigationFailure, useAgentReplyNavigation } from "./useAgentReplyNavigation";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import { resolveCitationPhase, type CitedHistory } from "./citationProcedure";
 import {
@@ -94,6 +95,7 @@ import {
   type TimelineLatestRun,
 } from "./MessagesTimeline.logic";
 import { type ThreadFindMatch } from "./threadFind";
+import { closeThreadFind } from "./threadFindStore";
 import { useThreadFindNavigation } from "./useThreadFindNavigation";
 import { TooltipScrollDismissArea } from "../ui/tooltip";
 import { WorktreeSetupCard } from "./WorktreeSetupCard";
@@ -476,6 +478,27 @@ const ConversationTimeline = memo(function ConversationTimeline({
     setExpandedAttemptIds(paintedExpandedAttemptIds);
   }
   const citationThreadRef = parseScopedThreadKey(routeThreadKey);
+  const replyTarget = useAgentReplyNavigation(parseScopedThreadKey(listIdentityKey));
+  const replyKey = replyTarget?.key ?? null;
+  const [replySettlement, setReplySettlement] = useState({ key: replyKey, done: false });
+  let activeReplySettlement = replySettlement;
+  if (replySettlement.key !== replyKey) {
+    activeReplySettlement = { key: replyKey, done: false };
+    setReplySettlement(activeReplySettlement);
+  }
+  const replyPositioning =
+    replyTarget !== null &&
+    !activeReplySettlement.done &&
+    (replyTarget.history === "loading" || replyTarget.history === "found");
+  const replyEntry =
+    replyPositioning && replyTarget.history === "found"
+      ? timelineEntries.find(
+          (entry) =>
+            entry.kind === "message" &&
+            entry.message.id === replyTarget.messageId &&
+            entry.projectedItem?.sourceThreadId === replyTarget.threadId,
+        )
+      : undefined;
   const openPullRequest = useOpenPrLink(citationThreadRef ?? undefined);
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
   const [disclosureToggleSettling, setDisclosureToggleSettling] = useState(false);
@@ -693,6 +716,25 @@ const ConversationTimeline = memo(function ConversationTimeline({
       );
     }
   }
+  if (replyEntry) {
+    const replyRunId = (
+      findFoldRunIds ??
+      timelineTurnFoldRunIdsByEntryId({
+        timelineEntries,
+        latestRun,
+        runningRunId,
+        isWorking,
+        runlessWorkActive,
+      })
+    ).get(replyEntry.id);
+    if (replyRunId && !expandedRunIds.has(replyRunId)) {
+      setExpandedRunIds(new Set(expandedRunIds).add(replyRunId));
+    }
+    const replyAttempt = replyEntry.attempt;
+    if (replyAttempt?.status === "superseded" && !expandedAttemptIds.has(replyAttempt.id)) {
+      setExpandedAttemptIds(new Set(expandedAttemptIds).add(replyAttempt.id));
+    }
+  }
   const visibleExpandedRunIds =
     !activeFindRunId || paintedExpandedRunIds.has(activeFindRunId)
       ? paintedExpandedRunIds
@@ -801,7 +843,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       listIdentityKey,
       listOpenedOn,
       rememberedPosition,
-      citationPending: citationRequest !== null,
+      citationPending: citationRequest !== null || replyPositioning,
       releaseForFind: findOpenAtOpening,
       onPositioned: (identity) => {
         setPositionedThreadKey(identity);
@@ -811,6 +853,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     });
   }, [
     citationRequest,
+    replyPositioning,
     findOpenAtOpening,
     listIdentityKey,
     listOpenedOn,
@@ -843,6 +886,75 @@ const ConversationTimeline = memo(function ConversationTimeline({
     onManualNavigation: navigateTimeline,
   });
   const [findListReady, setFindListReady] = useState(false);
+  const replyNavigatingRef = useRef(false);
+  const replyCancelledRef = useRef(false);
+  const replyRowIndex = replyEntry ? rows.findIndex((row) => row.id === replyEntry.id) : -1;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- cancels pending reply navigation when the user navigates the mounted timeline or presses Escape
+  useLayoutEffect(() => {
+    if (!replyPositioning || !timelineViewportElement) return;
+    replyCancelledRef.current = false;
+    closeThreadFind();
+    viewportRef.current?.navigate({ releasesFollow: true });
+    const dismiss = () => {
+      replyCancelledRef.current = true;
+      setReplySettlement({ key: replyKey, done: true });
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") dismiss();
+    };
+    const detach = viewportRef.current?.subscribe((navigation) => {
+      if (navigation.source !== "scroll" && !replyNavigatingRef.current) dismiss();
+    });
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      detach?.();
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [replyKey, replyPositioning, timelineViewportElement]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- positions the virtual list on the exact loaded reply message after its folds and initial restore settle
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (
+      !replyPositioning ||
+      replyTarget?.history !== "found" ||
+      !findListReady ||
+      restoringThreadPosition ||
+      !list ||
+      replyRowIndex < 0
+    ) {
+      return;
+    }
+    const releaseFollow = () => {
+      replyNavigatingRef.current = true;
+      viewportRef.current?.navigate({ releasesFollow: true });
+      replyNavigatingRef.current = false;
+    };
+    releaseFollow();
+    let cancelled = false;
+    void list
+      .scrollToIndex({ index: replyRowIndex, animated: false, viewOffset: 24 })
+      .then(() => {
+        if (cancelled || replyCancelledRef.current) return;
+        releaseFollow();
+        setReplySettlement({ key: replyKey, done: true });
+      })
+      .catch(() => {
+        if (cancelled || replyCancelledRef.current) return;
+        reportReplyNavigationFailure();
+        setReplySettlement({ key: replyKey, done: true });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    replyKey,
+    replyPositioning,
+    replyTarget?.history,
+    replyRowIndex,
+    findListReady,
+    restoringThreadPosition,
+    listRef,
+  ]);
   const loadJumpHistory = useEffectEvent(() => historyControls?.onLoadEarlier());
   const keyboardJumpRowIndex = keyboardJumpEntry
     ? rows.findIndex((row) => row.id === keyboardJumpEntry.id)
@@ -912,6 +1024,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     ...(firstMessageRow ? [firstMessageRow.id] : []),
     ...(lastMessageRow && lastMessageRow !== firstMessageRow ? [lastMessageRow.id] : []),
     ...(citationAlwaysRender?.keys ?? []),
+    ...(replyEntry ? [replyEntry.id] : []),
     ...(fullscreenAppRowId === null ? [] : [fullscreenAppRowId]),
     ...new Set(
       [...playingAudioRows].filter(([audio]) => audio.isConnected).map(([, rowId]) => rowId),
@@ -1255,6 +1368,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     const viewport = scrollNode ? attachTimelineViewport(scrollNode, jumpToMessage) : null;
     viewportRef.current = viewport;
     const detachViewport = viewport ? onViewportAttach?.(viewport) : undefined;
+    if (replyPositioning) viewport?.navigate({ releasesFollow: true });
     const stopRememberingRelease = viewport?.onFollowReleased(rememberReleasedPosition);
     const stopPendingKeyboardJump = viewport?.subscribe((navigation) => {
       if (navigation.source !== "scroll") setKeyboardJump(null);
@@ -1444,7 +1558,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
               renderItem={renderItem}
               estimatedItemSize={90}
               initialScrollAtEnd={
-                !findActive && citationRequest === null && rememberedPosition?.atEnd !== false
+                !findActive &&
+                !replyPositioning &&
+                citationRequest === null &&
+                rememberedPosition?.atEnd !== false
               }
               // Legend needs a data refresh to mount new pins without a scroll event.
               dataVersion={`${readyCitationRequest?.key ?? listIdentityKey}:${alwaysRenderKeys.join(",")}`}
@@ -1453,6 +1570,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
               {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
               contentInsetEndAdjustment={anchoredEndSpace ? contentInsetEndAdjustment : 0}
               maintainScrollAtEnd={
+                replyPositioning ||
                 citationPositioning ||
                 (restoringThreadPosition && rememberedPosition?.atEnd === false) ||
                 anchoredEndSpace ||
@@ -1465,6 +1583,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
                     : TIMELINE_MAINTAIN_SCROLL_AT_END
               }
               maintainVisibleContentPosition={
+                replyPositioning ||
                 findActive ||
                 citationPositioning ||
                 (restoringThreadPosition && rememberedPosition?.atEnd === false)

@@ -2,7 +2,7 @@ import { useThreadShell } from "../../state/entities";
 import { useAtomValue } from "@effect/atom-react";
 import { environmentThreadDetails } from "../../state/threads";
 import { delegatedTaskStatus } from "@t3tools/client-runtime/state/subagent-display";
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   turnItemDetailRevision,
   turnItemNeedsDetailFetch,
@@ -13,7 +13,6 @@ import {
   type readAgentReply,
   readAgentSend,
 } from "./agentMessagePresentation";
-import { openThreadFindOnQuery } from "./threadFindStore";
 import { AgentMessageRow } from "./AgentMessageRow";
 import { V2ItemInspector } from "./V2ItemInspector";
 import { useRightPanelStore } from "../../rightPanelStore";
@@ -24,7 +23,7 @@ import { filePreviewKind } from "@t3tools/shared/filePreview";
 import { findRevealRef } from "./markdownFindContext";
 import {
   EnvironmentId,
-  MessageId,
+  type MessageId,
   type ScheduledTaskId,
   type ServerProviderSkill,
   ThreadId,
@@ -58,7 +57,7 @@ import {
   PencilIcon,
 } from "lucide-react";
 import { Link as LinkIconNode } from "lucide";
-import { Button, InlineButton } from "../ui/button";
+import { Button } from "../ui/button";
 import { useAssetUrlRefresh, useAssetUrls, useAssetUrlState } from "../../assets/assetUrls";
 import { AttachmentImage } from "../media/AttachmentImage";
 import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
@@ -135,23 +134,10 @@ function AgentReplyReference({ reply }: { reply: NonNullable<ReturnType<typeof r
       <Link
         to="/$environmentId/$threadId"
         params={threadRef}
+        search={{ messageId: reply.messageId }}
+        resetScroll={false}
         title={`${thread?.title ?? reply.threadId} · ${reply.messageId}`}
         className="rounded-sm text-foreground/85 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring [overflow-wrap:anywhere]"
-        onClick={(event) => {
-          if (
-            event.button !== 0 ||
-            event.metaKey ||
-            event.ctrlKey ||
-            event.shiftKey ||
-            event.altKey ||
-            !messageText
-          )
-            return;
-          openThreadFindOnQuery(scopedThreadKey(threadRef), {
-            query: messageText.trim().slice(0, 120),
-            start: { entryId: MessageId.make(reply.messageId), occurrence: 0 },
-          });
-        }}
       >
         {messageText ? collapsedAgentMessageSummary(messageText) : `Nachricht ${reply.messageId}`}
       </Link>

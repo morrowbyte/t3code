@@ -17,6 +17,7 @@ import { useNowAfter } from "../../lib/clock";
 import { useThreadShell } from "../../state/entities";
 import { environmentShell } from "../../state/shell";
 import { useEnvironmentThread } from "../../state/threads";
+import { resolveThreadRequestDeliveryFailure } from "./threadListV2";
 
 export function ThreadTaskProgress(props: {
   readonly threadRef: ScopedThreadRef;
@@ -26,13 +27,19 @@ export function ThreadTaskProgress(props: {
   readonly onPrepareResume: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const threadShell = useThreadShell(props.threadRef);
+  const deliveryFailure = resolveThreadRequestDeliveryFailure(threadShell);
   const goal = props.goal ? presentProviderGoal(props.goal, props.working) : null;
   return (
-    <View>
+    <View className="rounded-xl bg-thread-canvas">
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={
-          goal ? `${goal.title}: ${goal.objective}. Open task progress` : "Open task progress"
+          deliveryFailure
+            ? "Response delivery failed. Open warning details"
+            : goal
+              ? `${goal.title}: ${goal.objective}. Open task progress`
+              : "Open task progress"
         }
         accessibilityState={{ expanded: open }}
         className="min-h-12 justify-center rounded-xl px-4 py-2 active:bg-subtle"
@@ -41,8 +48,18 @@ export function ThreadTaskProgress(props: {
           setOpen(true);
         }}
       >
-        <Text className="font-t3-medium text-xs text-foreground-muted">
-          {goal ? `${goal.title} · View progress` : "Task progress"}
+        <Text
+          className={
+            deliveryFailure
+              ? "font-t3-medium text-xs text-warning-foreground"
+              : "font-t3-medium text-xs text-foreground-muted"
+          }
+        >
+          {deliveryFailure
+            ? "Response delivery failed · View details"
+            : goal
+              ? `${goal.title} · View progress`
+              : "Task progress"}
         </Text>
         {goal && (
           <Text className="text-sm text-foreground" numberOfLines={1}>
@@ -74,8 +91,11 @@ function TaskProgressDetails(props: {
   const shell = useAtomValue(environmentShell.stateValueAtom(props.threadRef.environmentId));
   const thread = useEnvironmentThread(props.threadRef.environmentId, props.threadRef.threadId);
   const threadShell = useThreadShell(props.threadRef);
+  const deliveryFailure = resolveThreadRequestDeliveryFailure(threadShell);
   const raw = threadShell?.source;
-  const nowMs = useNowAfter(threadShell?.snoozedUntil ? Date.parse(threadShell.snoozedUntil) : null);
+  const nowMs = useNowAfter(
+    threadShell?.snoozedUntil ? Date.parse(threadShell.snoozedUntil) : null,
+  );
   const task = useMemo(() => {
     if (!raw) return null;
     const node = observatoryNode(props.threadRef.environmentId, raw);
@@ -102,6 +122,12 @@ function TaskProgressDetails(props: {
       contentInsetAdjustmentBehavior="automatic"
       contentContainerClassName="gap-4 p-4 pb-8"
     >
+      {deliveryFailure && (
+        <View className="gap-2">
+          <Text className="font-t3-medium text-warning-foreground">Response delivery failed</Text>
+          <Text className="text-foreground">{deliveryFailure.message}</Text>
+        </View>
+      )}
       {task === null ? (
         <Text className="text-foreground-muted">
           Task details unavailable in the loaded threads.
@@ -125,7 +151,7 @@ function TaskProgressDetails(props: {
               {task.lastUpdate && (
                 <View className="gap-1">
                   <Text className="font-t3-medium text-foreground">Latest agent update</Text>
-                  <Text className="text-foreground">{task.lastUpdate}</Text>
+                  <Text className="text-foreground">{task.lastUpdate.trim()}</Text>
                 </View>
               )}
               <Text className="text-foreground-muted">{task.interruption.nextStep}</Text>
@@ -142,9 +168,13 @@ function TaskProgressDetails(props: {
               </Text>
             </View>
           )}
-          <Text className="text-foreground">
-            Current: {task.currentStep ?? "No active step recorded"}
-          </Text>
+          {!task.steps.some(
+            (step) => step.status === "running" && step.text === task.currentStep,
+          ) && (
+            <Text className="text-foreground">
+              Current: {task.currentStep ?? "No active step recorded"}
+            </Text>
+          )}
           {task.planStatus !== "ready" && (
             <Text className="text-foreground-muted">
               {task.planStatus === "loading"

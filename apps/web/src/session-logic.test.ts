@@ -1410,7 +1410,7 @@ describe("HTML renders in the timeline", () => {
         delivery: "steered",
         status: "running",
       },
-    ): OrchestrationV2TurnItem => ({
+    ): Extract<OrchestrationV2TurnItem, { type: "dynamic_tool" }> => ({
       ...base("send", second),
       type: "dynamic_tool",
       toolName: "t3-code.t3_thread_send",
@@ -1419,21 +1419,27 @@ describe("HTML renders in the timeline", () => {
       status,
     });
 
-    it("projects a recorded send separately from generic work with the original input intact", () => {
-      const call = sendCall();
-      const entries = turn(call);
-      expect(entries.find((entry) => entry.id === "send")).toEqual({
-        id: "send",
-        kind: "agent-send",
-        createdAt: DateTime.formatIso(at(2)),
-        projectedItem: visible(call),
-      });
-      const send = entries.find((entry) => entry.kind === "agent-send");
-      expect(send?.projectedItem.item).toMatchObject({
-        input: { threadId: "android-thread", message: original },
-      });
-      expect(entries.some((entry) => entry.kind === "work" && entry.id === "send")).toBe(false);
-    });
+    it.each(["t3_thread_send", "t3_connected_thread_send"])(
+      "projects %s separately from generic work with the original input intact",
+      (toolName) => {
+        const call = {
+          ...sendCall(),
+          toolName: `t3-code.${toolName}`,
+        };
+        const entries = turn(call);
+        expect(entries.find((entry) => entry.id === "send")).toEqual({
+          id: "send",
+          kind: "agent-send",
+          createdAt: DateTime.formatIso(at(2)),
+          projectedItem: visible(call),
+        });
+        const send = entries.find((entry) => entry.kind === "agent-send");
+        expect(send?.projectedItem.item).toMatchObject({
+          input: { threadId: "android-thread", message: original },
+        });
+        expect(entries.some((entry) => entry.kind === "work" && entry.id === "send")).toBe(false);
+      },
+    );
 
     it.each([false, true])(
       "keeps outgoing communication visible through the collapsed turn, afterReply=%s",

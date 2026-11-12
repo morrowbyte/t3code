@@ -56,6 +56,8 @@ function Probe({
   target: string | null;
   environmentId: EnvironmentId;
 }) {
+  const promptRef = useRef("");
+  const composerRef = useRef(null);
   const state = usePendingThreadRequests({
     environmentId,
     activeThreadId: projection.thread.id,
@@ -64,8 +66,8 @@ function Probe({
     supportsQuestionAttachments: false,
     composerDraftTarget: { environmentId, threadId: projection.thread.id },
     setComposerDraftPrompt: () => {},
-    promptRef: useRef(""),
-    composerRef: useRef(null),
+    promptRef,
+    composerRef,
     setThreadError: () => {},
   });
   return (

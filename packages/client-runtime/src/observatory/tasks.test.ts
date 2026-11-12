@@ -11,7 +11,12 @@ import {
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import { v2Now, v2ThreadShell } from "../state/orchestrationV2TestFixtures.ts";
-import { observatoryTaskStatus, presentTaskInterruption, projectObservatoryTask } from "./tasks.ts";
+import {
+  observatoryTaskPriority,
+  observatoryTaskStatus,
+  presentTaskInterruption,
+  projectObservatoryTask,
+} from "./tasks.ts";
 import { observatoryKey, type ObservatoryNativeDetails, type ObservatoryNode } from "./native.ts";
 
 const ref = { environmentId: EnvironmentId.make("one"), threadId: v2ThreadShell.id };
@@ -97,6 +102,14 @@ describe("agent task status", () => {
   });
 
   it("requires goal completion and gives actual pending input and child work precedence", () => {
+    const settled = {
+      ...node.shell,
+      settledOverride: "settled" as const,
+      pendingRuntimeRequests: [
+        { id: RuntimeRequestId.make("link"), kind: "user_input" as const, createdAt: v2Now },
+      ],
+    };
+    expect(observatoryTaskPriority(settled)).toBeGreaterThan(0);
     const shell = {
       ...node.shell,
       goal: { objective: "Ship task view", status: "complete" as const },
@@ -242,7 +255,10 @@ describe("agent task status", () => {
       createdAt: v2Now,
       blocking: false,
     };
-    const summarized = { ...working, shell: { ...working.shell, pendingRuntimeRequests: [summary] } };
+    const summarized = {
+      ...working,
+      shell: { ...working.shell, pendingRuntimeRequests: [summary] },
+    };
     const resolved = {
       ...detail,
       projection: {
@@ -257,7 +273,31 @@ describe("agent task status", () => {
     expect(projectObservatoryTask(summarized, [summarized], null).request).toMatchObject({
       id: request.id,
       blocking: false,
+      label: "Open question",
     });
+    const labeled = {
+      ...summarized,
+      shell: {
+        ...summarized.shell,
+        pendingRuntimeRequests: [{ ...summary, label: "Use staging?" }],
+      },
+    };
+    for (const loaded of [null, detail]) {
+      expect(projectObservatoryTask(labeled, [labeled], loaded).request).toMatchObject({
+        id: request.id,
+        blocking: false,
+        label: "Use staging?",
+      });
+    }
+    const legacy = {
+      ...labeled,
+      shell: {
+        ...labeled.shell,
+        pendingRuntimeRequests: undefined,
+        pendingRuntimeRequest: { ...summary, label: "Use staging?" },
+      },
+    };
+    expect(projectObservatoryTask(legacy, [legacy], null).request?.label).toBe("Use staging?");
   });
 
   it.each(["secret_request", "link_request"] as const)(
@@ -351,17 +391,12 @@ describe("agent task status", () => {
         },
       };
       expect(projectObservatoryTask(legacy, [legacy], detail).request).toEqual(expected);
-      expect(projectObservatoryTask(legacy, [legacy], missingHistory).status).toBe(
-        "waiting_user",
-      );
+      expect(projectObservatoryTask(legacy, [legacy], missingHistory).status).toBe("waiting_user");
       const mixed = {
         ...complete,
         shell: {
           ...complete.shell,
-          pendingRuntimeRequests: [
-            { ...summary, id: runtime.id, blocking: false },
-            summary,
-          ],
+          pendingRuntimeRequests: [{ ...summary, id: runtime.id, blocking: false }, summary],
         },
       };
       expect(projectObservatoryTask(mixed, [mixed], detail).request).toEqual(expected);

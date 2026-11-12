@@ -76,9 +76,9 @@ describe("attention inbox user workflow", () => {
         screen.container.querySelectorAll('ul[aria-label="Attention items"] > li'),
       ).toHaveLength(1),
     );
-    await screen.getByRole("link", { name: `Open source conversation: ${pending.title}` }).click();
+    await screen.getByRole("link", { name: /^Open request:/ }).click();
     await expect
-      .element(screen.getByRole("link", { name: `Open source conversation: ${pending.title}` }))
+      .element(screen.getByRole("link", { name: /^Open request:/ }))
       .toHaveAttribute("href", "/luna/question?requestId=request-question");
     expect(open).toHaveBeenCalledWith(
       { environmentId, threadId: pending.id },

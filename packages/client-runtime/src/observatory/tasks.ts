@@ -61,6 +61,7 @@ export function observatoryTaskPriority(
   nowMs = Clock.Clock.defaultValue().currentTimeMillisUnsafe(),
 ): number {
   if (shell.archivedAt !== null) return 6;
+  if (shell.settledOverride === "settled") return 5;
   if (threadAttentionRequests(shell).length > 0) return 0;
   if (active(shell.activityRunStatus ?? shell.status) || shell.blockedOnThreadWait) return 1;
   if (shell.goal?.status === "complete") return 5;
@@ -138,11 +139,13 @@ export function projectObservatoryTask(
     return {
       id: request.id,
       label:
-        (item?.type === "user_input_request"
+        summaries.find((summary) => summary.id === request.id)?.label?.trim() ||
+        ((item?.type === "user_input_request"
           ? item.questions[0]?.question
           : item?.type === "approval_request"
             ? (item.prompt ?? item.reason)
-            : null) ?? (request.kind === "user_input" ? "Open question" : "Approval requested"),
+            : null) ??
+          (request.kind === "user_input" ? "Open question" : "Approval requested")),
       blocking: blocks(request),
     };
   });
@@ -198,7 +201,9 @@ export function projectObservatoryTask(
     // A pending summary can outlive the loaded history window without being resolved.
     decisions.push({
       id: summary.id,
-      label: summary.kind === "user_input" ? "Open question" : "Approval requested",
+      label:
+        summary.label?.trim() ||
+        (summary.kind === "user_input" ? "Open question" : "Approval requested"),
       blocking: summary.blocking !== false,
     });
   }

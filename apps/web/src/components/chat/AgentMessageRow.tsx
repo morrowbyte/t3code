@@ -191,7 +191,7 @@ export function AgentMessageRow({
           <CollapsibleTrigger
             ref={trigger}
             className="flex w-full items-start gap-2.5 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-ring pointer-coarse:min-h-11"
-            aria-label={`${expanded ? "Zuklappen" : "Details öffnen"}: ${human ? "Originalauftrag" : "Agentennachricht"}`}
+            aria-label={`${expanded ? "Zuklappen" : "Details öffnen"}: ${human ? "Originalauftrag" : "Agentennachricht"}: ${summary.replace(/\s+/g, " ").slice(0, 240)}`}
             data-keyboard-action="details"
             aria-keyshortcuts="D"
           >

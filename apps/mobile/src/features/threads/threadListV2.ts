@@ -67,6 +67,7 @@ export type ThreadListV2Status =
   | "approval"
   | "input"
   | "request"
+  | "warning"
   | "working"
   | "waiting"
   | "failed"
@@ -221,6 +222,14 @@ export function resolveThreadListV2WokeAt(
     : null;
 }
 
+export function resolveThreadRequestDeliveryFailure(
+  thread: Partial<Pick<EnvironmentThreadShell, "source" | "settledOverride">> | null | undefined,
+) {
+  return thread?.settledOverride === "settled"
+    ? null
+    : (thread?.source?.requestDeliveryFailure ?? null);
+}
+
 export function resolveThreadListV2Status(
   thread: Pick<
     EnvironmentThreadShell,
@@ -231,7 +240,7 @@ export function resolveThreadListV2Status(
     | "runtime"
     | "blockedOnThreadWait"
   > &
-    Partial<Pick<EnvironmentThreadShell, "pendingBackgroundTasks" | "settledOverride">>,
+    Partial<Pick<EnvironmentThreadShell, "pendingBackgroundTasks" | "settledOverride" | "source">>,
 ): ThreadListV2Status {
   if (thread.settledOverride === "settled") return "ready";
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
@@ -244,6 +253,7 @@ export function resolveThreadListV2Status(
   if ((thread.pendingGuestMessageCount ?? 0) > 0) {
     return "request";
   }
+  if (resolveThreadRequestDeliveryFailure(thread) !== null) return "warning";
   if (thread.runtime?.status === "running" && thread.blockedOnThreadWait === true) {
     return "waiting";
   }
@@ -447,8 +457,13 @@ export function buildThreadListV2FamilyRows(input: {
   const workingKeys = new Set(
     input.items.filter(({ thread }) => isThreadWorking(thread)).map(keyOf),
   );
-  const inputKeys = new Set(
-    input.items.filter(({ thread }) => isThreadAwaitingInput(thread)).map(keyOf),
+  const attentionKeys = new Set(
+    input.items
+      .filter(
+        ({ thread }) =>
+          isThreadAwaitingInput(thread) || resolveThreadRequestDeliveryFailure(thread) !== null,
+      )
+      .map(keyOf),
   );
   const threadsByKey = new Map([...byKey].map(([itemKey, item]) => [itemKey, item.thread]));
   for (const [key, { thread }] of byKey) {
@@ -496,7 +511,7 @@ export function buildThreadListV2FamilyRows(input: {
   for (const key of [
     ...(input.searching ? input.visibleKeys : []),
     ...workingKeys,
-    ...inputKeys,
+    ...attentionKeys,
     ...(input.disclosure.routeKey === null ? [] : [input.disclosure.routeKey]),
   ]) {
     let current: string | undefined = key;
@@ -534,7 +549,7 @@ export function buildThreadListV2FamilyRows(input: {
     );
     if (visible.length === 0) return [];
     const anchor = visible[0]!;
-    const displaySection: ThreadListV2FamilySection = family.some((key) => inputKeys.has(key))
+    const displaySection: ThreadListV2FamilySection = family.some((key) => attentionKeys.has(key))
       ? "active"
       : family.some((key) => workingKeys.has(key))
         ? input.workingShelfEnabled
@@ -993,6 +1008,7 @@ export function buildThreadListV2Items(input: {
     } else if (
       workingShelfEnabled &&
       !isThreadAwaitingInput(thread) &&
+      resolveThreadRequestDeliveryFailure(thread) === null &&
       (input.isWorking ?? isThreadWorking)(thread)
     ) {
       working.push(thread);

@@ -58,11 +58,12 @@ export function deriveAttentionInbox(
         requestId: request.id,
         category,
         title:
-          category === "questions"
+          (request.kind === "auth_refresh" ? undefined : request.label?.trim()) ||
+          (category === "questions"
             ? "Question awaiting your answer"
             : category === "approvals"
               ? "Approval needed"
-              : "Authentication required",
+              : "Authentication required"),
         description:
           category === "questions"
             ? "Read and answer the pending question in its conversation."

@@ -283,6 +283,7 @@ import {
 } from "./chat/ChatOverlayHosts";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { useCitedHistory } from "./chat/citationProcedure";
+import { useAgentReplyNavigation } from "./chat/useAgentReplyNavigation";
 import type { MessagesTimelineHistoryControls } from "./chat/MessagesTimeline";
 import { ThreadTimeline } from "./chat/ThreadTimeline";
 import { VoiceConversationProvider } from "../voice/VoiceConversation";
@@ -613,6 +614,7 @@ function ChatViewContent(props: ChatViewProps) {
       : null;
   })() as AssistantCitationRequest | null;
   const citationHistory = useCitedHistory(citationRequest);
+  useAgentReplyNavigation(routeThreadRef);
   const { resolvedTheme } = useTheme();
   const composerRuntimeMode = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.runtimeMode ?? null,

@@ -1,6 +1,11 @@
-import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
+import { MessageId, ThreadId, type OrchestrationV2TurnItem } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
+import {
+  loadReplyHistory,
+  replyMessageFromLocation,
+  replyThreadSnapshot,
+} from "./useAgentReplyNavigation";
 
 import {
   agentMessagePreview,
@@ -9,6 +14,147 @@ import {
   parseAgentMessage,
   readAgentSend,
 } from "./agentMessagePresentation";
+
+describe("agent reply navigation", () => {
+  const target = { environmentId: "original-environment", threadId: "original-thread" };
+  const settled = {
+    thread: null,
+    threadId: target.threadId,
+    messageId: "original-message",
+    status: "live",
+    error: null,
+    history: {
+      historyCursor: null,
+      hasMoreHistory: false,
+      loading: false,
+      error: null,
+      expanded: false,
+      latestLocalTurnOrdinal: null,
+    },
+  } satisfies Parameters<typeof replyThreadSnapshot>[0];
+
+  it("retains the exact message selector only in its original environment and thread", () => {
+    const href = "/original-environment/original-thread?messageId=original-message";
+    expect(replyMessageFromLocation(href, target)).toBe("original-message");
+    expect(replyMessageFromLocation(href, { ...target, environmentId: "other" })).toBeNull();
+    expect(replyMessageFromLocation(href, { ...target, threadId: "other" })).toBeNull();
+    expect(replyMessageFromLocation("/original-environment/original-thread", target)).toBeNull();
+  });
+
+  it.each([0, 2])("reaches the original after %i history pages", async (pages) => {
+    let loads = 0;
+    const outcome = await loadReplyHistory({
+      signal: new AbortController().signal,
+      readThread: async () => ({ found: loads === pages, hasMoreHistory: true }),
+      loadThrough: async () => {
+        loads += 1;
+        return { _tag: "loaded" };
+      },
+    });
+    expect(outcome).toBe("found");
+    expect(loads).toBe(pages);
+  });
+
+  it.each(["error", "noop"] as const)(
+    "reports an unreachable original on %s without a fallback target",
+    async (_tag) => {
+      await expect(
+        loadReplyHistory({
+          signal: new AbortController().signal,
+          readThread: async () => ({ found: false, hasMoreHistory: true }),
+          loadThrough: async () => ({ _tag }),
+        }),
+      ).resolves.toBe(_tag === "error" ? "failed" : "unavailable");
+    },
+  );
+
+  it("finds a textless paged user message by its original thread and message IDs", () => {
+    const item: OrchestrationV2TurnItem = {
+      ...tool(),
+      threadId: ThreadId.make(target.threadId),
+      type: "user_message",
+      messageId: MessageId.make(settled.messageId),
+      text: "",
+      attachments: [],
+      inputIntent: "turn_start",
+      createdBy: "user",
+      creationSource: "mcp",
+    };
+    const visibleTurnItems: NonNullable<
+      Parameters<typeof replyThreadSnapshot>[0]["thread"]
+    >["projection"]["visibleTurnItems"] = [
+      {
+        sourceThreadId: item.threadId,
+        sourceItemId: item.id,
+        position: 0,
+        visibility: "local",
+        item,
+      },
+    ];
+    const thread = {
+      projection: { visibleTurnItems },
+    } as NonNullable<Parameters<typeof replyThreadSnapshot>[0]["thread"]>;
+    expect(replyThreadSnapshot({ ...settled, thread })).toEqual({
+      found: true,
+      hasMoreHistory: false,
+    });
+    expect(replyThreadSnapshot({ ...settled, thread, threadId: "other-thread" })?.found).toBe(
+      false,
+    );
+    expect(replyThreadSnapshot({ ...settled, thread, messageId: "other-message" })?.found).toBe(
+      false,
+    );
+    expect(replyThreadSnapshot({ ...settled, thread, unreachable: true })?.found).toBe(true);
+  });
+
+  it.each([
+    { status: "deleted", expected: "unavailable" },
+    { error: "Thread not found", expected: "failed" },
+    { unreachable: true, expected: "failed" },
+  ] as const)(
+    "settles a missing or offline original: $expected",
+    async ({ expected, ...state }) => {
+      await expect(
+        loadReplyHistory({
+          signal: new AbortController().signal,
+          readThread: async () => replyThreadSnapshot({ ...settled, ...state }),
+          loadThrough: async () => {
+            throw new Error("Must not load an unavailable original");
+          },
+        }),
+      ).resolves.toBe(expected);
+    },
+  );
+
+  it("does not navigate after leaving the reply while history loads", async () => {
+    const controller = new AbortController();
+    await expect(
+      loadReplyHistory({
+        signal: controller.signal,
+        readThread: async () => ({ found: false, hasMoreHistory: true }),
+        loadThrough: async () => {
+          controller.abort();
+          return { _tag: "loaded" };
+        },
+      }),
+    ).resolves.toBe("aborted");
+  });
+
+  it("bounds history loads when the original cannot be reached", async () => {
+    let loads = 0;
+    await expect(
+      loadReplyHistory({
+        signal: new AbortController().signal,
+        readThread: async () => ({ found: false, hasMoreHistory: true }),
+        loadThrough: async () => {
+          loads += 1;
+          return { _tag: "loaded" };
+        },
+      }),
+    ).resolves.toBe("failed");
+    expect(loads).toBe(20);
+  });
+});
 
 it("keeps long task cards concise without changing the authored task", () => {
   const task = `Beendete Gespräche mit ihren Transkripten wieder öffnen. ${"Interne technische Details mit vielen Vorgaben. ".repeat(30)}`;
@@ -319,20 +465,49 @@ describe("readAgentSend", () => {
     });
   });
 
-  it("reads JSON input and Cursor's args wrapper", () => {
-    const text = '{"threadId":"prose-is-not-a-target","messageId":"not-a-receipt"}';
-    expect(
-      readAgentSend(
-        tool({
-          toolName: "mcp__t3_code__t3_thread_send",
-          input: JSON.stringify({
-            toolName: "t3_thread_send",
-            args: { threadId: "target", message: text },
-          }),
-        }),
-      ),
-    ).toMatchObject({ targetThreadId: "target", text, accepted: true });
-  });
+  it.each(["t3_thread_send", "t3_connected_thread_send"])(
+    "reads %s JSON input and Cursor's args wrapper",
+    (toolName) => {
+      const text =
+        '{"threadId":"prose-is-not-a-target","messageId":"not-a-receipt"}\n\nFull original. 🦦';
+      const replyTo = {
+        environmentId: "origin",
+        threadId: "question-thread",
+        messageId: "question",
+      };
+      const args = { environmentId: "remote", threadId: "target", message: text, replyTo };
+      for (const name of [
+        toolName,
+        `mcp__t3_code__${toolName}`,
+        `t3-code.${toolName}`,
+        `t3-code-thread_with_underscores_${toolName}`,
+      ]) {
+        for (const input of [args, JSON.stringify({ toolName, args })]) {
+          expect(readAgentSend(tool({ toolName: name, input }))).toMatchObject({
+            targetThreadId: "target",
+            targetEnvironmentId: "remote",
+            targetScope: "explicit",
+            replyTo,
+            text,
+            delivery: "steered",
+            accepted: true,
+            failed: false,
+          });
+        }
+      }
+      if (toolName === "t3_connected_thread_send") {
+        for (const input of [
+          { threadId: "target", message: text },
+          { ...args, environmentId: " " },
+        ]) {
+          expect(readAgentSend(tool({ toolName, input }))).toMatchObject({
+            targetEnvironmentId: null,
+            targetScope: "unknown",
+          });
+        }
+      }
+    },
+  );
 
   it("does not recognize tool names or receipts embedded in unrelated prose", () => {
     expect(

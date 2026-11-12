@@ -34,6 +34,7 @@ import { userEvent } from "vite-plus/test/browser";
 import "~/index.css";
 
 import { environmentThreadDetails } from "../../state/threads";
+import { environmentCatalog } from "../../connection/catalog";
 import { act, fakeTimers, render, stubGlobal } from "../../../test/render";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { MessagesTimeline } from "./MessagesTimeline";
@@ -52,6 +53,7 @@ import { toastManager } from "../ui/toast";
 import type { CitedHistory } from "./citationProcedure";
 import type { TimelineNavigation } from "./timelineViewport";
 import { rememberTimelinePosition } from "./timelineScrollAnchoring";
+import { useTimelineFollow } from "./useTimelineFollow";
 import {
   COMPOSER_CONTEXT_CLIPBOARD_MIME,
   decodeComposerContextFragment,
@@ -799,6 +801,214 @@ const CITATION_REQUEST = {
 } satisfies NonNullable<TimelineProps["citationRequest"]>;
 
 describe("MessagesTimeline citations", () => {
+  it.each([
+    ["reply", false],
+    ["reply", true],
+    ["citation", false],
+  ] as const)(
+    "gives an explicit %s target priority over passive restore and keeps the return position (compact: %s)",
+    async (kind, compact) => {
+      setup();
+      const base = baseProps();
+      const targetThreadId = ThreadId.make(`target-${kind}-restore`);
+      const targetKey = `${ENVIRONMENT_ID}:${targetThreadId}`;
+      const targetId = MessageId.make("original-message");
+      const projected = makeStreamingTimelineFixture().visibleTurnItems.find(
+        (row) => row.item.type === (kind === "reply" ? "user_message" : "assistant_message"),
+      );
+      if (
+        !projected ||
+        (projected.item.type !== "user_message" && projected.item.type !== "assistant_message")
+      ) {
+        throw new Error("Expected an original conversation message");
+      }
+      const original = {
+        ...projected,
+        sourceThreadId: targetThreadId,
+        item: {
+          ...projected.item,
+          threadId: targetThreadId,
+          messageId: targetId,
+          text: kind === "reply" ? "" : "the cited answer",
+        },
+      };
+      const thread = {
+        environmentId: ENVIRONMENT_ID,
+        projection: { visibleTurnItems: [original] },
+      } as NonNullable<Atom.Type<ReturnType<typeof environmentThreadDetails.quietThreadAtom>>>;
+      using _thread = vi
+        .spyOn(environmentThreadDetails, "quietThreadAtom")
+        .mockReturnValue(Atom.make(thread));
+      using _history = vi.spyOn(environmentThreadDetails, "historyAtom").mockReturnValue(
+        Atom.make({
+          historyCursor: null,
+          hasMoreHistory: false,
+          loading: false,
+          error: null,
+          expanded: false,
+          latestLocalTurnOrdinal: null,
+        }),
+      );
+      using _status = vi
+        .spyOn(environmentThreadDetails, "statusAtom")
+        .mockReturnValue(Atom.make("live"));
+      using _error = vi
+        .spyOn(environmentThreadDetails, "errorAtom")
+        .mockReturnValue(Atom.make(null));
+      using _connection = vi
+        .spyOn(environmentCatalog, "stateAtom")
+        .mockReturnValue(Atom.make(AsyncResult.initial<never, never>()));
+      const sourceEntries = Array.from({ length: 40 }, (_, index) =>
+        message(`Source ${index}\n\n${"line\n\n".repeat(8)}`, {}, `source-${index}`),
+      );
+      const targetEntries = Array.from({ length: compact ? 7 : 40 }, (_, index) =>
+        index === (compact ? 0 : 5)
+          ? {
+              ...message(
+                kind === "reply" ? "" : "the cited answer",
+                { role: kind === "reply" ? "user" : "assistant" },
+                targetId,
+              ),
+              projectedItem: original,
+            }
+          : message(
+              `Target ${index}\n\n${"line\n\n".repeat(compact ? 2 : 8)}`,
+              {},
+              `target-${index}`,
+            ),
+      );
+      rememberTimelinePosition(
+        base.routeThreadKey,
+        { rowId: "entry-source-20", offsetWithinRow: 0, scrollOffset: 0, atEnd: false },
+        false,
+      );
+      rememberTimelinePosition(
+        targetKey,
+        { rowId: "entry-target-30", offsetWithinRow: 0, scrollOffset: 0, atEnd: false },
+        false,
+      );
+      const container = document.createElement("div");
+      container.style.cssText = `height: ${compact ? 734 : 1200}px; width: 900px; display: flex; flex-direction: column;`;
+      function FollowedTimeline({ timelineProps }: { timelineProps: TimelineProps }) {
+        const follow = useTimelineFollow({
+          legendListRef: base.listRef,
+          composerTimelineInset: timelineProps.contentInsetEndAdjustment,
+          routeThreadKey: timelineProps.routeThreadKey,
+          activeThreadKey: timelineProps.routeThreadKey,
+          isServerThread: true,
+          serverProjection: null,
+          threadStatus: "live",
+          activeActivityRun: null,
+          activeRunningTurnId: null,
+          timelineEntries: timelineProps.timelineEntries,
+          timelineAnchorMessageId: null,
+          setTimelineAnchor: () => {},
+        });
+        return (
+          <MessagesTimeline
+            {...timelineProps}
+            liveFollowEnabled={follow.timelineLiveFollowEnabled}
+            onViewportAttach={follow.attachTimelineViewport}
+            onIsAtEndChange={follow.onIsAtEndChangeStable}
+            onFooterGrow={follow.onTimelineFooterGrowStable}
+          />
+        );
+      }
+      const source = () => (
+        <FollowedTimeline
+          timelineProps={{
+            ...base,
+            timelineEntries: sourceEntries,
+            footer: <div style={{ height: 320 }} />,
+          }}
+        />
+      );
+      const target = (entries = targetEntries) => (
+        <FollowedTimeline
+          timelineProps={{
+            ...base,
+            routeThreadKey: targetKey,
+            timelineEntries: entries,
+            footer: <div style={{ height: 240 }} />,
+            contentInsetEndAdjustment: compact ? 240 : 0,
+            ...(kind === "citation"
+              ? {
+                  citationRequest: {
+                    ...CITATION_REQUEST,
+                    citation: {
+                      ...CITATION_REQUEST.citation,
+                      threadId: targetThreadId,
+                      messageId: targetId,
+                    },
+                  },
+                  citationHistory: { _tag: "found" as const },
+                }
+              : {}),
+          }}
+        />
+      );
+      await using screen = await render(source(), { container, router: "/source/source" });
+      const viewport = base.listRef.current!.getScrollableNode()!;
+      const expectRowAtTop = (id: string) => {
+        const row = container.querySelector(`[data-timeline-row-id="${id}"]`);
+        expect(row).not.toBeNull();
+        expect(
+          Math.abs(row!.getBoundingClientRect().top - viewport.getBoundingClientRect().top),
+        ).toBeLessThanOrEqual(2);
+      };
+      await vi.waitFor(() => expectRowAtTop("entry-source-20"));
+      using scrollToIndex = vi.spyOn(base.listRef.current!, "scrollToIndex");
+      await act(() =>
+        screen.router!.navigate({
+          to: `/${ENVIRONMENT_ID}/${targetThreadId}`,
+          search: kind === "reply" ? { messageId: targetId } : {},
+        }),
+      );
+      if (compact) {
+        await screen.rerender(target(targetEntries.slice(-5)));
+        await vi.waitFor(() => expect(base.listRef.current!.getState().data).toHaveLength(5));
+      }
+      await screen.rerender(target());
+      const expectOriginalInView = () => {
+        const row = container.querySelector(`[data-timeline-row-id="entry-${targetId}"]`);
+        expect(row).not.toBeNull();
+        expect(row!.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+          viewport.getBoundingClientRect().top,
+        );
+        expect(row!.getBoundingClientRect().top).toBeLessThan(
+          viewport.getBoundingClientRect().bottom,
+        );
+      };
+      await vi.waitFor(expectOriginalInView);
+      if (compact) {
+        expect(viewport.scrollHeight).toBeGreaterThan(viewport.clientHeight);
+        expect(viewport.scrollHeight - viewport.clientHeight).toBeLessThan(viewport.clientHeight);
+      }
+      const rows = base.listRef.current!.getState().data as ReadonlyArray<{ id: string }>;
+      expect(
+        scrollToIndex.mock.calls.some(([options]) => rows[options.index]?.id === "entry-target-30"),
+      ).toBe(false);
+      await screen.rerender(target([message("Older history", {}, "older"), ...targetEntries]));
+      await vi.waitFor(expectOriginalInView);
+      if (compact) {
+        const updated = targetEntries.map((entry, index) =>
+          index === 1
+            ? message(`Target ${index}\n\n${"line\n\n".repeat(5)}`, {}, `target-${index}`)
+            : entry,
+        );
+        await screen.rerender(target([message("Older history", {}, "older"), ...updated]));
+        await vi.waitFor(expectOriginalInView);
+        await screen.rerender(target([message("Older history", {}, "older"), ...targetEntries]));
+        await vi.waitFor(expectOriginalInView);
+      }
+      await act(() => {
+        screen.router!.history.back();
+      });
+      await screen.rerender(source());
+      await vi.waitFor(() => expectRowAtTop("entry-source-20"));
+    },
+  );
+
   it("lands a citation present at mount under StrictMode", async () => {
     await using _screen = await renderElement(
       <StrictMode>
@@ -986,7 +1196,7 @@ describe("MessagesTimeline agent messages", () => {
     await using screen = await renderTimeline([
       message(`${opening} ${detail}`, { createdBy: "agent", senderThreadId: SENDER_THREAD_ID }),
     ]);
-    const row = screen.button("Details öffnen: Agentennachricht");
+    const row = screen.button(/^Details öffnen: Agentennachricht:/);
     expect(row.textContent).toContain(opening);
     expect(row.textContent).not.toContain("INTERNAL_TASK_DETAIL");
     expect(row.getBoundingClientRect().height).toBeLessThan(100);
@@ -1004,7 +1214,7 @@ describe("MessagesTimeline agent messages", () => {
     await using screen = await renderTimeline([
       message(AGENT_MESSAGE, { createdBy: "agent", senderThreadId: SENDER_THREAD_ID }),
     ]);
-    const row = screen.button("Details öffnen: Agentennachricht");
+    const row = screen.button(/^Details öffnen: Agentennachricht:/);
     const body = screen.container.querySelector<HTMLElement>(
       "[data-agent-message] [data-thread-find-text]",
     )!;
@@ -1023,7 +1233,7 @@ describe("MessagesTimeline agent messages", () => {
     await vi.waitFor(() => expect(body.checkVisibility()).toBe(true));
     expect(body.textContent).toContain("The migration drops the index before backfilling it.");
 
-    await click(screen.button("Zuklappen: Agentennachricht"));
+    await click(screen.button(/^Zuklappen: Agentennachricht:/));
     await vi.waitFor(() => expect(body.checkVisibility()).toBe(false));
     expect(sender.checkVisibility()).toBe(true);
   });
@@ -1033,7 +1243,7 @@ describe("MessagesTimeline agent messages", () => {
     await using screen = await renderTimeline([
       message(AGENT_MESSAGE, { createdBy: "agent", creationSource: "server" }),
     ]);
-    expect(screen.buttons("Details öffnen: Agentennachricht")).toHaveLength(0);
+    expect(screen.buttons(/^Details öffnen: Agentennachricht:/)).toHaveLength(0);
     expect(screen.text()).toContain("drops the index");
   });
 

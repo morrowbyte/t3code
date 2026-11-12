@@ -79,6 +79,9 @@ describe("canonical attention inbox", () => {
     expect(model.entries[0]?.id).toContain(request.id);
     expect(model.entries[0]?.threadRef).toEqual({ environmentId, threadId: threads[0]!.id });
     expect(model.entries.map((entry) => entry.title)).toContain("Authentication required");
+    expect(model.entries.find((entry) => entry.requestId === request.id)?.title).toBe(
+      "Question awaiting your answer",
+    );
     const renamed = deriveAttentionInbox(environmentId, [
       shell({ title: "New title", updatedAt: now, pendingRuntimeRequest: request }),
     ]);
@@ -87,10 +90,20 @@ describe("canonical attention inbox", () => {
 
   it("preserves every pending category and exact request target in one working thread", () => {
     const requests = [
-      { ...request, id: RuntimeRequestId.make("q1") },
-      { ...request, id: RuntimeRequestId.make("q2") },
-      { ...request, id: RuntimeRequestId.make("approve"), kind: "command" as const },
-      { ...request, id: RuntimeRequestId.make("auth"), kind: "auth_refresh" as const },
+      { ...request, id: RuntimeRequestId.make("q1"), label: "Use staging?" },
+      { ...request, id: RuntimeRequestId.make("q2"), label: "Deploy now?" },
+      {
+        ...request,
+        id: RuntimeRequestId.make("approve"),
+        kind: "command" as const,
+        label: "Deploy staging",
+      },
+      {
+        ...request,
+        id: RuntimeRequestId.make("auth"),
+        kind: "auth_refresh" as const,
+        label: "Private authentication details",
+      },
       { ...request, id: RuntimeRequestId.make("secret-card") },
       { ...request, id: RuntimeRequestId.make("link-card") },
     ];
@@ -101,6 +114,17 @@ describe("canonical attention inbox", () => {
     };
     const model = deriveAttentionInbox(environmentId, [source]);
     expect(model.counts).toEqual({ questions: 4, approvals: 1, warnings: 1 });
+    expect(model.entries.find((entry) => entry.requestId === "q1")?.title).toBe("Use staging?");
+    expect(model.entries.find((entry) => entry.requestId === "q2")?.title).toBe("Deploy now?");
+    expect(model.entries.find((entry) => entry.requestId === "approve")?.title).toBe(
+      "Deploy staging",
+    );
+    expect(model.entries.find((entry) => entry.requestId === "auth")?.title).toBe(
+      "Authentication required",
+    );
+    expect(model.entries.find((entry) => entry.requestId === "secret-card")?.title).toBe(
+      "Question awaiting your answer",
+    );
     expect(model.entries.map((entry) => entry.requestId).sort()).toEqual(
       requests.map((entry) => entry.id).sort(),
     );

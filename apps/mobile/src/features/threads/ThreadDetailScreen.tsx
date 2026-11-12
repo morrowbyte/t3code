@@ -891,6 +891,12 @@ function ThreadDetailBody(
     if (historyForJump?.loading) return;
     if (!historyForJump?.hasMoreHistory || historyForJump.error !== null) {
       finishThreadMessageJump(selectedThreadKey);
+      Dialog.alert(
+        historyForJump?.error != null
+          ? "Could not load original message"
+          : "Original message unavailable",
+        historyForJump?.error ?? "The original message is not available in this thread's history.",
+      );
       return;
     }
     loadEarlierForJump();

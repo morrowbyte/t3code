@@ -9,6 +9,7 @@ import {
 
 describe("resolveT3McpToolPresentation", () => {
   it("recognizes every T3 tool across provider prefixes and completion suffixes", () => {
+    expect(T3_MCP_TOOL_NAMES.has("t3_connected_thread_send")).toBe(true);
     for (const tool of T3_MCP_TOOL_NAMES) {
       const presentation = resolveT3McpToolPresentation(tool);
       for (const prefix of [

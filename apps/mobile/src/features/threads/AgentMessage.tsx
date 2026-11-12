@@ -52,6 +52,11 @@ export const AgentMessage = memo(function AgentMessage(
   const [technical, setTechnical] = useState(false);
   const trigger = useRef<ComponentRef<typeof View>>(null);
   const structured = originalOrder ? null : parseAgentMessage(props.text);
+  const preview =
+    props.previewText ??
+    (originalOrder ? props.text : structured?.summary) ??
+    (agentMessagePreview(props.text) ||
+      (props.attribution === "agent" ? "Agent message" : "MCP message"));
   const collapse = () => {
     setExpanded(false);
     setRaw(false);
@@ -143,7 +148,7 @@ export const AgentMessage = memo(function AgentMessage(
           ref={trigger}
           className="min-h-12 flex-row items-start gap-3 py-2"
           accessibilityRole="button"
-          accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${props.attribution === "synthetic" ? "synthetic test order" : originalOrder ? "human order" : props.attribution === "agent" ? "agent message" : "MCP message"}`}
+          accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${props.attribution === "synthetic" ? "synthetic test order" : originalOrder ? "human order" : props.attribution === "agent" ? "agent message" : "MCP message"}: ${preview.replace(/\s+/g, " ").slice(0, 240)}`}
           accessibilityState={{ expanded }}
           onPress={() => (expanded ? collapse() : setExpanded(true))}
         >
@@ -152,10 +157,7 @@ export const AgentMessage = memo(function AgentMessage(
             numberOfLines={expanded || originalOrder ? undefined : 3}
             className="min-w-0 flex-1 text-base font-t3-medium leading-6 text-foreground"
           >
-            {props.previewText ??
-              (originalOrder ? props.text : structured?.summary) ??
-              (agentMessagePreview(props.text) ||
-                (props.attribution === "agent" ? "Agent message" : "MCP message"))}
+            {preview}
           </Text>
           <SymbolView
             name={expanded ? "chevron.up" : "chevron.down"}

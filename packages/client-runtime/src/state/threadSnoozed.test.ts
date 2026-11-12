@@ -1,8 +1,9 @@
 // @effect-diagnostics globalDate:off -- Tests exercise local calendar snooze boundaries.
-import { ThreadId } from "@t3tools/contracts";
+import { RuntimeRequestId, ThreadId, TurnItemId } from "@t3tools/contracts";
 import { TurnId } from "@t3tools/contracts";
 import type { SnoozePresetSetting } from "@t3tools/contracts/settings";
 import { describe, expect, it } from "vite-plus/test";
+import * as DateTime from "effect/DateTime";
 
 import {
   canSnooze,
@@ -126,6 +127,45 @@ describe("effectiveSnoozed", () => {
       };
       expect(effectiveSnoozed(shell, { now: NOW })).toBe(wokeAt === null);
       expect(threadWokeAt(shell, { now: NOW })).toBe(wokeAt);
+    },
+  );
+
+  it.each([
+    { occurredAt: "2026-04-10T08:00:00.000Z", wakes: false },
+    { occurredAt: SNOOZED_AT, wakes: false },
+    { occurredAt: "2026-04-10T10:00:00.000Z", wakes: true },
+  ])(
+    "uses the saved answer failure at $occurredAt while the run continues",
+    ({ occurredAt, wakes }) => {
+      const question: ThreadSnoozeShell = {
+        ...makeShell({
+          snoozedUntil: FUTURE_WAKE,
+          sessionStatus: "running",
+          pending: "user-input",
+        }),
+        source: { pendingRuntimeRequest: null },
+      };
+      expect(effectiveSnoozed(question, { now: NOW })).toBe(false);
+      const answered: ThreadSnoozeShell = {
+        ...question,
+        hasPendingUserInput: false,
+        source: {
+          pendingRuntimeRequest: null,
+          requestDeliveryFailure: {
+            requestId: RuntimeRequestId.make("answered-question"),
+            itemId: TurnItemId.make("saved-answer"),
+            message: "The provider did not acknowledge the saved answer.",
+            occurredAt: DateTime.makeUnsafe(occurredAt),
+          },
+        },
+      };
+      expect(threadRaisedHandWhileSnoozed(answered)).toBe(wakes);
+      expect(effectiveSnoozed(answered, { now: NOW })).toBe(!wakes);
+      expect(threadWokeAt(answered, { now: NOW })).toBe(wakes ? occurredAt : null);
+      expect(canSnooze(answered, { now: NOW })).toBe(true);
+      const snoozedAgain = { ...answered, snoozedAt: NOW };
+      expect(effectiveSnoozed(snoozedAgain, { now: NOW })).toBe(true);
+      expect(threadWokeAt(snoozedAgain, { now: NOW })).toBeNull();
     },
   );
 

@@ -3232,6 +3232,129 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         bounded.projection.visibleTurnItems.some((row) => row.sourceItemId === itemId),
       );
 
+      const secondRequestId = RuntimeRequestId.make("request:open-question-window:second");
+      const secondNodeId = NodeId.make("node:open-question-window:second");
+      yield* projectionStore.apply({
+        id: EventId.make("event:open-question-window:second-request"),
+        type: "runtime-request.updated",
+        threadId,
+        nodeId: secondNodeId,
+        occurredAt: now,
+        payload: { ...request, id: secondRequestId, nodeId: secondNodeId },
+      });
+      const questionItem = open.projection.turnItems.find((item) => item.id === itemId)!;
+      assert.equal(questionItem.type, "user_input_request");
+      if (questionItem.type !== "user_input_request") return;
+      const longQuestion = "🚀 Which deployment should continue? ".repeat(20);
+      yield* projectionStore.apply({
+        id: EventId.make("event:open-question-window:long-question"),
+        type: "turn-item.updated",
+        threadId,
+        nodeId,
+        occurredAt: now,
+        payload: {
+          ...questionItem,
+          questions: [
+            { id: "first", header: "Deployment", question: longQuestion, options: [] },
+            { id: "second", header: "Details", question: "Do not use this question", options: [] },
+          ],
+        },
+      });
+      yield* projectionStore.apply({
+        id: EventId.make("event:open-question-window:second-question"),
+        type: "turn-item.updated",
+        threadId,
+        nodeId,
+        occurredAt: now,
+        payload: {
+          ...questionItem,
+          id: TurnItemId.make("turn-item:open-question-window:second"),
+          nodeId: secondNodeId,
+          ordinal: 6,
+          requestId: secondRequestId,
+          questions: [{ id: "choice", header: "Scope", question: "Use staging?", options: [] }],
+        },
+      });
+      const { questions: _questions, responseMode: _responseMode, ...approvalBase } = questionItem;
+      for (const kind of ["command", "auth_refresh"] as const) {
+        const id = RuntimeRequestId.make(`request:open-question-window:${kind}`);
+        const approvalNodeId = NodeId.make(`node:open-question-window:${kind}`);
+        yield* projectionStore.apply({
+          id: EventId.make(`event:open-question-window:${kind}:request`),
+          type: "runtime-request.updated",
+          threadId,
+          nodeId,
+          occurredAt: now,
+          payload: { ...request, id, kind, nodeId: approvalNodeId },
+        });
+        yield* projectionStore.apply({
+          id: EventId.make(`event:open-question-window:${kind}:item`),
+          type: "turn-item.updated",
+          threadId,
+          nodeId,
+          occurredAt: now,
+          payload: {
+            ...approvalBase,
+            id: TurnItemId.make(`turn-item:open-question-window:${kind}`),
+            nodeId: approvalNodeId,
+            type: "approval_request",
+            requestId: id,
+            requestKind: "command",
+            ordinal: 7,
+            title: kind === "command" ? "Deploy staging" : "Private authentication details",
+            prompt: "Do not project the approval command payload",
+          },
+        });
+      }
+      const { statements, tracer } = traceSqlStatements();
+      const labeledShell = yield* projectionStore
+        .getShellSnapshot()
+        .pipe(Effect.withTracer(tracer));
+      const labeledProjection = yield* projectionStore.getThreadProjection(threadId);
+      for (const shell of [
+        labeledShell.threads.find((thread) => thread.id === threadId),
+        ProjectionStore.threadShellFromProjection(labeledProjection),
+      ]) {
+        assert.deepEqual(
+          shell?.pendingRuntimeRequests?.map(({ id, label }) => ({ id, label })),
+          [
+            { id: secondRequestId, label: "Use staging?" },
+            {
+              id: RuntimeRequestId.make("request:open-question-window:command"),
+              label: "Deploy staging",
+            },
+            {
+              id: RuntimeRequestId.make("request:open-question-window:auth_refresh"),
+              label: undefined,
+            },
+            { id: requestId, label: Array.from(longQuestion).slice(0, 240).join("").trim() },
+          ],
+        );
+        assert.equal(shell?.pendingRuntimeRequest?.label, "Use staging?");
+      }
+      const shellStatement = statements.find((query) =>
+        query.includes("AS pending_request_payload_json"),
+      );
+      assert.isDefined(shellStatement);
+      const rows = yield* sql.unsafe<{
+        readonly thread_id: string;
+        readonly pending_request_payload_json: string;
+      }>(shellStatement!);
+      const rawSummaries = rows.find(
+        (row) => row.thread_id === threadId,
+      )!.pending_request_payload_json;
+      assert.notInclude(rawSummaries, "Do not use this question");
+      assert.notInclude(rawSummaries, "questions");
+      assert.notInclude(rawSummaries, "responseCapability");
+      assert.notInclude(rawSummaries, "Private authentication details");
+      assert.notInclude(rawSummaries, "Do not project the approval command payload");
+      const labelPlan = (yield* sql.unsafe<{ readonly detail: string }>(
+        `EXPLAIN QUERY PLAN ${shellStatement!}`,
+      )).map((row) => row.detail);
+      assert.isTrue(
+        labelPlan.some((detail) => detail.includes("turn_items_node_ordinal_idx (node_id=?)")),
+      );
+
       yield* projectionStore.apply({
         id: EventId.make("event:open-question-window:resolved"),
         type: "runtime-request.updated",
@@ -5678,7 +5801,8 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         assert.include(plan[sessionLookup], "(provider_session_id=?)");
         const errorLookups = plan.filter(
           (detail) =>
-            /^SEARCH (?:item|error) /.test(detail) && !detail.includes("(turn_item_id=?)"),
+            /^SEARCH (?:item|error) /.test(detail) &&
+            detail.includes("turn_items_failed_error_idx"),
         );
         assert.lengthOf(errorLookups, marker.includes("blocking") ? 2 : 1, marker);
         for (const errorLookup of errorLookups) {
@@ -5737,6 +5861,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
               : {
                   type: "link_request" as const,
                   reason: "Link the test environment",
+                  label: "Test environment",
                   linkStatus: status === "waiting" ? ("pending" as const) : ("linked" as const),
                 }),
           },
@@ -5761,6 +5886,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       ]) {
         assert.equal(shell?.pendingRuntimeRequest?.id, "secret:b");
         assert.isTrue(shell?.pendingRuntimeRequest?.blocking);
+        assert.equal(shell?.pendingRuntimeRequest?.label, "Test credential");
         assert.deepEqual(shell?.pendingRuntimeRequests?.map((request) => request.id).sort(), [
           "secret:a",
           "secret:b",
@@ -5839,6 +5965,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           assert.isTrue(retained.has(id));
         }
         for (const candidate of [thread, memoryShell]) {
+          assert.equal(
+            candidate?.pendingRuntimeRequests?.find((request) => request.id === "link:a")?.label,
+            "Test environment",
+          );
           assert.deepEqual(
             candidate?.pendingRuntimeRequests?.map((request) => request.id).sort(),
             terminal
@@ -5983,6 +6113,46 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         "privileged:approved",
         "privileged:pending",
       ]);
+      const answeredAt = DateTime.add(now, { seconds: 30 });
+      yield* projectionStore.apply({
+        id: EventId.make(`event:${suffix}:link-answer`),
+        type: "message.updated",
+        threadId,
+        runId,
+        nodeId,
+        driver,
+        occurredAt: answeredAt,
+        payload: {
+          id: MessageId.make(`message:${suffix}:link-answer`),
+          threadId,
+          runId,
+          nodeId,
+          role: "user",
+          streaming: false,
+          createdAt: answeredAt,
+          updatedAt: answeredAt,
+          createdBy: "user",
+          creationSource: "web",
+          text: "The environments are linked.",
+          attachments: [],
+        },
+      });
+      const { statements, tracer } = traceSqlStatements();
+      yield* projectionStore.getShellSnapshot().pipe(Effect.withTracer(tracer));
+      const shellStatement = statements.find((query) =>
+        query.includes("AS pending_link_request_payload_json"),
+      );
+      assert.isDefined(shellStatement);
+      const aggregated = yield* sql.unsafe<{
+        readonly thread_id: string;
+        readonly pending_link_request_payload_json: string;
+      }>(shellStatement!);
+      assert.deepEqual(
+        JSON.parse(
+          aggregated.find((row) => row.thread_id === threadId)!.pending_link_request_payload_json,
+        ),
+        [],
+      );
     }),
   );
 

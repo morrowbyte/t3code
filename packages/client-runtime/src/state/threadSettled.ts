@@ -69,7 +69,10 @@ export function hasQueuedTurnStart(
 }
 
 export interface ThreadSnoozeShell extends QueuedThreadShell {
-  readonly source?: Pick<EnvironmentThreadShell["source"], "pendingRuntimeRequest">;
+  readonly source?: Pick<
+    EnvironmentThreadShell["source"],
+    "pendingRuntimeRequest" | "requestDeliveryFailure"
+  >;
   readonly snoozedUntil?: string | null;
   readonly snoozedAt?: string | null;
   readonly hasPendingApprovals: boolean;
@@ -100,12 +103,19 @@ export function threadRaisedHandWhileSnoozed(shell: ThreadSnoozeShell): boolean 
 // Legacy sessions only expose the runtime timestamp.
 function failureEdgeAt(shell: ThreadSnoozeShell): string | null | undefined {
   const runtime = shell.runtime ?? shell.session ?? null;
-  if (runtime?.status !== "error" && runtime?.status !== "failed") return undefined;
   const latestRun = shell.latestRun ?? shell.latestTurn ?? null;
-  if (latestRun?.status === "failed" && latestRun.completedAt != null) {
-    return latestRun.completedAt;
-  }
-  return runtime.updatedAt ?? null;
+  const runtimeFailedAt =
+    runtime?.status === "error" || runtime?.status === "failed"
+      ? latestRun?.status === "failed" && latestRun.completedAt != null
+        ? latestRun.completedAt
+        : (runtime.updatedAt ?? null)
+      : undefined;
+  const deliveryFailure = shell.source?.requestDeliveryFailure;
+  if (deliveryFailure == null) return runtimeFailedAt;
+  const deliveryFailedAt = DateTime.formatIso(deliveryFailure.occurredAt);
+  return runtimeFailedAt != null && Date.parse(runtimeFailedAt) > Date.parse(deliveryFailedAt)
+    ? runtimeFailedAt
+    : deliveryFailedAt;
 }
 
 export function canSnooze(

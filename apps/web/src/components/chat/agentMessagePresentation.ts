@@ -291,7 +291,8 @@ export function readAgentSend(item: Extract<OrchestrationV2TurnItem, { type: "dy
     failed: false,
     truncated: false,
   };
-  if (resolveT3McpToolId(item.toolName) !== "t3_thread_send") return unknown;
+  const toolId = resolveT3McpToolId(item.toolName);
+  if (toolId !== "t3_thread_send" && toolId !== "t3_connected_thread_send") return unknown;
 
   let input = readToolValue(item.input);
   if (input.data && typeof input.data.toolName === "string" && "args" in input.data) {
@@ -319,6 +320,7 @@ export function readAgentSend(item: Extract<OrchestrationV2TurnItem, { type: "dy
       output.data?.environmentId !== link.environmentId);
   const targetEnvironmentId = inputEnvironment ?? outputEnvironment;
   const local =
+    toolId === "t3_thread_send" &&
     !summarized &&
     !input.truncated &&
     inputTarget !== null &&

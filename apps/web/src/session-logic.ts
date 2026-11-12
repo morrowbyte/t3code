@@ -738,7 +738,10 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
     }
 
     if (
-      (item.type === "dynamic_tool" && resolveT3McpToolId(item.toolName) === "t3_thread_send") ||
+      (item.type === "dynamic_tool" &&
+        ["t3_thread_send", "t3_connected_thread_send"].includes(
+          resolveT3McpToolId(item.toolName) ?? "",
+        )) ||
       (item.type === "subagent" && item.delegationMessage !== undefined)
     ) {
       entries.push({

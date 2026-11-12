@@ -42,7 +42,7 @@ export function AgentReplyReference({
           openLinkedThread(threadRef);
         }}
       >
-        <Text selectable numberOfLines={3} className="text-sm leading-5 text-foreground">
+        <Text numberOfLines={3} className="text-sm leading-5 text-foreground">
           {messageText || `Nachricht ${reply.messageId}`}
         </Text>
       </Pressable>

@@ -111,7 +111,7 @@ export function AttentionInboxView({
                   render={<a href={attentionRequestHref(entry.threadRef, entry.requestId)} />}
                   size="sm"
                   variant="outline"
-                  aria-label={`Open source conversation: ${entry.threadTitle}`}
+                  aria-label={`${entry.requestId ? "Open request" : "Open thread"}: ${entry.title} (${entry.threadTitle})`}
                   onClick={(event) => {
                     if (
                       event.button !== 0 ||

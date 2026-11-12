@@ -23,7 +23,9 @@ import {
   ProjectId,
   ProviderInstanceId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -38,6 +40,7 @@ import {
   resolveThreadListV2SnoozeMenuSelection,
   resolveThreadListV2SnoozePresets,
   resolveThreadListV2Status,
+  resolveThreadRequestDeliveryFailure,
   resolveThreadListV2WokeAt,
   revealThreadListV2RouteAncestors,
   toggleThreadListV2Family,
@@ -63,6 +66,12 @@ function makeThread(
 const NOW = "2026-06-02T00:00:00.000Z";
 
 describe("native thread families", () => {
+  const deliveryFailure = {
+    requestId: RuntimeRequestId.make("answered-q2"),
+    itemId: TurnItemId.make("outside-loaded-history"),
+    message: "The provider did not acknowledge the saved answer.",
+    occurredAt: DateTime.makeUnsafe(NOW),
+  };
   const parent = makeThread({ id: ThreadId.make("parent"), title: "Parent" });
   const child = makeThread({
     id: ThreadId.make("child"),
@@ -422,13 +431,22 @@ describe("native thread families", () => {
     expect(settled.runtime).toBe(working.runtime);
   });
 
-  it.each(["parent", "sibling"] as const)(
-    "keeps a running question outside collapsed Working while its %s also works",
-    (worker) => {
+  it.each([
+    { worker: "parent", attention: "question" },
+    { worker: "sibling", attention: "question" },
+    { worker: "parent", attention: "delivery_failure" },
+    { worker: "sibling", attention: "delivery_failure" },
+  ] as const)(
+    "keeps a running $attention outside collapsed Working while its $worker also works",
+    ({ worker, attention }) => {
       const asking = makeThread({
         ...grandchild,
         runtime: working.runtime,
-        hasPendingUserInput: true,
+        hasPendingUserInput: attention === "question",
+        source: {
+          ...grandchild.source,
+          ...(attention === "delivery_failure" ? { requestDeliveryFailure: deliveryFailure } : {}),
+        },
       });
       const other = makeThread({
         ...child,
@@ -451,6 +469,9 @@ describe("native thread families", () => {
         workingShelfExpanded: false,
       });
       expect(visible.workingCount).toBe(2);
+      expect(resolveThreadListV2Status(asking)).toBe(
+        attention === "question" ? "input" : "warning",
+      );
       expect(visible.items.map((item) => keyOf(item.thread))).toContain(grandchildKey);
       const rows = buildThreadListV2FamilyRows({
         items: itemsFor(threads),
@@ -464,12 +485,58 @@ describe("native thread families", () => {
     },
   );
 
-  it.each(["approval", "user_input", "active_run", "route"] as const)(
+  it("uses the canonical delivery warning without reopening input and suppresses it until reopened", () => {
+    const answered = makeThread({
+      ...grandchild,
+      runtime: working.runtime,
+      snoozedAt: "2026-06-01T12:00:00.000Z",
+      snoozedUntil: "2026-06-03T00:00:00.000Z",
+      source: { ...grandchild.source, requestDeliveryFailure: deliveryFailure },
+    });
+    const layoutFor = (thread: EnvironmentThreadShell) =>
+      buildThreadListV2Items({
+        threads: [thread],
+        environmentId: null,
+        searchQuery: "",
+        now: NOW,
+        includeSubagents: true,
+        workingShelfEnabled: true,
+        workingShelfExpanded: false,
+      });
+    const warning = layoutFor(answered);
+    expect(warning.snoozedCount).toBe(0);
+    expect(warning.workingCount).toBe(1);
+    expect(warning.items.map((item) => [item.thread.id, item.variant, item.snoozed])).toEqual([
+      [answered.id, "card", false],
+    ]);
+    const snoozedAgain = layoutFor({ ...answered, snoozedAt: NOW });
+    expect(snoozedAgain.snoozedCount).toBe(1);
+    expect(snoozedAgain.workingCount).toBe(1);
+    expect(snoozedAgain.items).toEqual([]);
+    expect(resolveThreadRequestDeliveryFailure(answered)).toBe(deliveryFailure);
+    expect(resolveThreadListV2Status(answered)).toBe("warning");
+    expect(answered.hasPendingUserInput).toBe(false);
+    expect(answered.pendingSubagentRequest).toBeNull();
+    expect(resolveThreadRequestDeliveryFailure({})).toBeNull();
+    expect(resolveThreadRequestDeliveryFailure(grandchild)).toBeNull();
+    const settled = { ...answered, settledOverride: "settled" as const };
+    expect(layoutFor(settled).settledCount).toBe(1);
+    expect(layoutFor(settled).workingCount).toBe(0);
+    expect(resolveThreadRequestDeliveryFailure(settled)).toBeNull();
+    expect(resolveThreadListV2Status(settled)).toBe("ready");
+    expect(resolveThreadListV2Status({ ...settled, settledOverride: null })).toBe("warning");
+  });
+
+  it.each(["approval", "user_input", "delivery_failure", "active_run", "route"] as const)(
     "retains a %s descendant while omitting inactive historical siblings",
     (reason) => {
       const selected = makeThread({
         ...grandchild,
         pendingSubagentRequest: reason === "approval" || reason === "user_input" ? reason : null,
+        source: {
+          ...grandchild.source,
+          ...(reason === "delivery_failure" ? { requestDeliveryFailure: deliveryFailure } : {}),
+        },
         runtime: {
           ...working.runtime!,
           status: reason === "active_run" ? "running" : "idle",

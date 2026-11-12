@@ -54,6 +54,7 @@ import {
   OrchestrationV2ConversationMessageJson as OrchestrationV2ConversationMessageJsonSchema,
   OrchestrationV2ExecutionNodeJson as OrchestrationV2ExecutionNodeJsonSchema,
   OrchestrationV2PlanArtifact as OrchestrationV2PlanArtifactSchema,
+  OrchestrationV2PendingRuntimeRequestSummaryJson,
   OrchestrationV2ProviderSessionJson as OrchestrationV2ProviderSessionJsonSchema,
   OrchestrationV2ProviderThreadJson as OrchestrationV2ProviderThreadJsonSchema,
   OrchestrationV2ProviderTurnJson as OrchestrationV2ProviderTurnJsonSchema,
@@ -1183,8 +1184,8 @@ const decodeProviderTurnPayload = Schema.decodeUnknownEffect(
 const decodeRuntimeRequestPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2RuntimeRequestJsonSchema),
 );
-const decodeRuntimeRequestPayloads = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(Schema.Array(OrchestrationV2RuntimeRequestJsonSchema)),
+const decodePendingRuntimeRequestSummaries = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(OrchestrationV2PendingRuntimeRequestSummaryJson)),
 );
 const decodeTurnItemPayloads = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(OrchestrationV2TurnItemJsonSchema)),
@@ -1494,15 +1495,31 @@ function buildVisibleTurnItems(input: {
   );
 }
 
+const shortRequestLabel = (label: string | null | undefined) =>
+  label == null
+    ? undefined
+    : Array.from(label.slice(0, 480)).slice(0, 240).join("").trim() || undefined;
+
 function pendingRuntimeRequestSummary(
   request: OrchestrationV2ThreadProjection["runtimeRequests"][number] | null,
+  item?: OrchestrationV2TurnItem,
 ): OrchestrationV2PendingRuntimeRequestSummary | null {
   if (request === null) return null;
+  const label = shortRequestLabel(
+    request.kind === "auth_refresh" || request.kind === "dynamic_tool_call"
+      ? undefined
+      : item?.type === "user_input_request" && request.kind === "user_input"
+        ? item.questions[0]?.question
+        : item?.type === "approval_request" && request.kind !== "user_input"
+          ? item.title
+          : undefined,
+  );
   return {
     id: request.id,
     kind: request.kind,
     createdAt: request.createdAt,
     blocking: request.responseCapability.type !== "message",
+    ...(label ? { label } : {}),
   };
 }
 
@@ -1530,11 +1547,13 @@ function secretRequestAsPendingInput(
 ): OrchestrationV2PendingRuntimeRequestSummary | null {
   if ((item?.type !== "secret_request" && item?.type !== "link_request") || item.nodeId === null)
     return null;
+  const label = shortRequestLabel(item.label);
   return {
     id: RuntimeRequestId.make(item.id),
     kind: "user_input",
     createdAt: item.startedAt ?? item.updatedAt,
     blocking: true,
+    ...(label ? { label } : {}),
   };
 }
 
@@ -1603,7 +1622,29 @@ export function threadShellFromProjection(
         DateTime.toEpochMillis(right.createdAt) - DateTime.toEpochMillis(left.createdAt) ||
         right.id.localeCompare(left.id),
     );
-  let pendingRuntimeRequest = pendingRuntimeRequestSummary(runtimeRequests[0] ?? null);
+  const requestById = new Map(projection.runtimeRequests.map((request) => [request.id, request]));
+  const requestLabelItems = new Map<RuntimeRequestId, OrchestrationV2TurnItem>();
+  for (const item of projection.turnItems) {
+    if (item.type !== "user_input_request" && item.type !== "approval_request") continue;
+    const request = requestById.get(item.requestId);
+    if (
+      request?.status !== "pending" ||
+      item.threadId !== projection.thread.id ||
+      item.nodeId !== request.nodeId
+    )
+      continue;
+    const previous = requestLabelItems.get(request.id);
+    if (
+      previous === undefined ||
+      item.ordinal > previous.ordinal ||
+      (item.ordinal === previous.ordinal && item.id > previous.id)
+    )
+      requestLabelItems.set(request.id, item);
+  }
+  const runtimeRequestSummaries = runtimeRequests.flatMap(
+    (request) => pendingRuntimeRequestSummary(request, requestLabelItems.get(request.id)) ?? [],
+  );
+  let pendingRuntimeRequest = runtimeRequestSummaries[0] ?? null;
   const userMessages = projection.messages
     .filter((message) => message.role === "user" && idleCompactionOf(message) === undefined)
     .toSorted(
@@ -1623,14 +1664,13 @@ export function threadShellFromProjection(
         right.id.localeCompare(left.id),
     );
   const pendingRuntimeRequests = [
-    ...runtimeRequests.flatMap((request) => pendingRuntimeRequestSummary(request) ?? []),
+    ...runtimeRequestSummaries,
     ...waitingCards.flatMap((item) => secretRequestAsPendingInput(item) ?? []),
   ];
   if (pendingRuntimeRequest === null || pendingRuntimeRequest.blocking === false) {
     pendingRuntimeRequest =
       secretRequestAsPendingInput(waitingCards[0] ?? null) ?? pendingRuntimeRequest;
   }
-  const requestById = new Map(projection.runtimeRequests.map((request) => [request.id, request]));
   const requestDeliveryFailure =
     projection.turnItems
       .flatMap((item) => {
@@ -6352,7 +6392,33 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ) AS request_delivery_failure_payload_json,
               (
                 SELECT json_group_array(json(payload_json)) FROM (
-                SELECT request.payload_json
+                SELECT json_patch(json_object(
+                  'id', request.runtime_request_id,
+                  'kind', json_extract(request.payload_json, '$.kind'),
+                  'createdAt', request.created_at,
+                  'blocking', json(CASE
+                    WHEN json_extract(request.payload_json, '$.responseCapability.type') = 'message'
+                    THEN 'false' ELSE 'true' END)
+                ), json_object('label', CASE
+                  WHEN json_extract(request.payload_json, '$.kind') NOT IN ('auth_refresh', 'dynamic_tool_call')
+                  THEN (
+                    SELECT substr(CASE
+                      WHEN item.type = 'user_input_request'
+                        AND json_extract(request.payload_json, '$.kind') = 'user_input'
+                        THEN json_extract(item.payload_json, '$.questions[0].question')
+                      WHEN item.type = 'approval_request'
+                        AND json_extract(request.payload_json, '$.kind') <> 'user_input'
+                        THEN json_extract(item.payload_json, '$.title')
+                    END, 1, 240)
+                    FROM orchestration_v2_projection_turn_items item
+                      INDEXED BY orchestration_v2_projection_turn_items_node_ordinal_idx
+                    WHERE item.node_id = request.node_id AND item.thread_id = t.thread_id
+                      AND item.type IN ('user_input_request', 'approval_request')
+                      AND json_extract(item.payload_json, '$.requestId') = request.runtime_request_id
+                    ORDER BY item.ordinal DESC, item.turn_item_id DESC
+                    LIMIT 1
+                  )
+                END)) AS payload_json
                 FROM orchestration_v2_projection_runtime_requests request
                 WHERE request.thread_id = t.thread_id
                   AND request.status = 'pending'
@@ -6380,6 +6446,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   INDEXED BY orchestration_v2_projection_turn_items_waiting_link_idx
                 WHERE link.thread_id = t.thread_id
                   AND link.type = 'link_request' AND link.status = 'waiting'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM orchestration_v2_projection_messages message
+                    WHERE message.thread_id = t.thread_id
+                      AND message.role = 'user'
+                      AND json_extract(message.payload_json, '$.createdBy') = 'user'
+                      AND NOT ${isIdleCompactionMessage("message")}
+                      AND message.updated_at > COALESCE(json_extract(link.payload_json, '$.startedAt'), link.updated_at)
+                  )
                 ORDER BY link.updated_at DESC, link.turn_item_id DESC
                 )
               ) AS pending_link_request_payload_json,
@@ -6879,14 +6953,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ? null
               : yield* decodeTurnItemPayload(row.request_delivery_failure_payload_json),
           ) ?? undefined;
-        const runtimeRequests = yield* decodeRuntimeRequestPayloads(
+        const runtimeRequestSummaries = (yield* decodePendingRuntimeRequestSummaries(
           row.pending_request_payload_json ?? "[]",
-        );
+        )).map(({ label, ...summary }) => {
+          const shortLabel = shortRequestLabel(label);
+          return { ...summary, ...(shortLabel ? { label: shortLabel } : {}) };
+        });
         const pendingRuntimeRequests = [
-          ...runtimeRequests.flatMap((request) => pendingRuntimeRequestSummary(request) ?? []),
+          ...runtimeRequestSummaries,
           ...waitingCards.flatMap((item) => secretRequestAsPendingInput(item) ?? []),
         ];
-        let pendingRuntimeRequest = pendingRuntimeRequestSummary(runtimeRequests[0] ?? null);
+        let pendingRuntimeRequest = runtimeRequestSummaries[0] ?? null;
         if (pendingRuntimeRequest === null || pendingRuntimeRequest.blocking === false) {
           pendingRuntimeRequest =
             secretRequestAsPendingInput(waitingCards[0] ?? null) ?? pendingRuntimeRequest;
