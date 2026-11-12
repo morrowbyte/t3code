@@ -1,15 +1,24 @@
 import {
   MessageId,
+  type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2Run,
   ProviderInstanceId,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
+import { mergeOlderHistoryIntoProjection } from "@t3tools/client-runtime/state/thread-history-merge";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
+import {
+  v2Projection,
+  v2ThreadId,
+  v2Now,
+} from "../../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures";
 
 import {
   announcedRun,
+  deliveryFailureSnapshot,
   nextThreadAnnouncement,
   type ThreadActivitySnapshot,
   type ThreadAnnouncementMemory,
@@ -46,17 +55,21 @@ describe("nextThreadAnnouncement", () => {
     (kind) => {
       const deliveryFailure = {
         id: `turn-item:${kind}:message-1`,
-        position: 11,
+        ordinal: 11,
         message: "Delivery not confirmed. Send it again if it is still needed.",
       };
-      const working = { ...busy(), latestItemPosition: 10 };
-      const failed = { ...working, latestItemPosition: 11, deliveryFailures: [deliveryFailure] };
+      const working = { ...busy(), latestLocalItemOrdinal: 10 };
+      const failed = {
+        ...working,
+        latestLocalItemOrdinal: 11,
+        deliveryFailures: [deliveryFailure],
+      };
       const batched = {
         ...working,
-        latestItemPosition: 13,
+        latestLocalItemOrdinal: 13,
         deliveryFailures: [
-          { ...deliveryFailure, id: "message-2", position: 12, message: "Correction rejected" },
-          { ...deliveryFailure, id: "message-3", position: 13, message: "Answer rejected" },
+          { ...deliveryFailure, id: "message-2", ordinal: 12, message: "Correction rejected" },
+          { ...deliveryFailure, id: "message-3", ordinal: 13, message: "Answer rejected" },
         ],
       };
       expect(
@@ -67,7 +80,7 @@ describe("nextThreadAnnouncement", () => {
           failed,
           working,
           failed,
-          { ...failed, deliveryFailures: [{ ...deliveryFailure, id: "historical", position: 3 }] },
+          { ...failed, deliveryFailures: [{ ...deliveryFailure, id: "historical", ordinal: 3 }] },
           failed,
           batched,
           batched,
@@ -154,21 +167,82 @@ describe("nextThreadAnnouncement", () => {
   it("stays silent when a thread opens mid-turn or after one", () => {
     expect(speak([idle(firstRun, "completed"), idle(firstRun, "completed")])).toEqual([]);
     expect(speak([busy(), busy()])).toEqual([]);
-    const historicalFailure = {
-      ...busy(),
-      latestItemPosition: 12,
-      deliveryFailures: [
-        {
-          id: "turn-item:steering-delivery-failure:history",
-          position: 11,
-          message: "Correction delivery not confirmed.",
+    const row = (
+      ordinal: number,
+      position: number,
+      visibility: "local" | "inherited" = "local",
+    ): OrchestrationV2ProjectedTurnItem => {
+      const id = TurnItemId.make(`turn-item:steering-delivery-failure:message-${ordinal}`);
+      const sourceThreadId = visibility === "local" ? v2ThreadId : ThreadId.make("other-thread");
+      return {
+        position,
+        visibility,
+        sourceThreadId,
+        sourceItemId: id,
+        item: {
+          id,
+          threadId: sourceThreadId,
+          runId: secondRun,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal,
+          status: "failed",
+          title: "Correction delivery not confirmed",
+          startedAt: v2Now,
+          completedAt: v2Now,
+          updatedAt: v2Now,
+          type: "error",
+          failure: {
+            class: "transport_error",
+            message: "Send it again if needed.",
+            code: null,
+            retryable: null,
+          },
         },
-      ],
+      };
     };
-    expect(speak([historicalFailure, historicalFailure])).toEqual([]);
+    const historicalFailure = row(100, 0);
+    const initial = {
+      ...v2Projection,
+      turnItems: [historicalFailure.item],
+      visibleTurnItems: [historicalFailure, row(200, 1, "inherited")],
+    };
+    const expanded = mergeOlderHistoryIntoProjection(
+      initial,
+      Array.from({ length: 20 }, (_, index) => row(index + 1, index)),
+    );
     expect(
-      speak([{ ...busy(), latestItemPosition: 12 }, historicalFailure, historicalFailure]),
-    ).toEqual([]);
+      expanded.visibleTurnItems.find(
+        (entry) => entry.sourceItemId === historicalFailure.sourceItemId,
+      )?.position,
+    ).toBe(20);
+    const freshFailure = row(101, 22);
+    const live = {
+      ...expanded,
+      turnItems: [...expanded.turnItems, freshFailure.item],
+      visibleTurnItems: [...expanded.visibleTurnItems, freshFailure],
+    };
+    const snapshot = (projection: {
+      readonly visibleTurnItems: ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
+    }) => ({
+      ...busy(),
+      ...deliveryFailureSnapshot(
+        projection.visibleTurnItems.map((projectedItem) => ({
+          kind: "event" as const,
+          id: projectedItem.item.id,
+          createdAt: "2026-06-20T00:00:00.000Z",
+          projectedItem,
+        })),
+        secondRun,
+      ),
+    });
+    expect(speak([snapshot(initial), snapshot(expanded), snapshot(expanded)])).toEqual([]);
+    expect(speak([snapshot(initial), snapshot(expanded), snapshot(live), snapshot(live)])).toEqual([
+      "Correction delivery not confirmed. Send it again if needed.",
+    ]);
   });
 
   it("announces the end of a turn that was already running when the thread opened", () => {

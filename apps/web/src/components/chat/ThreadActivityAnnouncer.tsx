@@ -16,7 +16,7 @@ export const ThreadActivityAnnouncer = memo(function ThreadActivityAnnouncer({
   runId,
   runStatus,
   deliveryFailures,
-  latestItemPosition,
+  latestLocalItemOrdinal,
   detailBehind,
 }: ThreadActivitySnapshot & {
   /** Null while the timeline shows another thread during a switch. */
@@ -42,7 +42,7 @@ export const ThreadActivityAnnouncer = memo(function ThreadActivityAnnouncer({
       runId,
       runStatus,
       deliveryFailures,
-      latestItemPosition,
+      latestLocalItemOrdinal,
     });
     memoryRef.current = { threadKey, memory };
     if (previous === null) clear();
@@ -54,7 +54,7 @@ export const ThreadActivityAnnouncer = memo(function ThreadActivityAnnouncer({
     runId,
     runStatus,
     deliveryFailures,
-    latestItemPosition,
+    latestLocalItemOrdinal,
     detailBehind,
     announce,
     clear,

@@ -21,10 +21,10 @@ export interface ThreadActivitySnapshot {
   readonly runStatus: OrchestrationV2RunStatus | null;
   readonly deliveryFailures?: ReadonlyArray<{
     readonly id: string;
-    readonly position: number;
+    readonly ordinal: number;
     readonly message: string;
   }>;
-  readonly latestItemPosition?: number;
+  readonly latestLocalItemOrdinal?: number;
 }
 
 export interface ThreadAnnouncementMemory {
@@ -38,14 +38,14 @@ export interface ThreadAnnouncementMemory {
   readonly settledRunId: RunId | null;
   /** The run shown while idle belongs to the last turn, even if it is still settling. */
   readonly idleRunId: RunId | null;
-  readonly latestItemPosition: number;
+  readonly latestLocalItemOrdinal: number;
 }
 
 export function deliveryFailureSnapshot(
   entries: ReadonlyArray<TimelineEntry>,
   runId: RunId | null,
 ) {
-  let latestItemPosition = -1;
+  let latestLocalItemOrdinal = -1;
   const deliveryFailures: Array<NonNullable<ThreadActivitySnapshot["deliveryFailures"]>[number]> =
     [];
   for (const entry of entries) {
@@ -55,11 +55,10 @@ export function deliveryFailureSnapshot(
         : "projectedItem" in entry
           ? entry.projectedItem
           : undefined;
-    if (projected === undefined) continue;
-    latestItemPosition = Math.max(latestItemPosition, projected.position);
+    if (projected === undefined || projected.visibility !== "local") continue;
     const item = projected.item;
+    latestLocalItemOrdinal = Math.max(latestLocalItemOrdinal, item.ordinal);
     if (
-      projected.visibility === "local" &&
       item.type === "error" &&
       item.status === "failed" &&
       item.failure.class === "transport_error" &&
@@ -70,12 +69,12 @@ export function deliveryFailureSnapshot(
     ) {
       deliveryFailures.push({
         id: item.id,
-        position: projected.position,
+        ordinal: item.ordinal,
         message: `${item.title ?? "Delivery not confirmed"}. ${item.failure.message}`,
       });
     }
   }
-  return { deliveryFailures, latestItemPosition };
+  return { deliveryFailures, latestLocalItemOrdinal };
 }
 
 const ACTIVE_RUN_STATUSES: ReadonlySet<OrchestrationV2RunStatus | null> = new Set([
@@ -163,7 +162,7 @@ function nextThreadStatusAnnouncement(
         turnRunId: idle ? null : (newRunId ?? "unknown"),
         settledRunId: runOutcomeText(next.runStatus) === null ? null : next.runId,
         idleRunId,
-        latestItemPosition: -1,
+        latestLocalItemOrdinal: -1,
       },
       announcement: null,
     };
@@ -228,15 +227,15 @@ export function nextThreadAnnouncement(
   const newFailures =
     previous !== null && next.status !== "idle" && ACTIVE_RUN_STATUSES.has(next.runStatus)
       ? (next.deliveryFailures ?? []).filter(
-          (failure) => failure.position > previous.latestItemPosition,
+          (failure) => failure.ordinal > previous.latestLocalItemOrdinal,
         )
       : [];
   return {
     memory: {
       ...result.memory,
-      latestItemPosition: Math.max(
-        previous?.latestItemPosition ?? -1,
-        next.latestItemPosition ?? -1,
+      latestLocalItemOrdinal: Math.max(
+        previous?.latestLocalItemOrdinal ?? -1,
+        next.latestLocalItemOrdinal ?? -1,
       ),
     },
     announcement:
