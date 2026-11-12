@@ -135,9 +135,24 @@ describe("runMigrations", () => {
         [79, "SubagentDeliveryState"],
         [80, "ProjectionProjectsPinArchive"],
         [81, "PrivilegedRecoveryIndexes"],
+        [82, "ExecutionUsageIndexes"],
       ]);
       assert.deepStrictEqual(yield* retained, before);
       assert.deepStrictEqual(yield* runMigrations(), []);
+      const historyPlan = yield* sql<{ detail: string }>`EXPLAIN QUERY PLAN
+        SELECT run_id FROM orchestration_v2_projection_runs
+        WHERE json_extract(payload_json, '$.delegationAdmission') IS NULL
+        ORDER BY requested_at DESC, run_id DESC LIMIT 101`;
+      assert.isFalse(historyPlan.some((row) => row.detail.includes("TEMP B-TREE")));
+      const turnPlan = yield* sql<{ detail: string }>`EXPLAIN QUERY PLAN
+        SELECT p.provider_turn_id FROM orchestration_v2_projection_provider_turns p
+        JOIN orchestration_v2_projection_run_attempts a ON a.attempt_id = p.run_attempt_id
+        WHERE a.run_id = 'run-a'`;
+      assert.isFalse(turnPlan.some((row) => row.detail === "SCAN p"));
+      const childPlan = yield* sql<{ detail: string }>`EXPLAIN QUERY PLAN
+        SELECT subagent_id FROM orchestration_v2_projection_subagents
+        WHERE origin = 'provider_native' AND run_id = 'run-a'`;
+      assert.isFalse(childPlan.some((row) => row.detail.startsWith("SCAN ")));
       assert.isTrue(
         Exit.isFailure(
           yield* Effect.exit(

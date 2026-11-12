@@ -31,6 +31,7 @@ function entry(overrides: Partial<ExecutionUsageEntry> = {}): ExecutionUsageEntr
     missingCostTurns: 1,
     partial: true,
     unmeasuredSubagents: false,
+    delegatedChildren: 0,
     contextUsedTokens: null,
     contextMaxTokens: null,
     pricing: [],

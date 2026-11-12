@@ -33,6 +33,7 @@ export const ExecutionUsageEntry = Schema.Struct({
   missingCostTurns: NonNegativeInt,
   partial: Schema.Boolean,
   unmeasuredSubagents: Schema.Boolean,
+  delegatedChildren: NonNegativeInt,
   nativeChildren: Schema.Array(
     Schema.Struct({
       id: Schema.String,

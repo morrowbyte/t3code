@@ -92,6 +92,9 @@ it.effect(
       (subagent_id, thread_id, run_id, parent_node_id, provider, origin, status, updated_at, payload_json)
       VALUES ('native-child', 'thread:parent', 'run:parent', 'node', 'codex', 'provider_native', 'completed', ${time},
         ${JSON.stringify({ title: "Native review", model: "child-model", modelSelection: { instanceId: "codex", model: "child-model", options: [{ id: "serviceTier", value: "priority" }] } })})`;
+      yield* sql`INSERT INTO orchestration_v2_projection_subagents
+      (subagent_id, thread_id, run_id, parent_node_id, provider, origin, status, updated_at, payload_json)
+      VALUES ('delegated-child', 'thread:parent', 'run:parent', 'node', 'codex', 'app_owned', 'completed', ${time}, '{}')`;
       const usage = yield* ExecutionUsage.ExecutionUsage;
       const project = yield* usage.read({ projectId: ProjectId.make("project:a") });
       expect(project.entries).toHaveLength(2);
@@ -117,6 +120,8 @@ it.effect(
         modelSelection: { options: [{ id: "serviceTier", value: "priority" }] },
       });
       expect(parent.unmeasuredSubagents).toBe(true);
+      expect(parent).toMatchObject({ delegatedChildren: 1 });
+      expect(child).toMatchObject({ delegatedChildren: 0 });
       expect(parent.pricing[0]).toMatchObject({ source: "litellm", pricedAt: time });
       expect(
         (yield* usage.read({

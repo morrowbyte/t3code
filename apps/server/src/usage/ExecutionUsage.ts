@@ -52,6 +52,7 @@ export const layer = Layer.effect(
           task_key: string | null;
           prompt: string | null;
           result: string | null;
+          delegated_children: number;
         }>`
       WITH RECURSIVE scoped(thread_id) AS (
         SELECT thread_id FROM orchestration_v2_projection_threads WHERE thread_id = ${input.threadId ?? null}
@@ -70,6 +71,8 @@ export const layer = Layer.effect(
         r.status, r.requested_at, json_extract(r.payload_json, '$.startedAt') AS started_at, r.completed_at,
         json_extract(m.payload_json, '$.text') AS task_key,
         substr(json_extract(m.payload_json, '$.text'), 1, 1200) AS prompt,
+        (SELECT COUNT(*) FROM orchestration_v2_projection_subagents c
+          WHERE c.run_id = r.run_id AND c.origin = 'app_owned') AS delegated_children,
         (SELECT substr(json_extract(a.payload_json, '$.text'), 1, 2400)
           FROM orchestration_v2_projection_messages a WHERE a.run_id = r.run_id AND a.role = 'assistant'
           ORDER BY a.created_at DESC, a.message_id DESC LIMIT 1) AS result
@@ -179,6 +182,7 @@ export const layer = Layer.effect(
               partial: missingCostTurns > 0 || known.some((cost) => cost.status === "partial"),
               unmeasuredSubagents:
                 children.length > 0 || costs.some((cost) => cost?.usage?.hasSubagents === true),
+              delegatedChildren: row.delegated_children,
               nativeChildren: children.map((child) => ({
                 id: child.subagent_id,
                 title: child.title ?? "Native child",

@@ -255,13 +255,23 @@ function ExecutionEnvironment({
                     <ExecutionLink entry={entry} environmentId={environmentId} />
                     <Configuration entry={entry} />
                     <div className="mt-2 text-sm tabular-nums">
-                      {entry.status} · {executionDurationLabel(entry.durationMs)} ·{" "}
-                      {executionCostLabel(entry.estimatedCostUsd, entry.partial)}
+                      Main run · {entry.status} · {executionDurationLabel(entry.durationMs)} ·{" "}
+                      {executionCostLabel(
+                        entry.estimatedCostUsd,
+                        entry.partial || entry.unmeasuredSubagents || entry.delegatedChildren > 0,
+                      )}
                     </div>
                     <div className="text-xs text-muted-foreground">
                       Input: {entry.inputTokens?.toLocaleString() ?? "unknown"} · Output:{" "}
                       {entry.outputTokens?.toLocaleString() ?? "unknown"} tokens
                     </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Child effort excluded from these main-run values.
+                      {entry.delegatedChildren > 0
+                        ? ` ${entry.delegatedChildren} delegated children; see thread usage.`
+                        : ""}
+                      {entry.unmeasuredSubagents ? " Additional child effort is unknown." : ""}
+                    </p>
                     <h3 className="mt-3 text-xs text-muted-foreground">Result excerpt</h3>
                     <p className="mt-1 whitespace-pre-wrap break-words text-sm">
                       {entry.result || "No saved result."}
