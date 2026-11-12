@@ -1028,6 +1028,7 @@ function ThreadDetailBody(
   const composerPanelsHeightStyle = useAnimatedStyle(() => ({
     maxHeight: pendingUserInputMaxHeight.value,
     flexGrow: 0,
+    marginBottom: activeUserInputRequestId !== null ? composerBottomInset : 0,
   }));
   // The usage panel stacks with the composer and any approval card, so it gets
   // whatever room they leave below the header. Measured only while it is open
@@ -1713,7 +1714,7 @@ function ThreadDetailBody(
                         className="shrink-0 gap-3 px-4 pb-3"
                         style={
                           activeUserInputRequestId !== null
-                            ? { paddingBottom: composerBottomInset }
+                            ? { paddingBottom: Platform.OS === "android" ? 0 : composerBottomInset }
                             : undefined
                         }
                         entering={FadeInDown.duration(220)}
