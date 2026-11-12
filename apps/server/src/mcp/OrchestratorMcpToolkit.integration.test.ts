@@ -3314,6 +3314,7 @@ describe("orchestrator MCP toolkit", () => {
                 const steering = effects.find(
                   (effect) =>
                     effect.request.type === "provider-turn.steer" ||
+                    effect.request.type === "steering-delivery.settle" ||
                     effect.request.type === "provider-turn.restart",
                 );
                 if (steering === undefined)
@@ -3329,7 +3330,7 @@ describe("orchestrator MCP toolkit", () => {
                   runId: run.id,
                   messageId: sent.messageId,
                   delivery:
-                    steering.request.type === "provider-turn.steer" ? "steered" : "accepted",
+                    steering.request.type === "provider-turn.restart" ? "accepted" : "steered",
                 });
                 return { child, sent };
               });
