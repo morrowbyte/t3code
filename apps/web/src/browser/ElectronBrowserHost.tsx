@@ -8,13 +8,14 @@ import {
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
-import { type ComponentProps, useState } from "react";
+import { type ComponentProps, useEffect, useState } from "react";
 
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 
 import { isElectron } from "~/env";
 import { useClientSettingsHydrated } from "~/hooks/useSettings";
 import { useDesktopHostedPreviewSessions } from "~/components/preview/usePreviewSession";
+import { previewBridge } from "~/components/preview/previewBridge";
 import {
   readActivePreviewSessions,
   type ThreadPreviewState,
@@ -27,6 +28,10 @@ import { useEnvironmentScope } from "~/state/session";
 import { readPreviewAnnotationTheme } from "./annotationTheme";
 import { useBrowserDefaults } from "./browserDefaults";
 import { useBrowserPointerStore } from "./browserPointerStore";
+import {
+  subscribeDesktopBrowserHostedEnvironments,
+  useDesktopBrowserHostedEnvironmentIds,
+} from "./desktopBrowserSurface";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
 import { openUrlInPreview } from "./openFileInPreview";
 import { hostsPreviewTabLocally } from "./previewRuntime";
@@ -36,13 +41,19 @@ import { previewRuntimeTabId } from "./previewRuntimeTabId";
 function hostedBrowserSessions(
   previewByThreadKey: Record<string, ThreadPreviewState>,
   primaryEnvironmentId: EnvironmentId | null,
+  hostedEnvironmentIds?: ReadonlyArray<string>,
 ) {
   const activeSessions = Object.entries(previewByThreadKey).flatMap(([threadKey, previewState]) => {
     const threadRef = parseScopedThreadKey(threadKey);
     return threadRef
       ? Object.values(previewState.sessions)
           .filter((snapshot) =>
-            hostsPreviewTabLocally(threadRef.environmentId, primaryEnvironmentId, snapshot),
+            hostsPreviewTabLocally(
+              threadRef.environmentId,
+              primaryEnvironmentId,
+              snapshot,
+              hostedEnvironmentIds,
+            ),
           )
           .map((snapshot) => ({
             threadRef,
@@ -126,8 +137,18 @@ export function startElectronBrowserHost(): () => void {
 export function ElectronBrowserHost() {
   const previewByThreadKey = useActivePreviewSessions();
   const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
+  const hostedEnvironmentIds = useDesktopBrowserHostedEnvironmentIds();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- observes Main's ready target connections for this primary-environment scope
+  useEffect(() => {
+    if (!isElectron || !previewBridge) return;
+    return subscribeDesktopBrowserHostedEnvironments(previewBridge);
+  }, [primaryEnvironmentId]);
   useDesktopHostedPreviewSessions(primaryEnvironmentId);
-  const sessions = hostedBrowserSessions(previewByThreadKey, primaryEnvironmentId);
+  const sessions = hostedBrowserSessions(
+    previewByThreadKey,
+    primaryEnvironmentId,
+    hostedEnvironmentIds,
+  );
 
   if (!isElectron) return null;
   return (

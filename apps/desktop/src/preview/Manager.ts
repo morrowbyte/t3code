@@ -118,7 +118,7 @@ export interface PreviewTabState {
   controller: "human" | "agent" | "none";
   capturing: boolean;
   favicon?: DesktopPreviewFavicon;
-  serverTab?: { readonly threadId: string; readonly tabId: string };
+  serverTab?: { readonly environmentId?: string | undefined; readonly threadId: string; readonly tabId: string };
   updatedAt: string;
 }
 
@@ -3809,13 +3809,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   let pointerSequence = 0;
   const emitAgentPointer = Effect.fn("PreviewManager.emitAgentPointer")(function* (pointer: {
-    readonly key: { readonly threadId: string; readonly tabId: string };
+    readonly key: { readonly environmentId?: string | undefined; readonly threadId: string; readonly tabId: string };
     readonly phase: "move" | "click";
     readonly x: number;
     readonly y: number;
   }) {
     const tab = [...(yield* SynchronizedRef.get(tabsRef)).values()].find(
       (candidate) =>
+        candidate.serverTab?.environmentId === pointer.key.environmentId &&
         candidate.serverTab?.threadId === pointer.key.threadId &&
         candidate.serverTab.tabId === pointer.key.tabId,
     );
@@ -3845,11 +3846,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   });
   const updateServerTabCapturing = Effect.fn("PreviewManager.updateServerTabCapturing")(
     function* (painting: {
-      readonly key: { readonly threadId: string; readonly tabId: string };
+      readonly key: { readonly environmentId?: string | undefined; readonly threadId: string; readonly tabId: string };
       readonly active: boolean;
     }) {
       const tab = [...(yield* SynchronizedRef.get(tabsRef)).values()].find(
         (candidate) =>
+          candidate.serverTab?.environmentId === painting.key.environmentId &&
           candidate.serverTab?.threadId === painting.key.threadId &&
           candidate.serverTab.tabId === painting.key.tabId,
       );

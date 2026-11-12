@@ -10,6 +10,7 @@ import { extractJsonObject, fromLenientJson } from "@t3tools/shared/schemaJson";
 import { satisfiesSemverRange } from "@t3tools/shared/semver";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -129,7 +130,22 @@ interface SshAuthAttemptInput<T> extends SshAuthOperationInput<T> {
   readonly authSecret: string | null;
 }
 
+export interface SshDesktopBrowserTransport {
+  /** Single consumer, no replay; includes the helper's ready receipt before commands. */
+  readonly commands: Stream.Stream<Uint8Array, SshCommandError>;
+  readonly closed: Effect.Effect<void, SshCommandError>;
+}
+
 export interface SshEnvironmentManagerShape {
+  readonly openDesktopBrowser: (
+    target: DesktopSshEnvironmentTarget,
+    environmentId: string,
+    events: Stream.Stream<Uint8Array>,
+  ) => Effect.Effect<
+    SshDesktopBrowserTransport,
+    SshEnvironmentEffectError,
+    SshEnvironmentEffectContext | Scope.Scope
+  >;
   readonly ensureEnvironment: (
     target: DesktopSshEnvironmentTarget,
     options?: { readonly issuePairingToken?: boolean },
@@ -1734,6 +1750,171 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
     );
   });
 
+  const openDesktopBrowser = Effect.fn("ssh/tunnel.openDesktopBrowser")(function* (
+    target: DesktopSshEnvironmentTarget,
+    environmentId: string,
+    events: Stream.Stream<Uint8Array>,
+  ): Effect.fn.Return<
+    SshDesktopBrowserTransport,
+    SshEnvironmentEffectError,
+    SshEnvironmentEffectContext | Scope.Scope
+  > {
+    const baseResolved = yield* resolveSshTarget(target.alias || target.hostname);
+    const resolvedTarget: DesktopSshEnvironmentTarget = {
+      ...baseResolved,
+      ...(target.username !== null ? { username: target.username } : {}),
+      ...(target.port !== null ? { port: target.port } : {}),
+    };
+    const key = targetConnectionKey(resolvedTarget);
+    return yield* withTargetLock(
+      key,
+      Effect.gen(function* () {
+        const command = ["ssh", "__ssh-helper", "desktop-browser"];
+        const failure = (message: string, exitCode: number | null = null) =>
+          new SshCommandError({ command, exitCode, stderr: "", message });
+        const entry = tunnels.get(key);
+        if (entry === undefined) {
+          return yield* failure("Desktop browser requires an existing SSH tunnel.");
+        }
+        const running = yield* entry.process.isRunning.pipe(
+          Effect.mapError(() => failure("Failed to inspect the existing SSH tunnel.")),
+        );
+        if (!running) {
+          return yield* failure("Desktop browser requires a running SSH tunnel.");
+        }
+        yield* waitForHttpReady({ baseUrl: entry.httpBaseUrl, timeoutMs: 2_000 }).pipe(
+          Effect.mapError(() => failure("Desktop browser requires a ready SSH tunnel.")),
+        );
+        const browserScope = yield* Effect.acquireRelease(
+          Scope.fork(entry.scope, "sequential"),
+          (scope) => Scope.close(scope, Exit.void),
+        );
+        return yield* Effect.gen(function* () {
+          const completed = yield* Deferred.make<void, SshCommandError>();
+          const aborted = yield* Deferred.make<never, SshCommandError>();
+          const hostSpec = yield* buildSshHostSpecEffect(entry.target);
+          const stateKey = yield* remoteStateKey(entry.target);
+          const sshCommand = yield* resolveSshCommand;
+          const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+          const child = yield* runWithSshAuth({
+            key,
+            target: entry.target,
+            operation: (authOptions) =>
+              Effect.gen(function* () {
+                const env = yield* SshAuth.buildSshChildEnvironment({
+                  ...(authOptions.authSecret === undefined
+                    ? {}
+                    : { authSecret: authOptions.authSecret }),
+                  ...(authOptions.interactiveAuth === undefined
+                    ? {}
+                    : { interactiveAuth: authOptions.interactiveAuth }),
+                }).pipe(
+                  Effect.mapError(() => failure("Failed to prepare SSH browser authentication.")),
+                );
+                return yield* spawner
+                  .spawn(
+                    ChildProcess.make(
+                      sshCommand,
+                      [
+                        ...baseSshArgs(entry.target, { batchMode: authOptions.batchMode ?? "no" }),
+                        "-T",
+                        "-o",
+                        "ControlMaster=no",
+                        "-o",
+                        "ControlPath=none",
+                        "-o",
+                        "ControlPersist=no",
+                        "-o",
+                        "ServerAliveInterval=15",
+                        "-o",
+                        "ServerAliveCountMax=3",
+                        "--",
+                        hostSpec,
+                        `exec "$HOME"/${shellSingleQuote(`.t3/ssh-launch/${stateKey}/run-t3.sh`)} __ssh-helper desktop-browser ${shellSingleQuote(environmentId)}`,
+                      ],
+                      { env, extendEnv: true, stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+                    ),
+                  )
+                  .pipe(
+                    Effect.provideService(Scope.Scope, browserScope),
+                    Effect.mapError(() => failure("Failed to spawn SSH desktop browser helper.")),
+                  );
+              }),
+          });
+          let stopping = false;
+          const failTransport = Effect.fn("ssh/tunnel.openDesktopBrowser.fail")(
+            function* (error: SshCommandError) {
+              if (stopping) return;
+              stopping = true;
+              yield* Deferred.fail(completed, error);
+              yield* Deferred.fail(aborted, error);
+              yield* child
+                .kill({ killSignal: "SIGTERM", forceKillAfter: TUNNEL_SHUTDOWN_TIMEOUT_MS })
+                .pipe(Effect.ignore);
+            },
+            Effect.uninterruptible,
+          );
+          yield* Scope.addFinalizer(
+            browserScope,
+            failTransport(failure("SSH desktop browser scope closed.")),
+          );
+          yield* events.pipe(
+            Stream.interruptWhen(Deferred.await(aborted)),
+            Stream.run(child.stdin),
+            Effect.catchCause(() => failTransport(failure("SSH desktop browser stdin failed."))),
+            Effect.forkIn(browserScope),
+          );
+          // Drain without retaining or logging helper stderr, which may contain private data.
+          const stderrDrain = yield* child.stderr.pipe(
+            Stream.runDrain,
+            Effect.catchCause(() => failTransport(failure("SSH desktop browser stderr failed."))),
+            Effect.forkIn(browserScope),
+          );
+          yield* child.exitCode.pipe(
+            Effect.mapError(() => failure("Failed to monitor SSH desktop browser helper.")),
+            Effect.flatMap((exitCode) =>
+              Number(exitCode) === 0
+                ? Fiber.join(stderrDrain).pipe(
+                    Effect.andThen(Deferred.succeed(completed, undefined)),
+                  )
+                : failTransport(
+                    failure("SSH desktop browser helper exited unsuccessfully.", Number(exitCode)),
+                  ),
+            ),
+            Effect.catchCause(() => failTransport(failure("SSH desktop browser monitor failed."))),
+            Effect.forkIn(browserScope),
+          );
+          yield* entry.process.exitCode.pipe(
+            Effect.matchEffect({
+              onFailure: () => failTransport(failure("SSH tunnel monitor failed.")),
+              onSuccess: () => failTransport(failure("SSH tunnel disconnected.")),
+            }),
+            Effect.forkIn(browserScope),
+          );
+          let consumed = false;
+          const closed = Deferred.await(completed);
+          const commands = Stream.suspend(() => {
+            if (consumed) {
+              return Stream.fail(failure("SSH desktop browser commands cannot be replayed."));
+            }
+            consumed = true;
+            return child.stdout.pipe(
+              Stream.mapError(() => failure("SSH desktop browser stdout failed.")),
+              Stream.tapError(failTransport),
+              Stream.concat(Stream.fromEffectDrain(closed)),
+              Stream.interruptWhen(Deferred.await(aborted)),
+            );
+          });
+          return { commands, closed };
+        }).pipe(
+          Effect.onExit((exit) =>
+            Exit.isSuccess(exit) ? Effect.void : Scope.close(browserScope, Exit.void),
+          ),
+        );
+      }),
+    );
+  });
+
   const disconnectEnvironment = Effect.fn("ssh/tunnel.disconnectEnvironment")(function* (
     target: DesktopSshEnvironmentTarget,
   ): Effect.fn.Return<void, SshEnvironmentEffectError, SshEnvironmentEffectContext> {
@@ -1774,7 +1955,7 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
     );
   });
 
-  return SshEnvironmentManager.of({ ensureEnvironment, disconnectEnvironment });
+  return SshEnvironmentManager.of({ ensureEnvironment, disconnectEnvironment, openDesktopBrowser });
 });
 
 /**

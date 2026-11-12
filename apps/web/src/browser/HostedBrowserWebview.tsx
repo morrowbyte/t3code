@@ -28,6 +28,7 @@ import { BrowserViewportResizeHandles } from "./BrowserViewportResizeHandles";
 import { acquireDesktopTab, type AcquiredDesktopTab, withDesktopTab } from "./desktopTabLifetime";
 import {
   acquireDesktopBrowserHostState,
+  useDesktopBrowserHostedEnvironmentIds,
   useDesktopBrowserHostRevision,
   useDesktopBrowserHostState,
 } from "./desktopBrowserSurface";
@@ -134,7 +135,11 @@ export function HostedBrowserWebview(props: {
     serverRendering,
   } = props;
   const clientSettingsHydrated = useClientSettingsHydrated();
-  const nativeHost = useAtomValue(primaryEnvironmentIdAtom) === threadRef.environmentId;
+  const primaryHost = useAtomValue(primaryEnvironmentIdAtom) === threadRef.environmentId;
+  const hostedEnvironmentIds = useDesktopBrowserHostedEnvironmentIds();
+  const nativeHost = primaryHost || hostedEnvironmentIds.includes(threadRef.environmentId);
+  // A late target binding must keep a guest that started as a webview on its existing render path.
+  const [legacyWebviewHost] = useState(() => !nativeHost);
   const config = usePreviewWebviewConfig(threadRef.environmentId, profileId);
   const [initialSrc] = useState(() => initialUrl ?? "about:blank");
   const tabLeaseRef = useRef<AcquiredDesktopTab | null>(null);
@@ -145,6 +150,7 @@ export function HostedBrowserWebview(props: {
   const hostLeaseRef = useRef<ReturnType<typeof acquireDesktopBrowserHostState> | null>(null);
   const hostState = useDesktopBrowserHostState(runtimeTabId);
   const hostRevision = useDesktopBrowserHostRevision(runtimeTabId);
+  const nativeSurface = nativeHost && !legacyWebviewHost && hostState?.kind !== "webview";
   const hostKindRef = useRef<DesktopPreviewSurfaceState["kind"]>("pending");
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const webviewRef = useRef<ElectronWebview | null>(null);
@@ -207,7 +213,13 @@ export function HostedBrowserWebview(props: {
     crashRecoveryRef.current = INITIAL_WEBVIEW_CRASH_RECOVERY_STATE;
     const lease = acquireDesktopTab(
       runtimeTabId,
-      nativeHost ? { threadId: threadRef.threadId, tabId } : undefined,
+      nativeHost
+        ? {
+            threadId: threadRef.threadId,
+            tabId,
+            ...(primaryHost ? {} : { environmentId: threadRef.environmentId }),
+          }
+        : undefined,
       nativeHost ? initialSrc : undefined,
     );
     tabLeaseRef.current = lease;
@@ -227,7 +239,16 @@ export function HostedBrowserWebview(props: {
       setTabConnection((current) => (current?.ready === lease.ready ? null : current));
       lease.release();
     };
-  }, [clientSettingsHydrated, runtimeTabId, nativeHost, tabId, threadRef.threadId, initialSrc]);
+  }, [
+    clientSettingsHydrated,
+    runtimeTabId,
+    nativeHost,
+    primaryHost,
+    tabId,
+    threadRef.threadId,
+    threadRef.environmentId,
+    initialSrc,
+  ]);
 
   const viewportWidth = viewport._tag === "fill" ? null : viewport.width;
   const viewportHeight = viewport._tag === "fill" ? null : viewport.height;
@@ -239,9 +260,7 @@ export function HostedBrowserWebview(props: {
   const hostConnection = (
     <OffscreenHostConnection
       key={JSON.stringify([runtimeTabId, hostState?.webContentsId ?? null, hostRevision])}
-      enabled={
-        clientSettingsHydrated && Boolean(config) && nativeHost && hostState?.kind !== "webview"
-      }
+      enabled={clientSettingsHydrated && Boolean(config) && nativeSurface}
       tabId={runtimeTabId}
       environmentId={threadRef.environmentId}
       profileId={profileId}
@@ -281,14 +300,7 @@ export function HostedBrowserWebview(props: {
   useEffect(() => {
     const webview = webviewRef.current;
     const bridge = previewBridge;
-    if (
-      !clientSettingsHydrated ||
-      !webview ||
-      !config ||
-      !bridge ||
-      (nativeHost && hostState?.kind !== "webview")
-    )
-      return;
+    if (!clientSettingsHydrated || !webview || !config || !bridge || nativeSurface) return;
     let disposed = false;
     let recoveryTimeout: ReturnType<typeof setTimeout> | null = null;
     const register = () => {
@@ -340,6 +352,7 @@ export function HostedBrowserWebview(props: {
     config,
     hostState?.kind,
     nativeHost,
+    nativeSurface,
     runtimeTabId,
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A crash recovery remounts the webview under a new key, so the listeners attach to the new element.
     webviewGeneration,
@@ -429,7 +442,7 @@ export function HostedBrowserWebview(props: {
     viewportWidth,
   ]);
 
-  if (!clientSettingsHydrated || !config || (nativeHost && hostState?.kind !== "webview"))
+  if (!clientSettingsHydrated || !config || nativeSurface)
     return hostConnection;
 
   // Offscreen/visibility:hidden guests stop producing animation frames and

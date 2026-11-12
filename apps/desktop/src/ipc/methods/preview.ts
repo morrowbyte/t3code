@@ -34,12 +34,14 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 import * as NodeURL from "node:url";
 
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as BrowserImport from "../../preview/BrowserImport/BrowserImport.ts";
 import * as PreviewManager from "../../preview/Manager.ts";
+import * as DesktopBrowserHost from "../../preview/DesktopBrowserHost.ts";
 import { normalizeCaptureFailure } from "../../preview/captureErrors.ts";
 import * as DesktopClientSettings from "../../settings/DesktopClientSettings.ts";
 import { PREVIEW_WEBVIEW_PREFERENCES } from "../../preview/WebviewPreferences.ts";
@@ -51,6 +53,19 @@ export const installPreviewEventForwarding = Effect.fn(
 )(function* () {
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const manager = yield* PreviewManager.PreviewManager;
+  const browserHost = yield* DesktopBrowserHost.DesktopBrowserHost;
+  yield* browserHost.hostedEnvironmentsChanged.pipe(
+    Stream.runForEach((ids) =>
+      Effect.gen(function* () {
+        const main = yield* electronWindow.main;
+        if (Option.isNone(main) || main.value.isDestroyed()) return;
+        yield* Effect.sync(() =>
+          main.value.webContents.send(IpcChannels.PREVIEW_HOSTED_ENVIRONMENTS_CHANGE_CHANNEL, ids),
+        );
+      }),
+    ),
+    Effect.forkScoped,
+  );
   yield* manager.subscribeStateChanges((tabId, state) =>
     electronWindow.sendAll(IpcChannels.PREVIEW_STATE_CHANGE_CHANNEL, tabId, state),
   );
@@ -63,6 +78,19 @@ export const installPreviewEventForwarding = Effect.fn(
   yield* manager.subscribeOpenLinks((event) =>
     electronWindow.sendAll(IpcChannels.PREVIEW_OPEN_LINK_CHANNEL, event),
   );
+});
+
+const getHostedEnvironmentIds = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_HOSTED_ENVIRONMENTS_GET_CHANNEL,
+  result: Schema.Array(Schema.String),
+  handler: Effect.fn("desktop.ipc.preview.getHostedEnvironmentIds")(function* (_input, event) {
+    const electronWindow = yield* ElectronWindow.ElectronWindow;
+    const main = yield* electronWindow.main;
+    if (Option.isNone(main) || main.value.isDestroyed() || main.value.webContents.id !== event?.sender.id)
+      return [];
+    const browserHost = yield* DesktopBrowserHost.DesktopBrowserHost;
+    return browserHost.hostedEnvironmentIds();
+  }),
 });
 
 const setForwardedShortcuts = DesktopIpc.makeIpcMethod({
@@ -485,6 +513,7 @@ const saveRecording = DesktopIpc.makeIpcMethod({
 });
 
 export const methods = [
+  getHostedEnvironmentIds,
   setForwardedShortcuts,
   createTab,
   closeTab,

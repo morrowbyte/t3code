@@ -88,7 +88,7 @@ import { shouldShowPreviewEmptyState } from "./previewEmptyStateLogic";
 import { Badge } from "~/components/ui/badge";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
 import { useDesktopBrowserHostState } from "~/browser/desktopBrowserSurface";
-import { alternatePreviewRuntime, useRendersServerTabNatively } from "~/browser/previewRuntime";
+import { alternatePreviewRuntime, useControlsNativePreviewTab } from "~/browser/previewRuntime";
 import { ServerBrowserSurface, type ServerBrowserHandle } from "~/browser/ServerBrowserSurface";
 import { cn } from "~/lib/utils";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
@@ -206,10 +206,10 @@ export function PreviewView({
   const localHost = useDesktopBrowserHostState(runtimeTabId);
   const localOffscreenTab = localHost?.kind === "offscreen";
   const nativeServerTab =
-    useRendersServerTabNatively(threadRef.environmentId, snapshot) || localOffscreenTab;
+    useControlsNativePreviewTab(threadRef.environmentId, snapshot) || localOffscreenTab;
   const isServerTab = snapshot?.runtime === "server" && !nativeServerTab;
   const serverOwnsRendering = snapshot?.runtime === "server";
-  const serverControlsTab = serverOwnsRendering || localOffscreenTab;
+  const serverControlsTab = serverOwnsRendering || nativeServerTab;
   const streamPicker = isServerTab || localOffscreenTab;
   const serverSurfaceRef = useRef<ServerBrowserHandle | null>(null);
   const [serverAspectRatioLocked, setServerAspectRatioLocked] = useState(false);

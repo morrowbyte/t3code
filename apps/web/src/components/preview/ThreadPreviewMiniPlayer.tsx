@@ -24,8 +24,7 @@ import {
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import type { BrowserViewportResizeDirection } from "~/browser/browserViewportLayout";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
-import { rendersServerTabNatively } from "~/browser/previewRuntime";
-import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
+import { useControlsNativePreviewTab } from "~/browser/previewRuntime";
 import { type ServerBrowserHandle, ServerBrowserSurface } from "~/browser/ServerBrowserSurface";
 import {
   closeServerPictureInPicture,
@@ -138,11 +137,11 @@ function useBrowserMiniPlayerSource(threadRef: ScopedThreadRef | null, tabId: st
   const fittedSourceContent = useBrowserSurfaceStore((state) =>
     runtimeTabId === null ? null : (state.byTabId[runtimeTabId]?.fittedSourceContent ?? null),
   );
-  const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
+  const nativeControlsTab = useControlsNativePreviewTab(threadRef?.environmentId ?? null, snapshot);
   const serverTab =
     threadRef !== null &&
     snapshot?.runtime === "server" &&
-    !rendersServerTabNatively(threadRef.environmentId, primaryEnvironmentId, snapshot);
+    !nativeControlsTab;
   const streamViewport = useStreamedSourceSize((state) =>
     threadRef &&
     tabId !== null &&
@@ -159,7 +158,14 @@ function useBrowserMiniPlayerSource(threadRef: ScopedThreadRef | null, tabId: st
           fittedSourceContent,
           layoutZoomFactor,
         );
-  return { serverEpoch: previewState.serverEpoch, snapshot, desktopOverlay, serverTab, sourceSize };
+  return {
+    serverEpoch: previewState.serverEpoch,
+    snapshot,
+    desktopOverlay,
+    serverTab,
+    nativeControlsTab,
+    sourceSize,
+  };
 }
 
 /** The mini player as the chat canvas lays it out; null when no player renders. */
@@ -213,7 +219,7 @@ export function ThreadPreviewMiniPlayer({ threadRef, miniPlayer }: Props) {
 
 function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly tabId: string }) {
   const httpBaseUrl = useEnvironmentHttpBaseUrl(threadRef.environmentId);
-  const { serverEpoch, snapshot, desktopOverlay, serverTab, sourceSize } =
+  const { serverEpoch, snapshot, desktopOverlay, serverTab, nativeControlsTab, sourceSize } =
     useBrowserMiniPlayerSource(threadRef, tabId);
   const runtimeTabId = previewRuntimeTabId(threadRef, serverEpoch, tabId);
   const localHost = useDesktopBrowserHostState(runtimeTabId);
@@ -260,6 +266,8 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
   };
 
   if (!snapshot) return null;
+  const nativeSurface =
+    nativeControlsTab || snapshot.runtime === "server" || localHost?.kind === "offscreen";
   const pdfUrl =
     snapshot.navStatus._tag === "Success"
       ? previewPdfAssetUrl(snapshot.navStatus.url, httpBaseUrl)
@@ -336,7 +344,7 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
           </div>
         ) : (
           <>
-            {snapshot.runtime === "server" || localHost?.kind === "offscreen" ? (
+            {nativeSurface ? (
               <div
                 className="pointer-events-auto absolute inset-0 overflow-hidden rounded-[inherit]"
                 style={{ zIndex: PREVIEW_MINI_PLAYER_WEBVIEW_Z_INDEX }}

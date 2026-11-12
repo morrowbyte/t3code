@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 const TabKey = {
   threadId: TrimmedNonEmptyString,
@@ -108,3 +108,34 @@ export const DesktopBrowserCommand = Schema.Union([
   }),
 ]);
 export type DesktopBrowserCommand = typeof DesktopBrowserCommand.Type;
+
+export const DESKTOP_BROWSER_REGISTRATION_FILE = "desktop-browser-control.json";
+export const DESKTOP_BROWSER_REGISTRATION_MAX_BYTES = 8192;
+
+const RegistrationId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128));
+const RegistrationBinding = {
+  environmentId: RegistrationId,
+  processEpoch: RegistrationId,
+};
+
+/** OS-private discovery only; never part of the browser event or command streams. */
+export const DesktopBrowserRegistrationDescriptor = strictControl({
+  ...RegistrationBinding,
+  endpoint: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+  token: RegistrationId,
+  processId: PositiveInt,
+});
+export type DesktopBrowserRegistrationDescriptor = typeof DesktopBrowserRegistrationDescriptor.Type;
+
+export const DesktopBrowserRegistration = strictControl({
+  type: Schema.Literal("desktop-browser-register"),
+  ...RegistrationBinding,
+  token: RegistrationId,
+});
+export type DesktopBrowserRegistration = typeof DesktopBrowserRegistration.Type;
+
+export const DesktopBrowserReady = strictControl({
+  type: Schema.Literal("desktop-browser-ready"),
+  ...RegistrationBinding,
+});
+export type DesktopBrowserReady = typeof DesktopBrowserReady.Type;

@@ -332,6 +332,17 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     },
   },
   preview: {
+    getHostedEnvironmentIds: () =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_HOSTED_ENVIRONMENTS_GET_CHANNEL),
+    onHostedEnvironmentsChange: (listener) => {
+      const receive = (_event: Electron.IpcRendererEvent, ids: unknown) => {
+        if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string")) return;
+        listener(ids);
+      };
+      ipcRenderer.on(IpcChannels.PREVIEW_HOSTED_ENVIRONMENTS_CHANGE_CHANNEL, receive);
+      return () =>
+        ipcRenderer.removeListener(IpcChannels.PREVIEW_HOSTED_ENVIRONMENTS_CHANGE_CHANNEL, receive);
+    },
     setForwardedShortcuts: (shortcuts) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_SET_FORWARDED_SHORTCUTS_CHANNEL, shortcuts),
     createTab: (tabId, defaults) =>

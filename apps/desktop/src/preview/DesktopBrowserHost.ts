@@ -57,6 +57,8 @@ const AGENT_DOWNLOAD_WINDOW_MS = 5_000;
 const FOCUS_IDLE = "5 seconds";
 
 export interface DesktopBrowserTabKey {
+  /** Omitted only for the legacy primary backend's FD connection. */
+  readonly environmentId?: string;
   readonly threadId: string;
   readonly tabId: string;
 }
@@ -69,7 +71,17 @@ export interface DesktopBrowserTabDebugger {
   readonly acquireCaptureHold?: () => () => void;
 }
 
-const keyOf = ({ threadId, tabId }: DesktopBrowserTabKey) => `${threadId}\u0000${tabId}`;
+const keyOf = ({ environmentId, threadId, tabId }: DesktopBrowserTabKey) =>
+  JSON.stringify([environmentId ?? null, threadId, tabId]);
+const wireKey = ({ threadId, tabId }: DesktopBrowserTabKey) => ({ threadId, tabId });
+
+interface TargetConnection {
+  readonly environmentId: string | undefined;
+  readonly token: symbol;
+  readonly epoch: string;
+  readonly close: (announce?: boolean) => void;
+  readonly agentTurns: Set<string>;
+}
 
 export interface DesktopBrowserConnection {
   readonly events: Stream.Stream<Uint8Array>;
@@ -156,7 +168,9 @@ export class DesktopBrowserHost extends Context.Service<
   DesktopBrowserHost,
   {
     readonly events: Stream.Stream<Uint8Array>;
-    readonly createConnection: () => DesktopBrowserConnection;
+    readonly createConnection: (targetEnvironmentId?: string) => DesktopBrowserConnection;
+    readonly hostedEnvironmentIds: () => ReadonlyArray<string>;
+    readonly hostedEnvironmentsChanged: Stream.Stream<ReadonlyArray<string>>;
     /** One line from the backend's browser control fd. */
     readonly handleCommandLine: (line: string) => Effect.Effect<void>;
     readonly attach: (key: DesktopBrowserTabKey, debuggee: DesktopBrowserTabDebugger) => void;
@@ -211,16 +225,17 @@ export const make = Effect.gen(function* () {
   const runFork = Effect.runForkWith(context);
   const runPromise = Effect.runPromiseWith(context);
   const tabs = new Map<string, AttachedTab>();
-  /** Threads whose agent turn runs, by the server's account. */
-  const agentTurns = new Set<string>();
+  const connections = new Map<string | undefined, TargetConnection>();
+  const hostedEnvironmentsChanged = yield* PubSub.unbounded<ReadonlyArray<string>>();
+  const hostedEnvironmentIds = () =>
+    [...connections.keys()].filter((id): id is string => id !== undefined);
+  const announceEnvironments = () =>
+    runFork(PubSub.publish(hostedEnvironmentsChanged, hostedEnvironmentIds()));
   const privateContents = new WeakSet<Electron.WebContents>();
   const privateEntryChanges = yield* PubSub.unbounded<{
     readonly source: Electron.WebContents;
     readonly active: boolean;
   }>();
-  let activeConnection: symbol | null = null;
-  let closeActiveConnection: (() => void) | null = null;
-  let channelEpoch: string | null = null;
   const updatePrivateEntry = (source: Electron.WebContents, active: boolean) => {
     if (active) privateContents.add(source);
     else privateContents.delete(source);
@@ -237,18 +252,26 @@ export const make = Effect.gen(function* () {
     updatePrivateEntry(source, active);
     if (changed) runFork(PubSub.publish(privateEntryChanges, { source, active }));
   };
-  const emit = (event: DesktopBrowserEventType) =>
-    runFork(PubSub.publish(outbox, { connection: activeConnection, event }));
+  const emit = (event: DesktopBrowserEventType, environmentId?: string) =>
+    runFork(
+      PubSub.publish(outbox, { connection: connections.get(environmentId)?.token ?? null, event }),
+    );
 
   const unavailable = () => new Error("Native private entry is unavailable");
   const attachedFor = (source: Electron.WebContents) =>
     [...tabs.values()].find((tab) => tab.debuggee.webContents === source);
-  const isCurrentAttachment = (tab: AttachedTab) =>
-    channelEpoch !== null &&
-    activeConnection !== null &&
-    tab.attachment?.channelEpoch === channelEpoch &&
-    tabs.get(keyOf(tab.key)) === tab &&
-    !tab.debuggee.webContents.isDestroyed();
+  const isCurrentAttachment = (tab: AttachedTab) => {
+    const connection = connections.get(tab.key.environmentId);
+    const channelEpoch = connection?.epoch ?? null;
+    const activeConnection = connection?.token ?? null;
+    return (
+      channelEpoch !== null &&
+      activeConnection !== null &&
+      tab.attachment?.channelEpoch === channelEpoch &&
+      tabs.get(keyOf(tab.key)) === tab &&
+      !tab.debuggee.webContents.isDestroyed()
+    );
+  };
   const cancel = (
     tab: AttachedTab,
     request: Pick<DesktopBrowserPrivateEntryRequest, "channelEpoch" | "attachmentId" | "requestId">,
@@ -256,13 +279,16 @@ export const make = Effect.gen(function* () {
     tab.cancelled.add(request.requestId);
     if (tab.cancelled.size > 8) tab.cancelled.delete(tab.cancelled.values().next().value!);
     if (isCurrentAttachment(tab))
-      emit({
-        type: "private-entry-cancel",
-        ...tab.key,
-        channelEpoch: request.channelEpoch,
-        attachmentId: request.attachmentId,
-        requestId: request.requestId,
-      });
+      emit(
+        {
+          type: "private-entry-cancel",
+          ...wireKey(tab.key),
+          channelEpoch: request.channelEpoch,
+          attachmentId: request.attachmentId,
+          requestId: request.requestId,
+        },
+        tab.key.environmentId,
+      );
   };
   const invalidate = (tab: AttachedTab) => {
     tab.releasedLease = null;
@@ -310,17 +336,17 @@ export const make = Effect.gen(function* () {
         accept: resolve,
         reject: () => reject(unavailable()),
       };
-      emit(message);
+      emit(message, tab.key.environmentId);
     });
   const leaseHandle = (tab: AttachedTab, lease: LeaseState): NativePrivateEntryLease => {
-    const connection = activeConnection;
+    const connection = connections.get(tab.key.environmentId)?.token ?? null;
     const attachment = tab.attachment;
     return {
       current: () => isCurrentAttachment(tab) && tab.lease === lease && lease.active,
       async release() {
         if (
           !isCurrentAttachment(tab) ||
-          activeConnection !== connection ||
+          connections.get(tab.key.environmentId)?.token !== connection ||
           tab.attachment !== attachment ||
           tab.lease !== lease ||
           !lease.active ||
@@ -331,7 +357,7 @@ export const make = Effect.gen(function* () {
         // The new operation ID is ACKed with the OLD released lease/generation.
         await request(tab, {
           type: "private-entry-release",
-          ...tab.key,
+          ...wireKey(tab.key),
           ...attachment,
           requestId: NodeCrypto.randomUUID(),
           leaseId: lease.leaseId,
@@ -339,7 +365,7 @@ export const make = Effect.gen(function* () {
         });
         const resume: NativePrivateEntryResume = {
           current: () =>
-            activeConnection === connection &&
+            connections.get(tab.key.environmentId)?.token === connection &&
             tab.attachment === attachment &&
             isCurrentAttachment(tab) &&
             tab.releasedLease === lease &&
@@ -364,15 +390,18 @@ export const make = Effect.gen(function* () {
       throw unavailable();
     const result = await request(tab, {
       type: "private-entry-acquire",
-      ...tab.key,
+      ...wireKey(tab.key),
       ...tab.attachment,
       requestId: NodeCrypto.randomUUID(),
     });
     if (!result?.current()) throw unavailable();
     return result;
   };
-  const handlePrivateResponse = (response: typeof DesktopBrowserPrivateEntryResponse.Type) => {
-    const tab = tabs.get(keyOf(response));
+  const handlePrivateResponse = (
+    response: typeof DesktopBrowserPrivateEntryResponse.Type,
+    environmentId: string | undefined,
+  ) => {
+    const tab = tabs.get(keyOf({ ...response, environmentId }));
     if (
       !tab ||
       !isCurrentAttachment(tab) ||
@@ -523,7 +552,11 @@ export const make = Effect.gen(function* () {
           return;
         }
         // The agent pauses to think between steps; its tab stays focused until the turn ends.
-        if (tab.agentUsed && agentTurns.has(tab.key.threadId)) return;
+        if (
+          tab.agentUsed &&
+          connections.get(tab.key.environmentId)?.agentTurns.has(tab.key.threadId)
+        )
+          return;
         tab.agentUsed = false;
         if (tabs.get(keyOf(tab.key)) === tab) setFocusEmulation(tab, false);
       }),
@@ -600,10 +633,11 @@ export const make = Effect.gen(function* () {
    * may never settle; the turn's end ends every hold. The agent also sends on its own extra
    * session, so this cannot spare other sessions; a viewer's screencast still holds.
    */
-  const endAgentTurn = (threadId: string) => {
-    agentTurns.delete(threadId);
+  const endAgentTurn = (connection: TargetConnection, threadId: string) => {
+    connection.agentTurns.delete(threadId);
     for (const tab of tabs.values()) {
-      if (tab.key.threadId !== threadId) continue;
+      if (tab.key.environmentId !== connection.environmentId || tab.key.threadId !== threadId)
+        continue;
       tab.agentUsed = false;
       // Still sent in turn, so the queue keeps moving, but no longer kept painting.
       for (const waiting of tab.waitingScreenshots) waiting.held = false;
@@ -614,8 +648,9 @@ export const make = Effect.gen(function* () {
   const relayFor = (tab: AttachedTab) => {
     if (tab.relay) return tab.relay;
     const { webContents, debugger: debuggee } = tab.debuggee;
-    const connection = activeConnection;
-    const closeConnection = closeActiveConnection;
+    const target = connections.get(tab.key.environmentId);
+    const connection = target?.token ?? null;
+    const closeConnection = target?.close;
     if (tab.relaySessions?.connection !== connection) {
       tab.relaySessions = { connection, state: createCdpRelaySessionState() };
     }
@@ -735,13 +770,13 @@ export const make = Effect.gen(function* () {
         if (
           !privateContents.has(webContents) &&
           tab.relay === relay &&
-          activeConnection === connection &&
+          connections.get(tab.key.environmentId)?.token === connection &&
           tabs.get(keyOf(tab.key)) === tab
         ) {
           return runPromise(
             PubSub.publish(outbox, {
               connection,
-              event: { type: "cdp", ...tab.key, message },
+              event: { type: "cdp", ...wireKey(tab.key), message },
             }),
           ).then(
             () => {},
@@ -800,13 +835,21 @@ export const make = Effect.gen(function* () {
     tab.debuggee.debugger.off("message", tab.onMessage);
     tab.debuggee.webContents.off("did-navigate", tab.onNewDocument);
     syncPainting(tab);
-    emit({ type: "detached", ...key, ...(tab.attachment ? { privateEntry: tab.attachment } : {}) });
+    emit(
+      {
+        type: "detached",
+        ...wireKey(key),
+        ...(tab.attachment ? { privateEntry: tab.attachment } : {}),
+      },
+      key.environmentId,
+    );
   };
 
   const attach = (key: DesktopBrowserTabKey, debuggee: DesktopBrowserTabDebugger) => {
     const id = keyOf(key);
     if (tabs.get(id)?.debuggee.webContents === debuggee.webContents) return;
     detach(key);
+    const channelEpoch = connections.get(key.environmentId)?.epoch;
     const tab: AttachedTab = {
       key,
       debuggee,
@@ -849,47 +892,58 @@ export const make = Effect.gen(function* () {
     tabs.set(id, tab);
     debuggee.debugger.on("message", tab.onMessage);
     debuggee.webContents.on("did-navigate", tab.onNewDocument);
-    emit({ type: "attached", ...key, ...(tab.attachment ? { privateEntry: tab.attachment } : {}) });
+    emit(
+      {
+        type: "attached",
+        ...wireKey(key),
+        ...(tab.attachment ? { privateEntry: tab.attachment } : {}),
+      },
+      key.environmentId,
+    );
   };
 
-  const dispatchCommandLine = (line: string) =>
+  const dispatchCommandLine = (line: string, connection: TargetConnection) =>
     Effect.sync(() => {
+      if (connections.get(connection.environmentId) !== connection) return;
       // Reservation metadata must survive the private CDP early return.
       const control = decodePrivateResponse(line);
       if (Option.isSome(control)) {
-        handlePrivateResponse(control.value);
+        handlePrivateResponse(control.value, connection.environmentId);
         return;
       }
       const command = decodeCommand(line);
       if (Option.isNone(command)) return;
       if (command.value.type === "turn") {
-        if (command.value.active) agentTurns.add(command.value.threadId);
-        else endAgentTurn(command.value.threadId);
+        if (command.value.active) connection.agentTurns.add(command.value.threadId);
+        else endAgentTurn(connection, command.value.threadId);
         return;
       }
-      const tab = tabs.get(keyOf(command.value));
+      const tab = tabs.get(keyOf({ ...command.value, environmentId: connection.environmentId }));
       if (!tab) return;
       if (privateContents.has(tab.debuggee.webContents)) {
         if (command.value.type === "cdp") {
           const request = decodePrivateCdpRequest(command.value.message);
           if (Option.isSome(request))
-            emit({
-              type: "cdp",
-              ...tab.key,
-              message: encodePrivateCdpError({
-                id: request.value.id,
-                error: { code: -32000, message: "This tab is private during credential entry." },
-                ...(request.value.sessionId === undefined
-                  ? {}
-                  : { sessionId: request.value.sessionId }),
-              }),
-            });
+            emit(
+              {
+                type: "cdp",
+                ...wireKey(tab.key),
+                message: encodePrivateCdpError({
+                  id: request.value.id,
+                  error: { code: -32000, message: "This tab is private during credential entry." },
+                  ...(request.value.sessionId === undefined
+                    ? {}
+                    : { sessionId: request.value.sessionId }),
+                }),
+              },
+              connection.environmentId,
+            );
         }
         return;
       }
       if (command.value.type === "pointer") {
-        const { threadId, tabId, phase, x, y } = command.value;
-        runFork(PubSub.publish(pointers, { key: { threadId, tabId }, phase, x, y }));
+        const { phase, x, y } = command.value;
+        runFork(PubSub.publish(pointers, { key: tab.key, phase, x, y }));
         return;
       }
       if (command.value.type === "release") {
@@ -904,12 +958,12 @@ export const make = Effect.gen(function* () {
     });
 
   // The ordinary FD reader starts commands independently; only explicit observers await completion.
-  const handleCommandLine = Effect.fn("DesktopBrowserHost.handleCommandLine")((line: string) =>
-    Effect.gen(function* () {
-      const closeConnection = closeActiveConnection;
-      const completion = yield* dispatchCommandLine(line);
-      if (completion) void completion.settled.catch(() => closeConnection?.());
-    }),
+  const handleCommandLine = Effect.fn("DesktopBrowserHost.handleCommandLine")(
+    (line: string, connection: TargetConnection) =>
+      Effect.gen(function* () {
+        const completion = yield* dispatchCommandLine(line, connection);
+        if (completion) void completion.settled.catch(connection.close);
+      }),
   );
 
   const humanStartedDownload = (source: Electron.WebContents) => {
@@ -917,60 +971,68 @@ export const make = Effect.gen(function* () {
     return tab !== undefined && performance.now() - tab.agentInputAt > AGENT_DOWNLOAD_WINDOW_MS;
   };
 
-  const announceAll = Effect.suspend(() => {
-    // A new backend: the old one's turns ended without telling us.
-    agentTurns.clear();
-    return Effect.forEach(
-      [...tabs.values()],
-      (tab) => {
-        invalidate(tab);
-        tab.attachment = channelEpoch
-          ? { channelEpoch, attachmentId: NodeCrypto.randomUUID() }
-          : null;
-        tab.cancelled.clear();
-        return PubSub.publish(outbox, {
-          connection: activeConnection,
-          event: {
-            type: "attached",
-            ...tab.key,
-            ...(tab.attachment ? { privateEntry: tab.attachment } : {}),
-          },
-        });
-      },
-      { discard: true },
+  const announceAll = (connection: TargetConnection) =>
+    Effect.suspend(() =>
+      Effect.forEach(
+        [...tabs.values()].filter((tab) => tab.key.environmentId === connection.environmentId),
+        (tab) => {
+          if (connections.get(connection.environmentId) !== connection) return Effect.void;
+          invalidate(tab);
+          tab.attachment = { channelEpoch: connection.epoch, attachmentId: NodeCrypto.randomUUID() };
+          tab.cancelled.clear();
+          return PubSub.publish(outbox, {
+            connection: connection.token,
+            event: {
+              type: "attached",
+              ...wireKey(tab.key),
+              ...(tab.attachment ? { privateEntry: tab.attachment } : {}),
+            },
+          });
+        },
+        { discard: true },
+      ),
     );
-  });
 
-  const createConnection = (): DesktopBrowserConnection => {
+  const createConnection = (targetEnvironmentId?: string): DesktopBrowserConnection => {
     const token = Symbol();
     const epoch = NodeCrypto.randomUUID();
     const stopped = Promise.withResolvers<void>();
     let closed = false;
     let subscribed = false;
-    const close = () => {
+    const close = (announce = true) => {
       if (closed) return;
       closed = true;
       stopped.resolve();
-      if (activeConnection !== token) return;
-      activeConnection = null;
-      channelEpoch = null;
-      closeActiveConnection = null;
+      if (connections.get(targetEnvironmentId) !== connection) return;
+      connections.delete(targetEnvironmentId);
+      if (announce) announceEnvironments();
       for (const tab of tabs.values()) {
+        if (tab.key.environmentId !== targetEnvironmentId) continue;
         invalidate(tab);
         tab.attachment = null;
       }
+    };
+    const connection: TargetConnection = {
+      environmentId: targetEnvironmentId,
+      token,
+      epoch,
+      close,
+      agentTurns: new Set(),
     };
     return {
       closed: Effect.sync(close),
       handleCommandLine: (line) =>
         Effect.suspend(() =>
-          !closed && activeConnection === token ? handleCommandLine(line) : Effect.void,
+          !closed && connections.get(targetEnvironmentId) === connection
+            ? handleCommandLine(line, connection)
+            : Effect.void,
         ),
       dispatchCommandLine: (line) =>
         Effect.suspend(() => {
           // @effect-diagnostics-next-line effectSucceedWithVoid:off -- Dispatch uses undefined to signal that no completion acknowledgement exists.
-          if (closed || activeConnection !== token) return Effect.succeed(undefined);
-          return dispatchCommandLine(line).pipe(
+          if (closed || connections.get(targetEnvironmentId) !== connection)
+            return Effect.succeed(undefined);
+          return dispatchCommandLine(line, connection).pipe(
             Effect.map((completion) => {
               if (completion) void completion.settled.catch(close);
               return completion;
@@ -981,16 +1043,18 @@ export const make = Effect.gen(function* () {
         Effect.gen(function* () {
           if (closed || subscribed) return Stream.empty;
           subscribed = true;
-          closeActiveConnection?.();
-          activeConnection = token;
-          channelEpoch = epoch;
-          closeActiveConnection = close;
+          connections.get(targetEnvironmentId)?.close(false);
+          connections.set(targetEnvironmentId, connection);
+          announceEnvironments();
           yield* Effect.addFinalizer(() => Effect.sync(close));
           const subscription = yield* PubSub.subscribe(outbox);
-          yield* announceAll;
+          yield* announceAll(connection);
           return Stream.fromSubscription(subscription).pipe(
             Stream.filter(
-              (item) => !closed && activeConnection === token && item.connection === token,
+              (item) =>
+                !closed &&
+                connections.get(targetEnvironmentId) === connection &&
+                item.connection === token,
             ),
             Stream.map((item) => lineEncoder.encode(`${encodeEvent(item.event)}\n`)),
             Stream.interruptWhen(Effect.promise(() => stopped.promise)),
@@ -1006,7 +1070,13 @@ export const make = Effect.gen(function* () {
     // Compatibility for fixtures/legacy callers; primary backend must capture createConnection().
     events: Stream.unwrap(Effect.sync(() => createConnection().events)),
     createConnection,
-    handleCommandLine,
+    hostedEnvironmentIds,
+    hostedEnvironmentsChanged: Stream.fromPubSub(hostedEnvironmentsChanged),
+    handleCommandLine: (line) =>
+      Effect.suspend(() => {
+        const connection = connections.get(undefined);
+        return connection ? handleCommandLine(line, connection) : Effect.void;
+      }),
     attach,
     detach,
     setPrivateEntry,

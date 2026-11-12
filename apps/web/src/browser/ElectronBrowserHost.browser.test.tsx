@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   registerWebview: vi.fn<DesktopPreviewBridge["registerWebview"]>(),
   getPreviewConfig: vi.fn<DesktopPreviewBridge["getPreviewConfig"]>(),
   ensureOffscreenHost: vi.fn<DesktopPreviewBridge["ensureOffscreenHost"]>(),
+  getHostedEnvironmentIds: vi.fn<DesktopPreviewBridge["getHostedEnvironmentIds"]>(),
+  onHostedEnvironmentsChange: vi.fn<DesktopPreviewBridge["onHostedEnvironmentsChange"]>(),
   primaryEnvironmentId: null as EnvironmentId | null,
 }));
 
@@ -51,6 +53,8 @@ vi.mock(import("~/components/preview/previewBridge"), async (original) => ({
     registerWebview: mocks.registerWebview,
     getPreviewConfig: mocks.getPreviewConfig,
     ensureOffscreenHost: mocks.ensureOffscreenHost,
+    getHostedEnvironmentIds: mocks.getHostedEnvironmentIds,
+    onHostedEnvironmentsChange: mocks.onHostedEnvironmentsChange,
   } as never,
 }));
 
@@ -68,6 +72,8 @@ import { AppAtomRegistryProvider, appAtomRegistry } from "~/rpc/atomRegistry";
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 import { ElectronBrowserHost } from "./ElectronBrowserHost";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
+import { subscribeDesktopBrowserHostedEnvironments } from "./desktopBrowserSurface";
+import { rendersServerTabNatively, useControlsNativePreviewTab } from "./previewRuntime";
 
 const threadRef = scopeThreadRef(
   EnvironmentId.make("host-webview-order"),
@@ -92,6 +98,8 @@ function setup(): Disposable {
   mocks.createTab.mockReset().mockResolvedValue(undefined);
   mocks.closeTab.mockReset().mockResolvedValue(undefined);
   mocks.registerWebview.mockReset().mockResolvedValue(undefined);
+  mocks.getHostedEnvironmentIds.mockReset().mockResolvedValue([]);
+  mocks.onHostedEnvironmentsChange.mockReset().mockReturnValue(() => {});
   mocks.ensureOffscreenHost.mockReset().mockResolvedValue({
     kind: "webview",
     webContentsId: 7,
@@ -127,6 +135,143 @@ async function renderHost(element = <ElectronBrowserHost />) {
 }
 
 describe("ElectronBrowserHost", () => {
+  it("keeps Main-confirmed remote guests through reconnect without replacing legacy guests", async () => {
+    using _state = setup();
+    let resolveQuery: ((ids: ReadonlyArray<string>) => void) | undefined;
+    mocks.getHostedEnvironmentIds.mockReturnValue(
+      new Promise((resolve) => {
+        resolveQuery = resolve;
+      }),
+    );
+    mocks.ensureOffscreenHost.mockResolvedValue({
+      kind: "offscreen",
+      webContentsId: 8,
+      privateEntry: false,
+    });
+    const native = {
+      ...snapshot("remote-native", "2026-01-01T00:00:01.000Z"),
+      runtime: "server" as const,
+    };
+    const headless = { ...native, tabId: "remote-headless", headless: true };
+    function NativeControlState() {
+      const desktop = useControlsNativePreviewTab(threadRef.environmentId, { runtime: "desktop" });
+      const server = useControlsNativePreviewTab(threadRef.environmentId, native);
+      const hidden = useControlsNativePreviewTab(threadRef.environmentId, {
+        runtime: "desktop",
+        headless: true,
+      });
+      const unknown = useControlsNativePreviewTab(EnvironmentId.make("unknown"), native);
+      return <output data-native-controls={[desktop, server, hidden, unknown].join(",")} />;
+    }
+    reconcilePreviewServerSessions(threadRef, {
+      sessions: [snapshot("legacy", "2026-01-01T00:00:01.000Z"), native, headless],
+      serverEpoch: "remote-epoch",
+      revision: 1,
+    });
+    await using screen = await renderHost(
+      <>
+        <ElectronBrowserHost />
+        <NativeControlState />
+      </>,
+    );
+    await vi.waitFor(() => expect(screen.container.querySelectorAll("webview")).toHaveLength(1));
+    const legacy = screen.container.querySelector("webview")!;
+    legacy.getWebContentsId = () => 7;
+    const controlState = () =>
+      screen.container.querySelector("[data-native-controls]")?.getAttribute("data-native-controls");
+    const legacyRuntimeTabId = mocks.createTab.mock.calls[0]![0];
+    expect(rendersServerTabNatively(threadRef.environmentId, null, native)).toBe(false);
+    expect(mocks.ensureOffscreenHost).not.toHaveBeenCalled();
+    expect(controlState()).toBe("false,false,false,false");
+
+    const changed = mocks.onHostedEnvironmentsChange.mock.calls[0]![0];
+    await act(() => changed([threadRef.environmentId]));
+    await vi.waitFor(() => expect(mocks.ensureOffscreenHost).toHaveBeenCalledTimes(2));
+    const initialHostConnections = mocks.ensureOffscreenHost.mock.calls.length;
+    const nativeRuntimeTabId = mocks.ensureOffscreenHost.mock.calls[0]![0].tabId;
+    await vi.waitFor(() =>
+      expect(mocks.createTab).toHaveBeenCalledWith(legacyRuntimeTabId, {
+        serverTab: {
+          environmentId: threadRef.environmentId,
+          threadId: threadRef.threadId,
+          tabId: "legacy",
+        },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(mocks.registerWebview).toHaveBeenCalledWith(legacyRuntimeTabId, 7),
+    );
+    expect(controlState()).toBe("true,true,false,false");
+    expect(mocks.createTab).toHaveBeenCalledWith(
+      nativeRuntimeTabId,
+      expect.objectContaining({
+        initialUrl: "https://example.com/remote-native",
+        serverTab: {
+          environmentId: threadRef.environmentId,
+          threadId: threadRef.threadId,
+          tabId: native.tabId,
+        },
+      }),
+    );
+    expect(rendersServerTabNatively(threadRef.environmentId, null, native)).toBe(true);
+    expect(rendersServerTabNatively(threadRef.environmentId, null, headless)).toBe(false);
+    expect(
+      rendersServerTabNatively(threadRef.environmentId, threadRef.environmentId, headless),
+    ).toBe(false);
+    expect(rendersServerTabNatively(EnvironmentId.make("unknown"), null, native)).toBe(false);
+    expect(screen.container.querySelector("webview")).toBe(legacy);
+
+    await act(() => resolveQuery?.([]));
+    expect(rendersServerTabNatively(threadRef.environmentId, null, native)).toBe(true);
+    await act(() => changed([]));
+    expect(rendersServerTabNatively(threadRef.environmentId, null, native)).toBe(true);
+    await act(() => changed([threadRef.environmentId]));
+    expect(screen.container.querySelector("webview")).toBe(legacy);
+    expect(mocks.ensureOffscreenHost).toHaveBeenCalledTimes(initialHostConnections);
+    expect(mocks.createTab).toHaveBeenCalledTimes(3);
+    expect(mocks.closeTab).not.toHaveBeenCalled();
+    expect(controlState()).toBe("true,true,false,false");
+
+    using _timers = fakeTimers();
+    await act(() => {
+      reconcilePreviewServerSessions(threadRef, {
+        sessions: [snapshot("legacy", "2026-01-01T00:00:01.000Z"), headless],
+        serverEpoch: "remote-epoch",
+        revision: 2,
+      });
+    });
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(mocks.closeTab).toHaveBeenCalledExactlyOnceWith(nativeRuntimeTabId);
+    expect(screen.container.querySelector("webview")).toBe(legacy);
+  });
+
+  it("clears known remote hosts on scope release and ignores its late query and events", async () => {
+    using _state = setup();
+    let resolveOldQuery: ((ids: ReadonlyArray<string>) => void) | undefined;
+    const oldQuery = new Promise<ReadonlyArray<string>>((resolve) => {
+      resolveOldQuery = resolve;
+    });
+    mocks.getHostedEnvironmentIds.mockReturnValueOnce(oldQuery);
+    const releaseOld = subscribeDesktopBrowserHostedEnvironments(mocks);
+    const oldChanged = mocks.onHostedEnvironmentsChange.mock.calls[0]![0];
+    const native = { runtime: "server" as const };
+    oldChanged([threadRef.environmentId]);
+    expect(rendersServerTabNatively(threadRef.environmentId, null, native)).toBe(true);
+    releaseOld();
+    expect(rendersServerTabNatively(threadRef.environmentId, null, native)).toBe(false);
+
+    const otherEnvironmentId = EnvironmentId.make("another-host");
+    mocks.getHostedEnvironmentIds.mockResolvedValueOnce([otherEnvironmentId]);
+    using _connection = {
+      [Symbol.dispose]: subscribeDesktopBrowserHostedEnvironments(mocks),
+    };
+    resolveOldQuery?.([threadRef.environmentId]);
+    await oldQuery;
+    oldChanged([threadRef.environmentId]);
+    expect(rendersServerTabNatively(threadRef.environmentId, null, native)).toBe(false);
+    expect(rendersServerTabNatively(otherEnvironmentId, null, native)).toBe(true);
+  });
+
   it.each([
     { serverDriven: false, primary: true },
     { serverDriven: true, primary: true },
@@ -182,6 +327,12 @@ describe("ElectronBrowserHost", () => {
       );
       expect(screen.container.querySelector("webview")).toBeNull();
       expect(mocks.registerWebview).not.toHaveBeenCalled();
+      expect(mocks.createTab).toHaveBeenCalledWith(
+        "offscreen",
+        expect.objectContaining({
+          serverTab: { threadId: threadRef.threadId, tabId: "offscreen" },
+        }),
+      );
     },
   );
 

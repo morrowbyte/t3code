@@ -1120,7 +1120,7 @@ const make = Effect.gen(function* () {
       });
     }
     // Otherwise a desktop that attaches late shows its own page, and the agent drives another.
-    if (!desktop && desktopChannel.available) {
+    if (!desktop) {
       await runPromise(
         manager
           .markHeadless({ threadId: ThreadId.make(snapshot.threadId), tabId: snapshot.tabId })
@@ -2866,7 +2866,7 @@ const make = Effect.gen(function* () {
             tab.page,
             message.x,
             message.y,
-            tab.cdp,
+            session,
           );
           viewer.push({ _tag: "selection", requestId: message.requestId, annotation });
         } catch {

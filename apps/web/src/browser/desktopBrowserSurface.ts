@@ -8,6 +8,8 @@ import type {
 import { create } from "zustand";
 
 const useHostStates = create<{
+  readonly hostedEnvironmentIds: ReadonlyArray<string>;
+  readonly hostedEnvironmentsOwner: symbol | null;
   readonly byTabId: ReadonlyMap<
     string,
     {
@@ -16,7 +18,48 @@ const useHostStates = create<{
       readonly revision: number;
     }
   >;
-}>(() => ({ byTabId: new Map() }));
+}>(() => ({ byTabId: new Map(), hostedEnvironmentIds: [], hostedEnvironmentsOwner: null }));
+
+export function readDesktopBrowserHostedEnvironmentIds() {
+  return useHostStates.getState().hostedEnvironmentIds;
+}
+
+export function useDesktopBrowserHostedEnvironmentIds() {
+  return useHostStates((states) => states.hostedEnvironmentIds);
+}
+
+export function subscribeDesktopBrowserHostedEnvironments(
+  bridge: Pick<DesktopPreviewBridge, "getHostedEnvironmentIds" | "onHostedEnvironmentsChange">,
+) {
+  const owner = Symbol("hosted-environments");
+  let receivedEvent = false;
+  let disposed = false;
+  useHostStates.setState({ hostedEnvironmentIds: [], hostedEnvironmentsOwner: owner });
+  const update = (ids: ReadonlyArray<string>) => {
+    if (disposed || useHostStates.getState().hostedEnvironmentsOwner !== owner) return;
+    const knownIds = useHostStates.getState().hostedEnvironmentIds;
+    const hostedEnvironmentIds = [...new Set([...knownIds, ...ids])];
+    // Main revokes input on disconnect; keep the guest's host assignment until this scope ends.
+    if (hostedEnvironmentIds.length !== knownIds.length)
+      useHostStates.setState({ hostedEnvironmentIds });
+  };
+  const unsubscribe = bridge.onHostedEnvironmentsChange((ids) => {
+    receivedEvent = true;
+    update(ids);
+  });
+  void bridge
+    .getHostedEnvironmentIds()
+    .then((ids) => {
+      if (!receivedEvent) update(ids);
+    })
+    .catch(() => undefined);
+  return () => {
+    disposed = true;
+    unsubscribe();
+    if (useHostStates.getState().hostedEnvironmentsOwner === owner)
+      useHostStates.setState({ hostedEnvironmentIds: [], hostedEnvironmentsOwner: null });
+  };
+}
 
 export function useDesktopBrowserHostState(tabId: string | null | undefined) {
   return useHostStates((states) => (tabId ? (states.byTabId.get(tabId)?.state ?? null) : null));

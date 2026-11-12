@@ -983,7 +983,11 @@ export const DesktopPreviewCreateTabInputSchema = Schema.Struct({
   zoomFactor: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
   colorScheme: Schema.optional(DesktopPreviewColorSchemeSchema),
   serverTab: Schema.optional(
-    Schema.Struct({ threadId: TrimmedNonEmptyString, tabId: TrimmedNonEmptyString }),
+    Schema.Struct({
+      environmentId: Schema.optional(TrimmedNonEmptyString),
+      threadId: TrimmedNonEmptyString,
+      tabId: TrimmedNonEmptyString,
+    }),
   ),
 });
 
@@ -991,7 +995,11 @@ export interface DesktopPreviewTabDefaults {
   readonly initialUrl?: string | undefined;
   readonly zoomFactor?: number | undefined;
   readonly colorScheme?: DesktopPreviewColorScheme | undefined;
-  readonly serverTab?: { readonly threadId: string; readonly tabId: string } | undefined;
+  readonly serverTab?: {
+    readonly environmentId?: string | undefined;
+    readonly threadId: string;
+    readonly tabId: string;
+  } | undefined;
 }
 
 export const DesktopPreviewRegisterWebviewInputSchema = Schema.Struct({
@@ -1462,6 +1470,8 @@ export interface DesktopBridge {
 export const DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER = "__t3DesktopPreviewRecordingCapture";
 
 export interface DesktopPreviewBridge {
+  getHostedEnvironmentIds: () => Promise<ReadonlyArray<string>>;
+  onHostedEnvironmentsChange: (listener: (ids: ReadonlyArray<string>) => void) => () => void;
   setForwardedShortcuts: (shortcuts: ReadonlyArray<PreviewForwardedShortcut>) => Promise<void>;
   createTab: (tabId: string, defaults?: DesktopPreviewTabDefaults) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
