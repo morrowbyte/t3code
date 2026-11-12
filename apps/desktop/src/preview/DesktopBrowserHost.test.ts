@@ -15,6 +15,7 @@ import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
 
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(DesktopBrowserEvent));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodePrivateCdpReply = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeCdpReply = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Struct({ id: Schema.Number })),
 );
@@ -389,9 +390,7 @@ describe("DesktopBrowserHost", () => {
         const refusal = events[1];
         expect(refusal).toMatchObject({ type: "cdp", ...key });
         if (refusal?.type !== "cdp") throw new Error("Expected private CDP refusal");
-        const response = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
-          refusal.message,
-        );
+        const response = yield* decodePrivateCdpReply(refusal.message);
         expect(response).toEqual({
           id: 2,
           sessionId: "t3-preview-page",
