@@ -606,13 +606,53 @@ export const make = Effect.gen(function* () {
       return sweepThread(threadId).pipe(FiberSet.run(threadSweeps), Effect.asVoid);
     });
 
+  const workspaceForThread = Effect.fn("ThreadSettlementServiceV2.workspaceForThread")(function* (
+    thread: Pick<OrchestrationV2ThreadShell, "projectId" | "worktreePath">,
+  ) {
+    if (thread.worktreePath !== null) return thread.worktreePath;
+    const projects = yield* projectStore.listShells({ projectIds: [thread.projectId] });
+    return projects.find((project) => project.id === thread.projectId)?.workspaceRoot ?? null;
+  });
+
+  const workspacePeers = Effect.fn("ThreadSettlementServiceV2.workspacePeers")(function* (
+    workspacePath: string,
+  ) {
+    const canonicalPath = yield* fileSystem.realPath(workspacePath);
+    const peers = new Set<ThreadId>();
+    const sameWorkspace = Effect.fn("ThreadSettlementServiceV2.sameWorkspace")(
+      (candidate: string) =>
+        fileSystem.realPath(candidate).pipe(
+          Effect.map((resolved) => resolved === canonicalPath),
+          Effect.catchIf(
+            (error) => error.reason._tag === "NotFound",
+            () => Effect.succeed(false),
+          ),
+        ),
+    );
+    for (const peer of yield* projections.getThreadWorktreePaths({ includeArchived: true })) {
+      if (yield* sameWorkspace(peer.worktreePath)) peers.add(peer.threadId);
+    }
+    let projectRoot = false;
+    for (const project of yield* projectStore.listShells()) {
+      if (!(yield* sameWorkspace(project.workspaceRoot))) continue;
+      projectRoot = true;
+      for (const location of ["active", "archive"] as const) {
+        const snapshot = yield* projections.getShellSnapshot({ projectId: project.id, location });
+        for (const peer of [...snapshot.threads, ...snapshot.archivedThreads]) {
+          if (peer.worktreePath === null) peers.add(peer.id);
+        }
+      }
+    }
+    return { peers, projectRoot };
+  });
+
   // Skip settle scripts in shared checkouts where other threads may still work.
   const cleanUpSettledThread = Effect.fn("ThreadSettlementServiceV2.cleanUpSettledThread")(
     function* (threadId: ThreadId) {
       const settled = yield* projections.getThread(threadId);
       if (settled.settledOverride !== "settled") return;
       yield* terminals.closeIdle({ threadId });
-      const worktreePath = settled.worktreePath;
+      const worktreePath = yield* workspaceForThread(settled);
       if (worktreePath === null || !(yield* fileSystem.exists(worktreePath))) return;
       // Recheck after closing and worktree I/O; re-engaged threads must not be cleaned up.
       const thread = yield* projections.getThread(threadId);
@@ -622,29 +662,13 @@ export const make = Effect.gen(function* () {
           const owner = yield* projections.getThread(threadId);
           if (
             owner.settledOverride !== "settled" ||
-            owner.worktreePath !== worktreePath ||
+            owner.worktreePath !== thread.worktreePath ||
+            (yield* workspaceForThread(owner)) !== worktreePath ||
             toMillis(owner.settledAt) !== toMillis(thread.settledAt)
           )
             return false;
-          const canonicalPath = yield* fileSystem.realPath(worktreePath);
-          const worktreeThreads = yield* projections.getThreadWorktreePaths({
-            includeArchived: true,
-          });
-          const peers = new Set([threadId]);
-          for (const peer of worktreeThreads) {
-            const peerPath = yield* fileSystem.realPath(peer.worktreePath).pipe(
-              Effect.map(Option.some),
-              Effect.catchIf(
-                (error) => error.reason._tag === "NotFound",
-                () => Effect.succeed(Option.none<string>()),
-              ),
-            );
-            if (
-              peer.worktreePath === worktreePath ||
-              (Option.isSome(peerPath) && peerPath.value === canonicalPath)
-            )
-              peers.add(peer.threadId);
-          }
+          const { peers } = yield* workspacePeers(worktreePath);
+          peers.add(threadId);
           for (const peerId of peers) {
             const current = yield* projections.getThreadShell(peerId);
             if (current === null || !threadAllowsWorktreeCleanup(current, stoppingRunner))
@@ -654,7 +678,8 @@ export const make = Effect.gen(function* () {
           return (
             currentOwner !== null &&
             currentOwner.settledOverride === "settled" &&
-            currentOwner.worktreePath === worktreePath &&
+            currentOwner.worktreePath === thread.worktreePath &&
+            (yield* workspaceForThread(currentOwner)) === worktreePath &&
             toMillis(currentOwner.settledAt) === toMillis(thread.settledAt) &&
             threadAllowsWorktreeCleanup(currentOwner, stoppingRunner)
           );
@@ -679,6 +704,10 @@ export const make = Effect.gen(function* () {
       if (!(yield* canCleanUp())) return;
       yield* terminals.closeIdle({ threadId });
       if (!(yield* canCleanUp())) return;
+      if ((yield* workspacePeers(worktreePath)).projectRoot) {
+        settleActionRunAt.set(threadId, settledAtMs);
+        return;
+      }
       const run = yield* projectScripts.runForThread({
         threadId,
         projectId: thread.projectId,
@@ -708,36 +737,22 @@ export const make = Effect.gen(function* () {
     function* (threadId: ThreadId) {
       yield* cleanUpSettledThread(threadId);
       const thread = yield* projections.getThreadShell(threadId);
-      if (
-        thread === null ||
-        thread.worktreePath === null ||
-        !threadAllowsWorktreeCleanup(thread, true)
-      )
-        return;
+      if (thread === null || !threadAllowsWorktreeCleanup(thread, true)) return;
       // Discover deferred owners from projections so a restart cannot lose their cleanup retry.
-      const worktreeThreads = yield* projections.getThreadWorktreePaths({ includeArchived: true });
-      const canonicalPath = yield* fileSystem.realPath(thread.worktreePath);
-      for (const peer of worktreeThreads) {
-        if (peer.threadId === threadId) continue;
-        const current = yield* projections.getThreadShell(peer.threadId);
+      const worktreePath = yield* workspaceForThread(thread);
+      if (worktreePath === null || !(yield* fileSystem.exists(worktreePath))) return;
+      const { peers } = yield* workspacePeers(worktreePath);
+      for (const peerId of peers) {
+        if (peerId === threadId) continue;
+        const current = yield* projections.getThreadShell(peerId);
         if (
           current === null ||
-          current.worktreePath === null ||
           current.settledOverride !== "settled" ||
           !threadAllowsWorktreeCleanup(current, true) ||
           settleActionRunAt.get(current.id) === toMillis(current.settledAt)
         )
           continue;
-        const peerPath = yield* fileSystem.realPath(current.worktreePath).pipe(
-          Effect.map(Option.some),
-          Effect.catchIf(
-            (error) => error.reason._tag === "NotFound",
-            () => Effect.succeed(Option.none<string>()),
-          ),
-        );
-        if (Option.isSome(peerPath) && peerPath.value === canonicalPath) {
-          yield* cleanUpSettledThread(peer.threadId);
-        }
+        yield* cleanUpSettledThread(peerId);
       }
     },
     Effect.catchCauseIf(
