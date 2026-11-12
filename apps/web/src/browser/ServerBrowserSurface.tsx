@@ -196,8 +196,15 @@ interface ServerBrowserSurfaceProps {
 
 export function ServerBrowserSurface(props: ServerBrowserSurfaceProps) {
   const [connection, setConnection] = useState(0);
+  const host = useDesktopBrowserHostState(props.mode === "native" ? props.runtimeTabId : undefined);
   const reconnect = useStableCallback(() => setConnection((current) => current + 1));
-  return <ServerBrowserSurfaceConnection key={connection} {...props} onReconnect={reconnect} />;
+  return (
+    <ServerBrowserSurfaceConnection
+      key={host?.kind === "offscreen" ? connection : 0}
+      {...props}
+      onReconnect={reconnect}
+    />
+  );
 }
 
 function ServerBrowserSurfaceConnection(
@@ -580,7 +587,8 @@ function ServerBrowserSurfaceConnection(
     });
     const present = () => {
       const size = canvas.parentElement?.getBoundingClientRect();
-      const version = ++presentVersion;
+      presentVersion = presentVersion + 1;
+      const version = presentVersion;
       void bridge.surface
         .present({
           tabId: runtimeTabId,

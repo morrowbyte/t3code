@@ -211,8 +211,18 @@ export function HostedBrowserWebview(props: {
       nativeHost ? initialSrc : undefined,
     );
     tabLeaseRef.current = lease;
-    setTabConnection({ tabId: runtimeTabId, ready: lease.ready });
+    let disposed = false;
+    void lease.ready.then(
+      () => {
+        if (!disposed) setTabConnection({ tabId: runtimeTabId, ready: lease.ready });
+      },
+      () => {
+        if (!disposed)
+          toastManager.add({ type: "error", title: "Could not connect the browser tab" });
+      },
+    );
     return () => {
+      disposed = true;
       if (tabLeaseRef.current === lease) tabLeaseRef.current = null;
       setTabConnection((current) => (current?.ready === lease.ready ? null : current));
       lease.release();

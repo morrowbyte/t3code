@@ -481,6 +481,7 @@ const makeSplashScenario = (
               Effect.sync(() => {
                 previewMainWindows.push(window);
               }),
+            subscribeHostedContents: () => Effect.addFinalizer(() => Effect.void),
             isBrowserPartition: (partition) => partition.startsWith("persist:t3code-preview-"),
             getBrowserPartition: () => Effect.succeed("persist:t3code-preview-test"),
           }),
