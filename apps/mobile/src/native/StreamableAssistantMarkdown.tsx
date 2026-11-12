@@ -8,10 +8,12 @@ import { splitStreamableUiMarkdown } from "./streamableUiMarkdown";
 export function StreamableAssistantMarkdown({
   isStreaming,
   environmentId,
+  scope,
   ...props
 }: SelectableMarkdownTextProps & {
   readonly isStreaming: boolean;
   readonly environmentId?: EnvironmentId | null | undefined;
+  readonly scope?: string | undefined;
 }) {
   const segments = useMemo(() => splitStreamableUiMarkdown(props.markdown), [props.markdown]);
   return segments.map((segment) =>
@@ -19,6 +21,7 @@ export function StreamableAssistantMarkdown({
       <NativeStreamableUi
         key={`visual:${segment.sourceOffset}`}
         environmentId={environmentId}
+        scope={scope}
         code={segment.code}
         isStreaming={isStreaming && !segment.closed}
         onLinkPress={props.onLinkPress}

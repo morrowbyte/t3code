@@ -1,3 +1,4 @@
+export { visualInteractions, type VisualInteraction } from "./streamableUiInteraction.ts";
 export interface VisualSource {
   label: string;
   url: string;
