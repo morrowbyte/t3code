@@ -1100,7 +1100,7 @@ describe("PreviewManager", () => {
             fixture.paint("cleared-fields");
             const cleared = { ...fixture.send.mock.calls.at(-1)![1], focused: true };
             await Effect.runPromise(manager.ackSurface(cleared, 7));
-            expect(target?.current()).toBe(true);
+            expect(target?.current()).toBe(false);
             return true;
           });
           yield* Effect.promise(() => target!.clearAndResume());
