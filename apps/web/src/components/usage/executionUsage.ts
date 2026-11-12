@@ -1,0 +1,48 @@
+import type { ExecutionUsageEntry } from "@t3tools/contracts";
+
+export function isExecutionEstimatePartial(entry: ExecutionUsageEntry) {
+  return entry.partial || entry.unmeasuredSubagents || entry.delegatedChildren > 0;
+}
+
+export function summarizeExecutions(entries: readonly ExecutionUsageEntry[], truncated = false) {
+  const known = entries.filter((entry) => entry.estimatedCostUsd !== null);
+  return {
+    estimatedCostUsd:
+      known.length > 0
+        ? known.reduce((sum, entry) => sum + (entry.estimatedCostUsd ?? 0), 0)
+        : null,
+    incomplete: truncated || entries.some(isExecutionEstimatePartial),
+    unknown: entries.filter((entry) => entry.estimatedCostUsd === null).length,
+  };
+}
+
+export function samePromptExecutions(entries: readonly ExecutionUsageEntry[], key: string) {
+  return key === "" ? [] : entries.filter((entry) => entry.taskKey === key).slice(0, 4);
+}
+
+export function peakExecutionCost(entries: readonly ExecutionUsageEntry[]) {
+  return entries.reduce<number | null>(
+    (peak, entry) =>
+      entry.estimatedCostUsd === null ? peak : Math.max(peak ?? 0, entry.estimatedCostUsd),
+    null,
+  );
+}
+
+export function executionCostLabel(value: number | null, partial = false) {
+  if (value === null) return "Unknown";
+  const formatted =
+    value > 0 && value < 0.001
+      ? "< $0.001"
+      : new Intl.NumberFormat(undefined, {
+          style: "currency",
+          currency: "USD",
+          minimumFractionDigits: 3,
+          maximumFractionDigits: 3,
+        }).format(value);
+  return `≈ ${formatted}${partial ? " · partial" : ""}`;
+}
+
+export function executionDurationLabel(value: number | null) {
+  if (value === null) return "Unknown";
+  return value < 60_000 ? `${Math.round(value / 1000)}s` : `${Math.round(value / 60_000)}m`;
+}

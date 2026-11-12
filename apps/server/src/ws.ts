@@ -277,6 +277,7 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { commandFeatureUsage, featureUsage } from "./telemetry/FeatureUsage.ts";
 import type { TelemetryOwner } from "./telemetry/Identify.ts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as ExecutionUsage from "./usage/ExecutionUsage.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as TriageService from "./triage/TriageService.ts";
@@ -894,6 +895,7 @@ const CoreSecondWsRpcGroup = CoreWsRpcGroup.omit(
   WS_METHODS.serverGetProcessResourceHistory,
   WS_METHODS.serverGetResourceTelemetryHistory,
   WS_METHODS.serverGetUsageSummary,
+  WS_METHODS.serverGetExecutionUsage,
   WS_METHODS.serverRefreshUsageRates,
   WS_METHODS.serverRetryResourceTelemetry,
   WS_METHODS.serverCheckOtlpEndpoint,
@@ -1679,6 +1681,7 @@ const layerCoreWsRpc = (
       const boat = yield* BoatService.BoatService;
       const boatSetup = yield* BoatSetupService.BoatSetupService;
       const usage = yield* UsageService.UsageService;
+      const executionUsage = yield* ExecutionUsage.ExecutionUsage;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
@@ -3064,6 +3067,7 @@ const layerCoreWsRpc = (
         [WS_METHODS.boatOperate]: (input) => boat.operate(input),
         [WS_METHODS.boatTransfer]: (input) => boat.transfer(input, currentSession),
         [WS_METHODS.serverGetUsageSummary]: (input) => usage.readSummary(input),
+        [WS_METHODS.serverGetExecutionUsage]: (input) => executionUsage.read(input),
         [WS_METHODS.serverRefreshUsageRates]: (_input) => usage.refreshRates,
         [WS_METHODS.serverRetryResourceTelemetry]: (_input) => resourceTelemetry.retry,
         [WS_METHODS.serverCheckOtlpEndpoint]: (input) => otlpEndpointCheck.check(input),
