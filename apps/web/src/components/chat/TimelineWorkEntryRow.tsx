@@ -102,6 +102,7 @@ export function ThreadReadLabel({
         <Link
           to="/$environmentId/$threadId"
           params={{ environmentId, threadId: label.threadId }}
+          state={{ threadLinkOrigin: true }}
           className="min-w-0 truncate rounded-sm text-foreground underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
           onClick={stopRowToggle}
           onKeyDown={stopRowToggle}

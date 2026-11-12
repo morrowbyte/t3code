@@ -238,13 +238,15 @@ export function SettingsSection({
           className="flex min-h-7 items-start justify-between gap-4 px-3 sm:px-4"
         >
           <div className="flex min-w-0 items-center gap-1">
-            <h2 className="flex min-h-7 items-center gap-2 text-base font-semibold text-foreground">
+            <h2 className="flex min-h-7 min-w-0 items-center gap-2 text-base font-semibold text-foreground [&>svg]:shrink-0">
               {icon}
-              {title}
+              <span className="min-w-0 [overflow-wrap:anywhere]">{title}</span>
             </h2>
             {titleAction}
           </div>
-          <div className="flex min-h-7 min-w-7 items-center justify-end">{headerAction}</div>
+          <div className="flex min-h-7 min-w-7 shrink-0 items-center justify-end">
+            {headerAction}
+          </div>
         </div>
       )}
       <SettingsGroup data-settings-scroll-target={hideTitle ? "" : undefined} variant={variant}>

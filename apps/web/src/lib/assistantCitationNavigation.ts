@@ -1,5 +1,5 @@
 import { pipe } from "effect/Function";
-import type { AssistantCitation } from "@t3tools/contracts";
+import type { AssistantCitation, ScopedThreadRef } from "@t3tools/contracts";
 import {
   formatAssistantCitationHref,
   parseAssistantCitationHref,
@@ -40,12 +40,22 @@ export function assistantCitationFromLocation(href: string) {
 }
 
 /** A fresh activation lets the same link reveal its source again after dismissal. */
-export function assistantCitationNavigation(citation: AssistantCitation) {
+export function assistantCitationNavigation(
+  citation: AssistantCitation,
+  origin?: ScopedThreadRef | null,
+  hasThreadReturn = false,
+) {
+  const sameThread =
+    origin?.environmentId === citation.environmentId && origin.threadId === citation.threadId;
   return {
     to: "/$environmentId/$threadId" as const,
     params: { environmentId: citation.environmentId, threadId: citation.threadId },
     hash: assistantCitationHash(citation),
     resetScroll: false,
-    state: { assistantCitationActivation: randomUUID() },
+    replace: sameThread && hasThreadReturn,
+    state: {
+      assistantCitationActivation: randomUUID(),
+      threadLinkOrigin: origin != null && (!sameThread || hasThreadReturn),
+    },
   };
 }

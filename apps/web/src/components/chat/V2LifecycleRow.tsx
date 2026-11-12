@@ -424,6 +424,7 @@ function SubagentTimelineLink(props: {
             void navigate({
               to: "/$environmentId/$threadId",
               params: buildThreadRouteParams(scopeThreadRef(remote.environmentId, remote.threadId)),
+              state: { threadLinkOrigin: true },
             })
         : null;
   const identityRef =

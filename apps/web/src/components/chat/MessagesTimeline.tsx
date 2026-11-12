@@ -781,6 +781,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   if (nextOpening !== listOpening) setListOpening(nextOpening);
   const listOpenedOn = nextOpening.mounted ? nextOpening.identity : null;
   const viewportRef = useRef<TimelineViewport | null>(null);
+  const reportIsAtEndChange = useStableCallback(onIsAtEndChange);
   const navigateTimeline = () => viewportRef.current?.navigate({ releasesFollow: true });
   const restoreReady = restoringThreadPosition && rows.length > 0;
   // Z: syncs LegendList's scroll position with which thread it shows. The list
@@ -801,7 +802,11 @@ const ConversationTimeline = memo(function ConversationTimeline({
       rememberedPosition,
       citationPending: citationRequest !== null,
       releaseForFind: findOpenAtOpening,
-      onPositioned: setPositionedThreadKey,
+      onPositioned: (identity) => {
+        setPositionedThreadKey(identity);
+        const isAtEnd = resolveTimelineIsAtEnd(list.getState());
+        if (isAtEnd !== undefined) reportIsAtEndChange(isAtEnd);
+      },
     });
   }, [
     citationRequest,
@@ -809,6 +814,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     listIdentityKey,
     listOpenedOn,
     listRef,
+    reportIsAtEndChange,
     rememberedPosition,
     restoreReady,
     viewportRef,

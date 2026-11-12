@@ -1,4 +1,4 @@
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { Link, useParams } from "@tanstack/react-router";
 import type { PinnedWorkTab, ClientSettings } from "@t3tools/contracts/settings";
 import { PinIcon, PinOffIcon, XIcon } from "lucide-react";
 import { useRef } from "react";
@@ -43,7 +43,6 @@ function WorkTab({
   onRemove: (tab: PinnedWorkTab) => void;
   labelMode: ClientSettings["workTabLabelMode"];
 }) {
-  const navigate = useNavigate();
   const thread = useThreadShell(tab);
   const environment = useEnvironment(tab.environmentId);
   const project = useProject(
@@ -55,7 +54,7 @@ function WorkTab({
     ? deriveAgentIdentity(tab, thread.lineage, theme, manualName).name
     : null;
   const label = labelMode === "agent-name" ? agentName?.trim() || title : title;
-  const openRef = useRef<HTMLButtonElement>(null);
+  const openRef = useRef<HTMLAnchorElement>(null);
   return (
     <div
       data-active-work-tab={active ? "" : undefined}
@@ -65,17 +64,17 @@ function WorkTab({
         <TooltipTrigger
           render={
             <Button
-              ref={openRef}
               variant={active ? "secondary" : "ghost-muted"}
               size="compact"
               aria-current={active ? "page" : undefined}
               aria-label={`Open work tab ${index + 1}: ${label === title ? title : `${label}: ${title}`}`}
-              onClick={() => {
-                void navigate({
-                  to: "/$environmentId/$threadId",
-                  params: buildThreadRouteParams(tab),
-                });
-              }}
+              render={
+                <Link
+                  ref={openRef}
+                  to="/$environmentId/$threadId"
+                  params={buildThreadRouteParams(tab)}
+                />
+              }
               className="min-w-0 flex-1"
             />
           }
@@ -95,15 +94,15 @@ function WorkTab({
         size="icon-micro"
         aria-label={`Unpin work tab: ${title}`}
         onClick={() => {
-          const next = openRef.current?.parentElement?.nextElementSibling?.querySelector("button");
+          const next = openRef.current?.parentElement?.nextElementSibling?.querySelector("a");
           const previous =
-            openRef.current?.parentElement?.previousElementSibling?.querySelector("button");
+            openRef.current?.parentElement?.previousElementSibling?.querySelector("a");
           const fallback = openRef.current
             ?.closest("nav")
             ?.querySelector<HTMLButtonElement>("[data-pin-current]");
-          (next instanceof HTMLButtonElement
+          (next instanceof HTMLAnchorElement
             ? next
-            : previous instanceof HTMLButtonElement
+            : previous instanceof HTMLAnchorElement
               ? previous
               : fallback
           )?.focus();
@@ -136,28 +135,33 @@ export function PinnedWorkTabs({
     <nav
       ref={revealRef}
       aria-label="Pinned work tabs"
-      className={cn("flex min-w-0 shrink items-center gap-1", "max-w-[50%] py-1", className)}
+      className={cn(
+        "flex min-w-0 items-center gap-1 py-1",
+        tabs.length ? ["max-w-[50%] shrink", className] : "shrink-0",
+      )}
       onContextMenu={(event) => event.stopPropagation()}
     >
-      <ScrollArea className="h-auto min-w-0 flex-1" scrollFade scrollFadePadding={false}>
-        <div
-          className="grid gap-x-2 gap-y-1 py-0.5"
-          style={{
-            gridTemplateColumns: `repeat(${Math.max(1, Math.ceil(tabs.length / maxRows))}, minmax(10rem, 1fr))`,
-          }}
-        >
-          {tabs.map((tab, index) => (
-            <WorkTab
-              key={JSON.stringify([tab.environmentId, tab.threadId])}
-              tab={tab}
-              index={index}
-              onRemove={savePin}
-              labelMode={labelMode}
-              active={current !== null && sameWorkTab(tab, current)}
-            />
-          ))}
-        </div>
-      </ScrollArea>
+      {tabs.length > 0 ? (
+        <ScrollArea className="h-auto min-w-0 flex-1" scrollFade scrollFadePadding={false}>
+          <div
+            className="grid gap-x-2 gap-y-1 py-0.5"
+            style={{
+              gridTemplateColumns: `repeat(${Math.max(1, Math.ceil(tabs.length / maxRows))}, minmax(10rem, 1fr))`,
+            }}
+          >
+            {tabs.map((tab, index) => (
+              <WorkTab
+                key={JSON.stringify([tab.environmentId, tab.threadId])}
+                tab={tab}
+                index={index}
+                onRemove={savePin}
+                labelMode={labelMode}
+                active={current !== null && sameWorkTab(tab, current)}
+              />
+            ))}
+          </div>
+        </ScrollArea>
+      ) : null}
       {current && thread ? (
         <Button
           data-pin-current

@@ -172,14 +172,15 @@ function observeAssistantCitationSource({
     if (!activation.scrolled) {
       if (scrolling) return;
       const scrollRect = scrollNode.getBoundingClientRect();
+      const scrollTop = scrollNode.scrollTop;
       const offset = Math.max(
         0,
         Math.min(
           scrollNode.scrollHeight - scrollNode.clientHeight,
-          state.scroll + rect.top - scrollRect.top - Math.min(120, scrollNode.clientHeight / 3),
+          scrollTop + rect.top - scrollRect.top - Math.min(120, scrollNode.clientHeight / 3),
         ),
       );
-      if (Math.abs(offset - state.scroll) > 1) {
+      if (Math.abs(offset - scrollTop) > 1) {
         scrolling = true;
         void list.scrollToOffset({ offset, animated: !reducedMotion }).then(
           () => {

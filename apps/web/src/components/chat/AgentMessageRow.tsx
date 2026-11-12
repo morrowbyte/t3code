@@ -142,6 +142,7 @@ export function AgentMessageRow({
           <Link
             to="/$environmentId/$threadId"
             params={{ environmentId, threadId: peerThreadId }}
+            state={{ threadLinkOrigin: true }}
             className={`min-w-0 truncate rounded-sm font-medium text-foreground/85 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring ${human ? "order-2 basis-full" : ""}`}
             aria-label={`${human ? "Ursprungsthread" : outgoing ? "Zielthread" : "Absenderthread"} öffnen: ${peerTitle ?? peerThreadId}`}
           >
