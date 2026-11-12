@@ -30,14 +30,17 @@ const decodePrivateResponse = Schema.decodeUnknownOption(
 const decodeCommand = Schema.decodeUnknownOption(Schema.fromJsonString(DesktopBrowserCommand));
 const decodeViewportSetting = Schema.decodeUnknownSync(PreviewViewportSetting);
 const lineEncoder = new TextEncoder();
-const decodePrivateCdpId = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Struct({ id: Schema.Number })),
+const decodePrivateCdpRequest = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({ id: Schema.Number, sessionId: Schema.optionalKey(Schema.String) }),
+  ),
 );
 const encodePrivateCdpError = Schema.encodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       id: Schema.Number,
       error: Schema.Struct({ code: Schema.Number, message: Schema.String }),
+      sessionId: Schema.optionalKey(Schema.String),
     }),
   ),
 );
@@ -854,7 +857,7 @@ export const make = Effect.gen(function* () {
       if (!tab) return;
       if (privateContents.has(tab.debuggee.webContents)) {
         if (command.value.type === "cdp") {
-          const request = decodePrivateCdpId(command.value.message);
+          const request = decodePrivateCdpRequest(command.value.message);
           if (Option.isSome(request))
             emit({
               type: "cdp",
@@ -862,6 +865,9 @@ export const make = Effect.gen(function* () {
               message: encodePrivateCdpError({
                 id: request.value.id,
                 error: { code: -32000, message: "This tab is private during credential entry." },
+                ...(request.value.sessionId === undefined
+                  ? {}
+                  : { sessionId: request.value.sessionId }),
               }),
             });
         }

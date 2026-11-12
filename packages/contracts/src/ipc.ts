@@ -1040,6 +1040,7 @@ export const DesktopPreviewSurfaceAckSchema = Schema.Struct({
   webContentsId: PositiveInt,
   sequence: NonNegativeInt,
   generation: NonNegativeInt,
+  focused: Schema.optional(Schema.Boolean),
 });
 export type DesktopPreviewSurfaceAck = typeof DesktopPreviewSurfaceAckSchema.Type;
 

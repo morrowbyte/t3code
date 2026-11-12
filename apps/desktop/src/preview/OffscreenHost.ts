@@ -425,6 +425,7 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
       ) {
         clearFocus();
         presented = acknowledged;
+        if (input.focused === true && ownerFocused()) focusProof = acknowledged;
       }
       refreshPrivacy();
       if (!dirtyWhilePending) return;

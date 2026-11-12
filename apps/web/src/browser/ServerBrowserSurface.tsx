@@ -596,6 +596,7 @@ function ServerBrowserSurfaceConnection(
       surfaceId,
       webContentsId: localHost.webContentsId,
       onPrivateEntry: localPrivateEntryChanged,
+      isFocused: focus.isFocused,
       onPainted: localFramePainted,
       onError: () => setLocalError("Could not display the browser frame."),
     });

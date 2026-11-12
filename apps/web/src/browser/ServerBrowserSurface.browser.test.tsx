@@ -323,7 +323,7 @@ describe("ServerBrowserSurface native controls", () => {
       privateEntry,
       png,
     });
-    const emitFrame = async (value: DesktopPreviewSurfaceFrame) => {
+    const emitFrame = async (value: DesktopPreviewSurfaceFrame, focused = false) => {
       await act(() => {
         for (const listener of mocks.frameListeners) listener(value);
       });
@@ -334,6 +334,7 @@ describe("ServerBrowserSurface native controls", () => {
           webContentsId: value.webContentsId,
           sequence: value.sequence,
           generation: value.generation,
+          focused,
         }),
       );
     };
@@ -516,7 +517,7 @@ describe("ServerBrowserSurface native controls", () => {
     await requestFocus("prepare-entry", { preparation: "finish", privateEntry: true });
     expect(input.readOnly).toBe(true);
 
-    await emitFrame(frame(2, 2, true));
+    await emitFrame(frame(2, 2, true), true);
     await vi.waitFor(() =>
       expect(mocks.focus).toHaveBeenCalledWith(
         expect.objectContaining({ surfaceId, webContentsId: 8, sequence: 2, generation: 2 }),
@@ -637,6 +638,7 @@ describe("ServerBrowserSurface native controls", () => {
         surfaceId: "surface-decode",
         webContentsId: 8,
         onPrivateEntry: vi.fn(),
+        isFocused: () => false,
         onPainted,
         onError,
       });

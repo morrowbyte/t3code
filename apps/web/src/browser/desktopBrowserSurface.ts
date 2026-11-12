@@ -235,6 +235,7 @@ export function createLocalBrowserFocusController(input: {
   document.defaultView?.addEventListener("focus", changed);
   document.defaultView?.addEventListener("blur", blurred);
   return {
+    isFocused: focused,
     report: changed,
     connectionLost: () => {
       if (preparation && !preparation.focused) finishPreparation();
@@ -259,6 +260,7 @@ export function createLocalBrowserFrameReceiver(input: {
   readonly surfaceId: string;
   readonly webContentsId: number;
   readonly onPrivateEntry: (active: boolean) => void;
+  readonly isFocused: () => boolean;
   readonly onPainted: (frame: LocalBrowserFrame) => void;
   readonly onError: () => void;
 }) {
@@ -267,7 +269,7 @@ export function createLocalBrowserFrameReceiver(input: {
   let generation = -1;
   let sequence = -1;
   let pending: DesktopPreviewSurfaceFrame | null = null;
-  const acknowledge = (frame: DesktopPreviewSurfaceAck) =>
+  const acknowledge = (frame: DesktopPreviewSurfaceAck, painted = false) =>
     input.bridge
       .ack({
         tabId: frame.tabId,
@@ -275,6 +277,7 @@ export function createLocalBrowserFrameReceiver(input: {
         webContentsId: frame.webContentsId,
         sequence: frame.sequence,
         generation: frame.generation,
+        focused: painted && input.isFocused(),
       })
       .then(
         () => true,
@@ -318,7 +321,8 @@ export function createLocalBrowserFrameReceiver(input: {
           context.drawImage(bitmap, 0, 0);
           input.onPrivateEntry(next.privateEntry);
           ackAttempted = true;
-          if (!(await acknowledge(next))) throw new Error("Browser frame acknowledgement failed");
+          if (!(await acknowledge(next, true)))
+            throw new Error("Browser frame acknowledgement failed");
           if (disposed || generation !== next.generation || sequence !== next.sequence) continue;
           input.onPainted({
             tabId: next.tabId,
