@@ -1079,11 +1079,18 @@ describe("PreviewManager", () => {
           expect(target?.current()).toBe(false);
           yield* manager.focusSurface({ ...privateFrame, focused: true }, 7);
           expect(target?.current()).toBe(true);
-          fixture.wc.executeJavaScript.mockResolvedValueOnce(true);
+          const inputAcks: Array<Promise<void>> = [];
+          fixture.wc.executeJavaScript.mockImplementationOnce(async () => {
+            fixture.paint("input-caret-repaint");
+            const repaint = fixture.send.mock.calls.at(-1)![1];
+            inputAcks.push(Effect.runPromise(manager.ackSurface({ ...repaint, focused: true }, 7)));
+            return true;
+          });
           yield* manager.sendSurfaceInput(
             { ...privateFrame, input: { type: "text", text: "unit-private-input" } },
             7,
           );
+          yield* Effect.promise(() => Promise.all(inputAcks));
           expect(fixture.wc.insertText).toHaveBeenCalledExactlyOnceWith("unit-private-input");
           const resumeRequested = Promise.withResolvers<DesktopPreviewSurfaceFocusRequest>();
           fixture.focusRequest.mockImplementation((next) => resumeRequested.resolve(next));
