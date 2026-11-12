@@ -1317,7 +1317,16 @@ export const layer: Layer.Layer<
               }
             }),
           )
-          .pipe(Effect.catchCause(() => markUnknown(leaseId, generation).pipe(Effect.ignore))),
+          .pipe(
+            // Let an in-flight output claim settle before interrupting its worker.
+            Effect.ensuring(
+              outputLocks.withLock(
+                leaseKey(leaseId, generation),
+                stopReadbackWorkers(leaseId, generation),
+              ),
+            ),
+            Effect.catchCause(() => markUnknown(leaseId, generation).pipe(Effect.ignore)),
+          ),
     );
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {

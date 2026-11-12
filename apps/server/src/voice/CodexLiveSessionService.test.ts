@@ -209,6 +209,7 @@ it.effect.each([false, true])(
       const waitForFinalDelivery = (messageId: string) =>
         new Promise<void>((resolve) => finalDeliveryWaiters.set(messageId, resolve));
       let nativeEventHandled: (() => void) | undefined;
+      let failedRuntimeFinished: (() => void) | undefined;
       const deliveryTracer = Tracer.make({
         span: (options) => {
           const span = new Tracer.NativeSpan(options);
@@ -217,6 +218,8 @@ it.effect.each([false, true])(
             end(time, exit);
             if (span.name === "VoiceIntake.processLatest") notifyIntakeProcessed?.();
             if (span.name === "CodexLiveSessionService.handleNativeEvent") nativeEventHandled?.();
+            if (span.name === "CodexLiveSessionService.stopFailedRuntime")
+              failedRuntimeFinished?.();
             if (span.attributes.has("voice.output.delivery")) {
               deliveryWaiters.get(String(span.attributes.get("voice.output.message_id")))?.();
               if (span.attributes.get("voice.output.kind") === "final")
@@ -302,7 +305,8 @@ it.effect.each([false, true])(
             replay: 1,
           }),
         );
-      const readbackSubscriptions = new Map<string, number>();
+      const readbackSubscriptions = new Map<string, Set<symbol>>();
+      let readbackSubscribed: (() => void) | undefined;
       let plannerCalls = 0;
       let plannerAttempts = 0;
       let plannerFailure: "managed_account_required" | "planner_restriction_failed" | undefined;
@@ -681,27 +685,27 @@ it.effect.each([false, true])(
               return durableProjection;
             }),
           getThreadEventSequence: () => Effect.succeed(0),
-          streamStoredEventsFrom: (input: { threadId: string; eventType?: string }) =>
-            (independentStreams.get(input.threadId) ?? t3EventStreams)
+          streamStoredEventsFrom: (input: { threadId: string; eventType?: string }) => {
+            const subscription = Symbol();
+            return (independentStreams.get(input.threadId) ?? t3EventStreams)
               .get(input.eventType ?? "")!
               .pipe(
                 Stream.onStart(
                   Effect.sync(() => {
-                    readbackSubscriptions.set(
-                      input.threadId,
-                      (readbackSubscriptions.get(input.threadId) ?? 0) + 1,
-                    );
+                    const subscriptions =
+                      readbackSubscriptions.get(input.threadId) ?? new Set<symbol>();
+                    subscriptions.add(subscription);
+                    readbackSubscriptions.set(input.threadId, subscriptions);
+                    if (subscriptions.size === 5) readbackSubscribed?.();
                   }),
                 ),
                 Stream.ensuring(
                   Effect.sync(() => {
-                    readbackSubscriptions.set(
-                      input.threadId,
-                      readbackSubscriptions.get(input.threadId)! - 1,
-                    );
+                    readbackSubscriptions.get(input.threadId)?.delete(subscription);
                   }),
                 ),
-              ),
+              );
+          },
           sendToThread: (
             input: Parameters<
               ThreadManagementService.ThreadManagementServiceShape["sendToThread"]
@@ -2480,15 +2484,43 @@ it.effect.each([false, true])(
           "an old planner notification cannot resurrect the ended call",
         );
 
+        const completedSubscriptions = new Promise<void>((resolve) => {
+          readbackSubscribed = resolve;
+        });
+        yield* invokeWithPlanner(
+          "planner-native-2",
+          "call-completed-before-native-error",
+          "Finish this task before the native connection fails",
+          "planner-turn-completed-before-native-error",
+        );
+        const completedBeforeFailure = `durable-run-${sends}`;
+        durableProjection = makeReadyProjection(completedBeforeFailure, sends);
+        const deliveredBeforeFailure = waitForFinalDelivery(`final-${completedBeforeFailure}`);
+        yield* Queue.offer(
+          t3EventQueues.get("run.updated")!,
+          eventFor({
+            type: "run.updated",
+            id: "event-completed-before-native-error",
+            threadId,
+            runId: completedBeforeFailure,
+            payload: durableProjection.runs[0]!,
+          } as never),
+        );
+        yield* Effect.promise(() => deliveredBeforeFailure);
+        yield* Effect.promise(() => completedSubscriptions);
+        readbackSubscribed = undefined;
+        const failureCleanup = new Promise<void>((resolve) => {
+          failedRuntimeFinished = resolve;
+        });
         const raceReceipt = yield* invokeWithPlanner(
           "planner-native-2",
           "call-native-error-race",
           "Queue readback before a native failure",
           "planner-turn-native-error-race",
         );
-        assert.equal(sends, 5);
+        assert.equal(sends, 6);
         const raceRunId = `durable-run-${sends}`;
-        durableProjection = makeReadyProjection(raceRunId, 5);
+        durableProjection = makeReadyProjection(raceRunId, 6);
         const principalGate = holdDispatchPrincipalLookup();
         const raceGateRead = waitForGateRead();
         yield* Queue.offer(
@@ -2527,10 +2559,10 @@ it.effect.each([false, true])(
         );
         assert.equal(duplicateRaceReceipt, raceReceipt);
         yield* Effect.promise(() => refusalSettled);
-        assert.equal(sends, 5);
+        assert.equal(sends, 6);
         assert.equal(
           appendAttempts,
-          attemptsBeforeFinal + 2,
+          attemptsBeforeFinal + 3,
           "a native failure committed during principal lookup prevents native output",
         );
         const refusedReceipt = yield* sql<{ receipt_json: string }>`
@@ -2548,6 +2580,13 @@ it.effect.each([false, true])(
           "a native error releases its runtime after confirmed stop",
         );
         yield* Deferred.await(runtimeReleases.get(secondPrepared.providerSessionId!)!);
+        yield* Effect.promise(() => failureCleanup);
+        failedRuntimeFinished = undefined;
+        assert.equal(
+          readbackSubscriptions.get(threadId)?.size ?? 0,
+          0,
+          "native failure releases completed and in-flight readback subscriptions without a closed event",
+        );
         assert.isTrue(runtimes.has(runtime.providerSessionId));
 
         for (const code of ["managed_account_required", "planner_restriction_failed"] as const) {
@@ -3753,7 +3792,7 @@ it.effect.each([false, true])(
         yield* service.stop(session, { ...parallelLease, clientRequestId: "parallel-end" });
         for (const receipt of receipts)
           assert.equal(
-            readbackSubscriptions.get(receipt.threadId!),
+            readbackSubscriptions.get(receipt.threadId!)?.size ?? 0,
             0,
             "EndCall releases terminal and active task readback subscriptions",
           );
