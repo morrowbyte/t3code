@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const mocks = vi.hoisted(() => ({
+  platform: "android",
   directories: new Set<string>(),
   deleted: vi.fn(),
   download: vi.fn(),
@@ -91,11 +92,26 @@ vi.mock("expo", () => ({ requireNativeModule: () => ({ openFile: mocks.open }) }
 
 vi.mock("expo-sharing", () => ({
   isAvailableAsync: mocks.available,
-  shareAsync: mocks.share,
+  shareAsync: (uri: string, options: unknown) => mocks.share(uri, options, undefined),
 }));
 
 vi.mock("./uuid", () => ({ uuidv4: mocks.uuid }));
-vi.mock("./shareFileFromSource", () => ({ shareFileFromSource: mocks.share }));
+vi.mock("react-native", () => ({
+  Platform: {
+    get OS() {
+      return mocks.platform;
+    },
+  },
+}));
+
+vi.mock("./shareFileFromSource", () => ({
+  shareFileFromSource: (uri: string, options: unknown, sourceIdentifier?: string) => {
+    if (mocks.platform === "ios" && typeof sourceIdentifier !== "string") {
+      throw new TypeError("The iOS native share requires a string source identifier.");
+    }
+    return mocks.share(uri, options, sourceIdentifier);
+  },
+}));
 
 import {
   downloadAndSaveAttachment,
@@ -115,6 +131,7 @@ const input = {
 };
 
 beforeEach(() => {
+  mocks.platform = "android";
   mocks.open.mockReset();
   mocks.open.mockResolvedValue(undefined);
   mocks.directories.clear();
@@ -265,25 +282,29 @@ describe("downloadAndSaveAttachment", () => {
 });
 
 describe("downloadAndShareAttachment", () => {
-  it("downloads the chosen environment's signed URL and shares the local file", async () => {
-    const controller = new AbortController();
-    await downloadAndShareAttachment({ ...input, signal: controller.signal });
+  it.each(["android", "ios"])(
+    "downloads and shares the chosen environment's signed file on %s",
+    async (platform) => {
+      mocks.platform = platform;
+      const controller = new AbortController();
+      await downloadAndShareAttachment({ ...input, signal: controller.signal });
 
-    expect(mocks.download).toHaveBeenCalledWith(
-      input.url,
-      expect.objectContaining({ uri: expect.stringMatching(/\/report\.pdf$/) }),
-      { signal: controller.signal },
-    );
-    expect(mocks.share).toHaveBeenCalledWith(
-      expect.stringMatching(/^file:\/\/\/cache\/.+\/report\.pdf$/),
-      {
-        mimeType: "application/pdf",
-        dialogTitle: "report.pdf",
-      },
-      undefined,
-    );
-    expect(mocks.deleted).not.toHaveBeenCalled();
-  });
+      expect(mocks.download).toHaveBeenCalledWith(
+        input.url,
+        expect.objectContaining({ uri: expect.stringMatching(/\/report\.pdf$/) }),
+        { signal: controller.signal },
+      );
+      expect(mocks.share).toHaveBeenCalledWith(
+        expect.stringMatching(/^file:\/\/\/cache\/.+\/report\.pdf$/),
+        {
+          mimeType: "application/pdf",
+          dialogTitle: "report.pdf",
+        },
+        undefined,
+      );
+      expect(mocks.deleted).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["../../résumé.pdf", "résumé.pdf"],

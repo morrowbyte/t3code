@@ -1,6 +1,7 @@
 import type { ChatFileAttachment } from "@t3tools/contracts";
 import type { Directory } from "expo-file-system";
 import type { SharingOptions } from "expo-sharing";
+import { Platform } from "react-native";
 
 import { beginForegroundHandoff } from "./foreground-handoff";
 import { uuidv4 } from "./uuid";
@@ -130,9 +131,14 @@ async function createCachedAttachmentFile(attachment: AttachmentFileMetadata) {
             mimeType: attachment.mimeType.split(";", 1)[0]?.trim() || "application/octet-stream",
             dialogTitle: attachment.name,
           };
-          const { shareFileFromSource } = await import("./shareFileFromSource");
-          if (signal.aborted || disposed) return;
-          await shareFileFromSource(file.uri, options, sourceIdentifier);
+          if (!sourceIdentifier && Platform.OS !== "android") {
+            if (signal.aborted || disposed) return;
+            await Sharing.shareAsync(file.uri, options);
+          } else {
+            const { shareFileFromSource } = await import("./shareFileFromSource");
+            if (signal.aborted || disposed) return;
+            await shareFileFromSource(file.uri, options, sourceIdentifier);
+          }
           shared = true;
         } catch (cause) {
           if (!signal.aborted) {
