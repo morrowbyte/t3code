@@ -333,15 +333,47 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
           </div>
         ) : (
           <>
-            <BrowserSurfaceSlot
-              tabId={runtimeTabId}
-              visible={Boolean(desktopOverlay?.hasWebContents)}
-              cornerRadius={PREVIEW_MINI_PLAYER_CORNER_RADIUS}
-              zIndex={PREVIEW_MINI_PLAYER_WEBVIEW_Z_INDEX}
-              fitSourceContent
-              layoutVersion={`${frame.x}:${frame.y}`}
-              className="absolute inset-0"
-            />
+            {snapshot.runtime === "server" ? (
+              <div
+                className="pointer-events-auto absolute inset-0 overflow-hidden rounded-[inherit]"
+                style={{ zIndex: PREVIEW_MINI_PLAYER_WEBVIEW_Z_INDEX }}
+              >
+                <ServerBrowserSurface
+                  key={runtimeTabId}
+                  mode="native"
+                  environmentId={threadRef.environmentId}
+                  threadId={threadRef.threadId}
+                  tabId={tabId}
+                  visible
+                  controlPosition="bottom"
+                  onPopup={(popupTabId) => showPreviewPopup(threadRef, popupTabId, "floating")}
+                  className="size-full"
+                >
+                  {(interactive) => (
+                    <BrowserSurfaceSlot
+                      tabId={runtimeTabId}
+                      visible={Boolean(desktopOverlay?.hasWebContents)}
+                      interactive={interactive}
+                      cornerRadius={PREVIEW_MINI_PLAYER_CORNER_RADIUS}
+                      zIndex={PREVIEW_MINI_PLAYER_WEBVIEW_Z_INDEX}
+                      fitSourceContent
+                      layoutVersion={`${frame.x}:${frame.y}`}
+                      className="absolute inset-0"
+                    />
+                  )}
+                </ServerBrowserSurface>
+              </div>
+            ) : (
+              <BrowserSurfaceSlot
+                tabId={runtimeTabId}
+                visible={Boolean(desktopOverlay?.hasWebContents)}
+                cornerRadius={PREVIEW_MINI_PLAYER_CORNER_RADIUS}
+                zIndex={PREVIEW_MINI_PLAYER_WEBVIEW_Z_INDEX}
+                fitSourceContent
+                layoutVersion={`${frame.x}:${frame.y}`}
+                className="absolute inset-0"
+              />
+            )}
             {!desktopOverlay?.hasWebContents ? (
               <div className="pointer-events-none absolute inset-0 z-[49] flex items-center justify-center rounded-[inherit] bg-muted text-xs text-muted-foreground">
                 Reconnecting preview…

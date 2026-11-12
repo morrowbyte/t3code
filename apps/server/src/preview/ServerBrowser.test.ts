@@ -1194,12 +1194,14 @@ it.live("streams to a read-only viewer without allowing takeover, input, or view
   ).pipe(Effect.provide(layer)),
 );
 
-it.live(
-  "takeover waits for the running agent and revokes snapshot refs before returning control",
-  () =>
+it.live.each([false, true])(
+  "takeover waits for the running agent and revokes snapshot refs before returning control (native=%s)",
+  (native) =>
     Effect.scoped(
       Effect.gen(function* () {
+        desktopRendersNext = native;
         const { browser, broker, tabId } = yield* ready;
+        const context = native ? desktopConnections[0]!.context : contexts[0]!;
         const snapshot = yield* broker.invoke<PreviewAutomationSnapshot>({
           scope,
           tabId,
@@ -1207,10 +1209,38 @@ it.live(
           input: {},
         });
         const ref = /\[ref=([^\]]+)\]/.exec(String(snapshot.accessibilityTree))![1]!;
-        const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+        const viewer = yield* browser.attachViewer({
+          ...viewerInput(tabId, true),
+          frames: !native,
+        });
+        const viewerSession = context.sessions.at(-1)!;
+        if (native) {
+          expect(viewerSession.send).not.toHaveBeenCalledWith(
+            "Page.startScreencast",
+            expect.anything(),
+          );
+          expect(viewerSession.send).not.toHaveBeenCalledWith(
+            "Page.captureScreenshot",
+            expect.anything(),
+          );
+        }
+        const otherScope = {
+          ...scope,
+          thread: {
+            ...testThread,
+            threadId: ThreadId.make("browser-other-thread"),
+            providerSessionId: "agent-b",
+          },
+        };
+        desktopRendersNext = native;
+        const other = yield* broker.invoke<PreviewAutomationStatus>({
+          scope: otherScope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
         const started = Promise.withResolvers<void>();
         const finish = Promise.withResolvers<Record<string, unknown>>();
-        const session = contexts[0]!.sessions[0]!;
+        const session = context.sessions[0]!;
         session.send.mockImplementationOnce(async () => {
           started.resolve();
           return finish.promise;
@@ -1227,6 +1257,7 @@ it.live(
         while (control._tag !== "control" || control.controller !== "you") {
           control = yield* Queue.take(viewer.output);
         }
+        expect(control.ready).toBe(false);
         const rejected = yield* broker
           .invoke<void>({ scope, tabId, operation: "evaluate", input: { expression: "racing()" } })
           .pipe(Effect.flip);
@@ -1234,15 +1265,27 @@ it.live(
           _tag: "PreviewAutomationControlInterruptedError",
           reason: "humanControl",
         });
+        expect(
+          yield* broker.invoke({
+            scope: otherScope,
+            tabId: other.tabId!,
+            operation: "evaluate",
+            input: { expression: "otherThreadStillWorks()" },
+          }),
+        ).toBe("evaluated");
         finish.resolve({ result: { value: "finished" } });
         expect(yield* Fiber.join(running)).toBe("finished");
         yield* Fiber.join(takeover);
+        do {
+          control = yield* Queue.take(viewer.output);
+        } while (control._tag !== "control" || control.controller !== "you" || !control.ready);
+        expect(control.ready).toBe(true);
         yield* viewer.input({ type: "releaseControl" });
         const stale = yield* broker
           .invoke<void>({ scope, tabId, operation: "click", input: { locator: `aria-ref=${ref}` } })
           .pipe(Effect.flip);
         expect(stale._tag).toBe("PreviewAutomationInvalidSelectorError");
-        expect(contexts[0]!.page.locator).not.toHaveBeenCalled();
+        expect(context.page.locator).not.toHaveBeenCalled();
         expect(
           yield* broker.invoke({
             scope,

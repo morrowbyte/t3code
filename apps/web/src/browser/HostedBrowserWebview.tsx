@@ -98,10 +98,16 @@ export function HostedBrowserWebview(props: {
         fittedSourceContent: current?.fittedSourceContent ?? null,
         rect: resolveBrowserSurfacePanelRect(state.byTabId, runtimeTabId),
         visible: current?.visible ?? false,
+        interactive: current?.interactive ?? true,
         zIndex: current?.zIndex ?? 30,
       };
     }),
   );
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- releasing native control must also release keyboard focus in the guest
+  useEffect(() => {
+    if (!presentation.interactive) webviewRef.current?.blur();
+  }, [presentation.interactive]);
   const backgroundActivity = useBrowserSurfaceStore(
     (state) => (state.activityByTabId[runtimeTabId] ?? 0) > 0,
   );
@@ -321,7 +327,12 @@ export function HostedBrowserWebview(props: {
     <div
       ref={wrapperRef}
       className="fixed overflow-hidden bg-muted/35"
-      style={{ ...wrapperStyle, overscrollBehavior: "contain" }}
+      style={{
+        ...wrapperStyle,
+        ...(!presentation.interactive ? { pointerEvents: "none" } : {}),
+        overscrollBehavior: "contain",
+      }}
+      inert={!presentation.interactive}
       onScroll={syncContentPresentation}
       data-preview-rendering={renderingActive ? "active" : "suspended"}
       data-preview-viewport={runtimeTabId}

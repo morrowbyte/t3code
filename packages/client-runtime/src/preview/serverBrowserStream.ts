@@ -22,6 +22,7 @@ export interface PreviewStreamControl {
   readonly canOperate: boolean;
   readonly controller: "agent" | "you" | "another-viewer" | "unclaimed";
   readonly generation: number;
+  readonly ready?: boolean;
   readonly dialog: null | {
     readonly type: string;
     readonly message: string;
@@ -186,6 +187,7 @@ export interface PreviewStreamTarget {
   readonly maxHeight: number;
   /** Passive viewers reduce their own access, including automatic control grants. */
   readonly interactive?: boolean;
+  readonly frames?: boolean;
 }
 
 export interface PreviewStreamEvents {
@@ -227,6 +229,7 @@ export function createPreviewStreamClient(
     maxHeight: String(Math.max(1, Math.round(target.maxHeight))),
   });
   if (target.interactive === false) query.set("interactive", "false");
+  if (target.frames === false) query.set("frames", "false");
   const url = withDeviceHubQuery(`${target.access.wsBase}/ws?${query.toString()}`, target.access);
   let stopped = false;
   let socket: WebSocket | null = null;
@@ -272,6 +275,7 @@ export function createPreviewStreamClient(
         canOperate,
         controller,
         generation,
+        ready,
         dialog,
         text,
         id,
@@ -356,6 +360,7 @@ export function createPreviewStreamClient(
           canOperate,
           controller,
           generation,
+          ...(typeof ready === "boolean" ? { ready } : {}),
           dialog,
         };
         control = nextControl;

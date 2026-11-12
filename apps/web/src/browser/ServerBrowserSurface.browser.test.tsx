@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   sent: [] as PreviewStreamInput[],
   access: { url: "ws://preview.test", token: "test" },
   painted: null as (() => void) | null,
+  stopClient: vi.fn(),
 }));
 
 vi.mock(import("@t3tools/client-runtime/preview/server-browser-stream"), async (original) => ({
@@ -35,9 +36,13 @@ import { ServerBrowserSurface } from "./ServerBrowserSurface";
 function setup() {
   mocks.sent.length = 0;
   mocks.painted = null;
+  mocks.stopClient.mockReset();
   mocks.createClient.mockReset().mockImplementation(() => ({
-    send: (input: PreviewStreamInput) => mocks.sent.push(input),
-    stop: () => undefined,
+    send: (input: PreviewStreamInput) => {
+      mocks.sent.push(input);
+      return true;
+    },
+    stop: mocks.stopClient,
   }));
 }
 
@@ -71,6 +76,98 @@ async function renderSurface(controller: PreviewStreamControl["controller"]) {
 }
 
 const keys = () => mocks.sent.filter((input) => input.type === "key");
+
+describe("ServerBrowserSurface native controls", () => {
+  it("waits for confirmed takeover and release, fences reconnects, and disconnects when hidden", async () => {
+    setup();
+    const onControl = vi.fn();
+    const surface = (visible: boolean) => (
+      <ServerBrowserSurface
+        environmentId={EnvironmentId.make("environment-native")}
+        threadId="thread-native"
+        tabId="tab-native"
+        mode="native"
+        visible={visible}
+        onControl={onControl}
+      >
+        {(interactive) => <div data-native-page data-interactive={interactive} />}
+      </ServerBrowserSurface>
+    );
+    const container = document.createElement("div");
+    await using screen = await render(surface(true), { container });
+    await vi.waitFor(() => expect(mocks.createClient).toHaveBeenCalled());
+    expect(mocks.createClient.mock.calls.at(-1)![0]).toMatchObject({
+      threadId: "thread-native",
+      tabId: "tab-native",
+      frames: false,
+    });
+    expect(container.querySelector("[data-native-page]")).not.toBeNull();
+    const nativePage = container.querySelector("[data-native-page]")!;
+    expect(nativePage.getAttribute("data-interactive")).toBe("false");
+    expect(container.querySelector("canvas, textarea")).toBeNull();
+    await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
+
+    const handlers = mocks.createClient.mock.calls.at(-1)![1];
+    const control = (
+      controller: PreviewStreamControl["controller"],
+      canOperate = true,
+      ready = true,
+    ) => handlers.onControl?.({ controller, canOperate, ready, generation: 1, dialog: null });
+    await act(() => control("agent"));
+    await userEvent.click(screen.getByRole("button", { name: "Take control" }));
+    expect(mocks.sent).toEqual([{ type: "takeControl" }]);
+    await expect.element(screen.getByRole("status")).toHaveTextContent("Agent has control");
+    await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
+
+    await act(() => control("you", true, false));
+    await expect.element(screen.getByRole("status")).toHaveTextContent("Control reserved…");
+    await expect.element(screen.getByRole("button", { name: "Release control" })).toBeDisabled();
+    expect(nativePage.getAttribute("data-interactive")).toBe("false");
+    await act(() => control("you"));
+    await expect.element(screen.getByRole("status")).toHaveTextContent("You have control");
+    expect(nativePage.getAttribute("data-interactive")).toBe("true");
+    await userEvent.click(screen.getByRole("button", { name: "Release control" }));
+    expect(mocks.sent).toEqual([{ type: "takeControl" }, { type: "releaseControl" }]);
+    await expect.element(screen.getByRole("status")).toHaveTextContent("Releasing control…");
+    await expect.element(screen.getByRole("button", { name: "Release control" })).toBeDisabled();
+    expect(nativePage.getAttribute("data-interactive")).toBe("false");
+    await act(() => control("agent"));
+
+    await act(() => handlers.onConnectedChange(false));
+    await expect.element(screen.getByRole("status")).toHaveTextContent("Reconnecting…");
+    await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
+    expect(onControl).toHaveBeenLastCalledWith(null);
+    expect(nativePage.getAttribute("data-interactive")).toBe("false");
+    await act(() => handlers.onConnectedChange(true));
+    await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
+    expect(mocks.sent).toHaveLength(2);
+
+    await act(() => control("another-viewer"));
+    await expect
+      .element(screen.getByRole("status"))
+      .toHaveTextContent("Another viewer has control");
+    await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
+    await act(() => control("unclaimed", false));
+    await expect.element(screen.getByRole("status")).toHaveTextContent("Read-only");
+    await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
+
+    await act(() =>
+      handlers.onControl?.({ controller: "you", canOperate: true, generation: 1, dialog: null }),
+    );
+    await expect
+      .element(screen.getByRole("status"))
+      .toHaveTextContent("Update the server to use native control.");
+    await expect.element(screen.getByRole("button", { name: "Release control" })).toBeDisabled();
+    expect(nativePage.getAttribute("data-interactive")).toBe("false");
+
+    await act(() => control("you"));
+    mocks.sent.length = 0;
+    await screen.rerender(surface(false));
+    expect(mocks.stopClient).toHaveBeenCalledOnce();
+    expect(onControl).toHaveBeenLastCalledWith(null);
+    expect(mocks.sent).toEqual([]);
+  });
+});
 
 describe("ServerBrowserSurface clipboard commands", () => {
   it("sends a native Copy or Cut menu command to the page once", async () => {
