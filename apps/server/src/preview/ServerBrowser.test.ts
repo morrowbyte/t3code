@@ -2632,9 +2632,9 @@ it.live("a desktop page that comes back reconnects without waiting for a viewer"
   ).pipe(Effect.provide(layer)),
 );
 
-it.live(
-  "native human fill refuses an occupied manual surface and waits for its confirmed release",
-  () =>
+it.live.each(["none", "key", "mouse"] as const)(
+  "native human fill refuses an occupied manual surface and waits for its confirmed release: %s failure",
+  (failure) =>
     Effect.gen(function* () {
       const browser = yield* ServerBrowser.ServerBrowser;
       const manager = yield* Manager.PreviewManager;
@@ -2713,6 +2713,14 @@ it.live(
         code: "KeyA",
         modifiers: 0,
       });
+      yield* viewer.input({
+        type: "mouse",
+        action: "down",
+        button: "left",
+        buttons: 1,
+        x: 12,
+        y: 18,
+      });
       const cdp = desktopConnections.at(-1)!.context.sessions.at(-1)!;
       const send = cdp.send.getMockImplementation()!;
       const drainStarted = Promise.withResolvers<void>();
@@ -2722,6 +2730,16 @@ it.live(
         if (method === "Input.dispatchKeyEvent" && (input as { type?: string }).type === "keyUp") {
           drainStarted.resolve();
           await continueDrain.promise;
+        }
+        if (
+          (failure === "key" &&
+            method === "Input.dispatchKeyEvent" &&
+            (input as { type?: string }).type === "keyUp") ||
+          (failure === "mouse" &&
+            method === "Input.dispatchMouseEvent" &&
+            (input as { type?: string }).type === "mouseReleased")
+        ) {
+          throw new Error("Input release failed");
         }
         return send(method, input);
       });
@@ -2745,8 +2763,39 @@ it.live(
         requestId: "native-menu-release",
         expectedGeneration: control.generation,
         generation: control.generation + 1,
-        released: true,
+        released: failure === "none",
       });
+      expect(cdp.send).toHaveBeenCalledWith("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        button: "left",
+        x: 12,
+        y: 18,
+        buttons: 0,
+        clickCount: 1,
+      });
+      if (failure !== "none") {
+        cdp.send.mockImplementation(send);
+        yield* viewer.input({ type: "takeControl" });
+        yield* Queue.clear(viewer.output);
+        cdp.send.mockClear();
+        yield* viewer.input({
+          type: "releaseControl",
+          requestId: "native-menu-release-recovery",
+          expectedGeneration: control.generation + 2,
+          preparePrivateEntry: true,
+        });
+        expect(yield* Queue.clear(viewer.output)).toContainEqual({
+          _tag: "controlReleased",
+          requestId: "native-menu-release-recovery",
+          expectedGeneration: control.generation + 2,
+          generation: control.generation + 3,
+          released: true,
+        });
+        expect(cdp.send).toHaveBeenCalledWith(
+          failure === "key" ? "Input.dispatchKeyEvent" : "Input.dispatchMouseEvent",
+          expect.objectContaining({ type: failure === "key" ? "keyUp" : "mouseReleased" }),
+        );
+      }
       const afterDrain = next();
       yield* nativeHandler!.request({
         ...binding,

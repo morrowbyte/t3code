@@ -423,7 +423,7 @@ describe("ServerBrowserSurface native controls", () => {
     mocks.preparePrivateEntry.mockReturnValueOnce(released);
     const clientsBeforePreparation = mocks.createClient.mock.calls.length;
     const stopsBeforePreparation = mocks.stopClient.mock.calls.length;
-    await requestFocus("prepare-entry", { preparation: "begin" });
+    await requestFocus("prepare-entry-aborted", { preparation: "begin" });
     expect(mocks.preparePrivateEntry).toHaveBeenCalledExactlyOnceWith(1, expect.any(AbortSignal));
     expect(mocks.createClient).toHaveBeenCalledTimes(clientsBeforePreparation);
     expect(mocks.stopClient).toHaveBeenCalledTimes(stopsBeforePreparation);
@@ -434,6 +434,52 @@ describe("ServerBrowserSurface native controls", () => {
     await enterText("must not enter before the native grant");
     expect(mocks.sent).toEqual([]);
     expect(mocks.input).not.toHaveBeenCalled();
+    expect(mocks.focus).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "prepare-entry-aborted", prepared: true }),
+    );
+    await userEvent.keyboard("{Shift>}{Escape}{/Shift}");
+    expect(mocks.preparePrivateEntry.mock.calls[0]![1].aborted).toBe(true);
+    expect(document.activeElement).not.toBe(input);
+    expect(input.readOnly).toBe(false);
+    expect(mocks.sent).toEqual([]);
+    expect(mocks.input).not.toHaveBeenCalled();
+    expect(mocks.focus).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "prepare-entry-aborted", prepared: true }),
+    );
+    await act(() => releaseViewer());
+    await vi.waitFor(() =>
+      expect(mocks.focus).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestId: "prepare-entry-aborted",
+          prepared: false,
+          focused: false,
+        }),
+      ),
+    );
+    expect(mocks.focus).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "prepare-entry-aborted", prepared: true }),
+    );
+    expect(document.activeElement).not.toBe(input);
+    expect(input.readOnly).toBe(false);
+
+    await requestFocus("focus-after-abort");
+    expect(mocks.focus).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "focus-after-abort", focused: true }),
+    );
+    let releaseNextViewer!: () => void;
+    const nextReleased = new Promise<void>((resolve) => {
+      releaseNextViewer = resolve;
+    });
+    mocks.preparePrivateEntry.mockReturnValueOnce(nextReleased);
+    await requestFocus("prepare-entry", { preparation: "begin" });
+    expect(mocks.preparePrivateEntry).toHaveBeenCalledTimes(2);
+    expect(mocks.preparePrivateEntry).toHaveBeenLastCalledWith(1, expect.any(AbortSignal));
+    expect(mocks.preparePrivateEntry.mock.calls[1]![1].aborted).toBe(false);
+    expect(mocks.createClient).toHaveBeenCalledTimes(clientsBeforePreparation);
+    expect(mocks.stopClient).toHaveBeenCalledTimes(stopsBeforePreparation);
+    expect(document.activeElement).toBe(input);
+    expect(input.disabled).toBe(false);
+    expect(input.readOnly).toBe(true);
     await act(() =>
       handlers.onControl?.({
         controller: "unclaimed",
@@ -447,7 +493,7 @@ describe("ServerBrowserSurface native controls", () => {
     expect(mocks.focus).not.toHaveBeenCalledWith(
       expect.objectContaining({ requestId: "prepare-entry", prepared: true }),
     );
-    releaseViewer();
+    releaseNextViewer();
     await vi.waitFor(() =>
       expect(mocks.focus).toHaveBeenCalledWith(
         expect.objectContaining({ requestId: "prepare-entry", prepared: true, focused: false }),
