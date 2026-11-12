@@ -19,4 +19,22 @@ it("requires an explicit duration only for MCP operations that extend a VM's run
     decode({ request: { ...target, action: "exec", command: "printf ok" } }).request.action,
     "exec",
   );
+  for (const backgroundSeconds of [0, 86401, 1.5]) {
+    assert.throws(() =>
+      decode({
+        request: { ...target, action: "exec", command: "node finite.js", backgroundSeconds },
+      }),
+    );
+  }
+  assert.equal(
+    decode({
+      request: { ...target, action: "exec", command: "node finite.js", backgroundSeconds: 2400 },
+    }).request.action,
+    "exec",
+  );
+  for (const action of ["logs", "cancel"]) {
+    const { request } = decode({ request: { ...target, action, processId: 456 } });
+    assert.equal("processId" in request ? request.processId : undefined, 456);
+    assert.throws(() => decode({ request: { ...target, action, processId: -1 } }));
+  }
 });
