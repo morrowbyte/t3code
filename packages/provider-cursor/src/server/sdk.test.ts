@@ -54,4 +54,34 @@ describe("Cursor disk modules", () => {
     expect(sdk.loadCursorSqlite()).toBe(fixture.sqlite);
     expect(fixture.requireSdk).toHaveBeenCalledTimes(4);
   });
+
+  it("classifies transferred SDK errors without loading SDK classes or trusting an error name", async () => {
+    vi.resetModules();
+    fixture.requireSdk.mockClear();
+    const sdk = await import("./sdk.ts");
+    const { CursorSdkRemoteError: RemoteError, cursorSdkWireError } =
+      await import("./CursorSdkErrors.ts");
+    const error = new RemoteError({
+      name: "ConfigurationError",
+      message: "Cannot use this model: missing",
+      kinds: ["ConfigurationError", "CursorSdkError"],
+      code: "INVALID_MODEL",
+      status: 400,
+      cause: { name: "AbortError", message: "cancelled", kinds: [] },
+    });
+    expect(sdk.isCursorSdkError(error, "ConfigurationError")).toBe(true);
+    expect(sdk.isCursorSdkError(error, "AuthenticationError")).toBe(false);
+    expect(
+      sdk.isCursorSdkError(
+        Object.assign(new Error("Cannot use this model: missing"), { name: "ConfigurationError" }),
+        "ConfigurationError",
+      ),
+    ).toBe(false);
+    const transferred = new RemoteError(cursorSdkWireError(error));
+    expect(transferred.code).toBe("INVALID_MODEL");
+    expect(transferred.status).toBe(400);
+    expect(transferred.cause).toMatchObject({ name: "AbortError" });
+    expect(sdk.isCursorSdkError(transferred, "ConfigurationError")).toBe(true);
+    expect(fixture.requireSdk).not.toHaveBeenCalled();
+  });
 });

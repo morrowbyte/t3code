@@ -1,11 +1,14 @@
 // @effect-diagnostics nodeBuiltinImport:off - builds real worktree layouts on disk.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeFS from "node:fs";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeEvents from "node:events";
+import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, live } from "@effect/vitest";
 import * as ByteSize from "effect/ByteSize";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
@@ -16,6 +19,7 @@ import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
@@ -26,10 +30,22 @@ import {
   createDevRunnerEnv,
   findFirstAvailableOffset,
   resolveModePortOffsets,
+  resolveTaskWorkspace,
   runDevRunnerWithInput,
 } from "./dev-runner.ts";
 
 const emptyConfigLayer = ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }));
+const decodeReady = Schema.decodeUnknownSync(
+  Schema.Struct({ reused: Schema.Boolean, outputPath: Schema.String }),
+);
+const decodeReceipt = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      child: Schema.Struct({ pid: Schema.Number }),
+      owner: Schema.Struct({ pid: Schema.Number }),
+    }),
+  ),
+);
 const netServiceLayer = Layer.succeed(NetService.NetService, {
   canListenOnHost: () => Effect.succeed(true),
   isPortAvailableOnLoopback: () => Effect.succeed(true),
@@ -365,7 +381,193 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
   });
 
   describe("runDevRunnerWithInput", () => {
-    it.effect.each(["manual", "settlement", "interruption", "unconfirmed exit"] as const)(
+    it.effect.each(["root", "linked"] as const)(
+      "resolves a canonical %s workspace from an aliased subdirectory",
+      (kind) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const root = yield* fs.makeTempDirectoryScoped();
+            const workspacePath = path.join(root, "workspace");
+            const nested = path.join(workspacePath, "src", "nested");
+            yield* fs.makeDirectory(nested, { recursive: true });
+            if (kind === "root") yield* fs.makeDirectory(path.join(workspacePath, ".git"));
+            else
+              yield* fs.writeFileString(
+                path.join(workspacePath, ".git"),
+                "gitdir: /repo/.git/worktrees/task\n",
+              );
+            const alias = path.join(root, "alias");
+            yield* fs.symlink(workspacePath, alias);
+            assert.strictEqual(
+              yield* resolveTaskWorkspace(path.join(alias, "src", "nested")),
+              yield* fs.realPath(workspacePath),
+            );
+          }),
+        ),
+    );
+
+    live.each(["SIGINT", "SIGTERM"] as const)(
+      "retains the real scoped runner and controller across caller %s until settlement",
+      (signal) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const platform = yield* HostProcess.Platform;
+            const root = yield* fs.makeTempDirectoryScoped();
+            const workspacePath = path.join(root, "workspace");
+            const cwd = path.join(workspacePath, "src");
+            yield* fs.makeDirectory(path.join(workspacePath, ".git"), { recursive: true });
+            yield* fs.makeDirectory(cwd);
+            const fixtureStarted = yield* Deferred.make<number>();
+            const fixtureClosed = yield* Deferred.make<void>();
+            const sockets = new Set<NodeNet.Socket>();
+            let starts = 0;
+            const server = NodeNet.createServer((socket) => {
+              sockets.add(socket);
+              socket.on("error", () => socket.destroy());
+              let contents = "";
+              socket.on("data", (chunk) => {
+                contents += String(chunk);
+                if (!contents.includes("\n")) return;
+                starts += 1;
+                Deferred.doneUnsafe(fixtureStarted, Effect.succeed(Number(contents.trim())));
+              });
+              socket.once("close", () => {
+                sockets.delete(socket);
+                Deferred.doneUnsafe(fixtureClosed, Effect.void);
+              });
+            });
+            yield* Effect.acquireRelease(
+              Effect.callback<void>((resume) =>
+                server.listen(0, "127.0.0.1", () => resume(Effect.void)),
+              ),
+              () =>
+                Effect.promise(
+                  () =>
+                    new Promise<void>((resolve) => {
+                      for (const socket of sockets) socket.destroy();
+                      server.close(() => resolve());
+                    }),
+                ),
+            );
+            const executable = path.join(root, platform === "win32" ? "runner-fixture.cjs" : "vp");
+            yield* fs.writeFileString(
+              executable,
+              `#!${process.execPath}
+const net = require("node:net");
+const socket = net.createConnection({ host: "127.0.0.1", port: Number(process.env.RUNNER_FIXTURE_PORT) }, () => socket.write(String(process.pid) + "\\n"));
+socket.on("close", () => process.exit(0));
+process.on("SIGTERM", () => socket.end());
+`,
+            );
+            yield* fs.chmod(executable, 0o700);
+            if (platform === "win32")
+              yield* fs.writeFileString(
+                path.join(root, "vp.cmd"),
+                `@"${process.execPath}" "%~dp0runner-fixture.cjs" %*\r\n`,
+              );
+            const launch = Effect.fn("test.launchTaskRunner")(function* () {
+              const child = yield* Effect.acquireRelease(
+                Effect.sync(() =>
+                  NodeChildProcess.fork(
+                    path.join(import.meta.dirname, "dev-runner.ts"),
+                    [
+                      "dev:server",
+                      "--home-dir",
+                      path.join(root, "state"),
+                      "--port",
+                      "13773",
+                      "--no-seed",
+                    ],
+                    {
+                      cwd,
+                      execArgv: [],
+                      env: {
+                        ...process.env,
+                        PATH: `${root}${NodePath.delimiter}${process.env.PATH ?? ""}`,
+                        T3CODE_THREAD_ID: "real-runner-owner",
+                        RUNNER_FIXTURE_PORT: String((server.address() as NodeNet.AddressInfo).port),
+                      },
+                      stdio: ["ignore", "ignore", "ignore", "ipc"],
+                    },
+                  ),
+                ),
+                (child) =>
+                  Effect.sync(() => {
+                    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+                  }),
+              );
+              const exit = NodeEvents.once(child, "exit");
+              const ready = yield* Effect.promise(async () => {
+                const [raw] = await Promise.race([
+                  NodeEvents.once(child, "message"),
+                  exit.then(() => {
+                    throw new Error("Runner exited before its ready receipt");
+                  }),
+                ]);
+                return decodeReady(raw);
+              });
+              return { child, exit, ready };
+            });
+            const first = yield* launch();
+            assert.isFalse(first.ready.reused);
+            const childPid = yield* Deferred.await(fixtureStarted);
+            const directory = path.join(workspacePath, ".t3", "dev-runners");
+            const [receiptName] = yield* fs.readDirectory(directory);
+            assert(receiptName !== undefined);
+            const receiptPath = path.join(directory, receiptName);
+            const original = yield* fs.readFileString(receiptPath);
+            const receipt = decodeReceipt(original);
+            if (platform !== "win32") assert.strictEqual(receipt.child.pid, childPid);
+            else assert.notStrictEqual(receipt.child.pid, receipt.owner.pid);
+            assert.notStrictEqual(receipt.owner.pid, first.child.pid);
+            first.child.kill(signal);
+            yield* Effect.promise(() => first.exit);
+            assert.strictEqual(yield* fs.readFileString(receiptPath), original);
+            const second = yield* launch();
+            assert.isTrue(second.ready.reused);
+            assert.strictEqual(second.ready.outputPath, first.ready.outputPath);
+            assert.deepEqual(yield* Effect.promise(() => second.exit), [0, null]);
+            assert.strictEqual(starts, 1);
+            assert.isFalse(
+              yield* stopDevRunners({
+                threadId: "real-runner-owner",
+                workspacePath,
+                canStop: Effect.succeed(false),
+              }),
+            );
+            assert.strictEqual(yield* fs.readFileString(receiptPath), original);
+            const outputRemoved = yield* Deferred.make<void>();
+            yield* Effect.acquireRelease(
+              Effect.sync(() =>
+                NodeFS.watch(path.dirname(first.ready.outputPath), (_event, name) => {
+                  if (
+                    String(name) === path.basename(first.ready.outputPath) &&
+                    !NodeFS.existsSync(first.ready.outputPath)
+                  )
+                    Deferred.doneUnsafe(outputRemoved, Effect.void);
+                }),
+              ),
+              (watcher) => Effect.sync(() => watcher.close()),
+            );
+            assert.isTrue(
+              yield* stopDevRunners({
+                threadId: "real-runner-owner",
+                workspacePath,
+                canStop: Effect.succeed(true),
+              }),
+            );
+            yield* Deferred.await(fixtureClosed);
+            yield* Deferred.await(outputRemoved);
+            assert.deepEqual(yield* fs.readDirectory(directory), []);
+          }),
+        ).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect.each(["manual", "settlement", "unconfirmed exit"] as const)(
       "preserves the distinction between %s and a normal child exit",
       (kind) =>
         Effect.scoped(
@@ -439,20 +641,15 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
               return;
             }
             assert.lengthOf(yield* fs.readDirectory(directory), 1);
-            if (kind === "interruption") {
-              yield* Fiber.interrupt(runner);
-              assert.strictEqual(kills, 0);
-            } else {
-              const stopped = yield* stopDevRunners({
-                threadId: "task-owner",
-                workspacePath,
-                canStop: Effect.succeed(true),
-              });
-              assert.strictEqual(stopped, kind === "settlement");
-              const result = yield* Fiber.join(runner);
-              assert.strictEqual(result._tag, kind === "settlement" ? "Success" : "Failure");
-              assert.strictEqual(kills, 1);
-            }
+            const stopped = yield* stopDevRunners({
+              threadId: "task-owner",
+              workspacePath,
+              canStop: Effect.succeed(true),
+            });
+            assert.strictEqual(stopped, kind === "settlement");
+            const result = yield* Fiber.join(runner);
+            assert.strictEqual(result._tag, kind === "settlement" ? "Success" : "Failure");
+            assert.strictEqual(kills, 1);
             assert.lengthOf(yield* fs.readDirectory(directory), running ? 1 : 0);
           }),
         ),
@@ -584,6 +781,7 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
         readonly stopUnconfirmed?: boolean;
         readonly naturalExit?: boolean;
         readonly spawnFailure?: boolean;
+        readonly clearedFalse?: boolean;
       }) =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
@@ -643,7 +841,15 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
               return Effect.succeed(
                 ChildProcessSpawner.makeHandle({
                   pid: ChildProcessSpawner.ProcessId(2),
-                  exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+                  exitCode: Effect.succeed(
+                    ChildProcessSpawner.ExitCode(
+                      input.clearedFalse &&
+                        spawned.args.includes("off") &&
+                        tailscaleCalls.filter((args) => args.includes("off")).length === 2
+                        ? 1
+                        : 0,
+                    ),
+                  ),
                   isRunning: Effect.succeed(false),
                   kill: () => Effect.void,
                   unref: Effect.succeed(Effect.void),
@@ -709,7 +915,7 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
               assert.strictEqual((yield* Fiber.join(first))._tag, "Failure");
               assert.lengthOf(
                 yield* fs.readDirectory(path.join(workspacePath, ".t3", "dev-runners")),
-                0,
+                input.clearedFalse ? 1 : 0,
               );
               return { env: captured, vpArgs, tailscaleCalls };
             }
@@ -773,11 +979,21 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
                 assert.strictEqual((yield* run.pipe(Effect.scoped, Effect.exit))._tag, "Failure");
                 assert.strictEqual(vpStarts, 1);
               }).pipe(Effect.ensuring(Deferred.succeed(teardownRelease, undefined)));
-              assert.isTrue(yield* Fiber.join(stopping));
-              assert.strictEqual((yield* Fiber.join(first))._tag, "Success");
+              assert.strictEqual(
+                yield* Fiber.join(stopping),
+                input.naturalExit || !input.clearedFalse,
+              );
+              assert.strictEqual(
+                (yield* Fiber.join(first))._tag,
+                input.clearedFalse ? "Failure" : "Success",
+              );
               assert.lengthOf(
                 tailscaleCalls.filter((args) => args.includes("off")),
                 initialOffCount + 1,
+              );
+              assert.lengthOf(
+                yield* fs.readDirectory(path.join(workspacePath, ".t3", "dev-runners")),
+                input.clearedFalse ? 1 : 0,
               );
             }
           } else {
@@ -792,8 +1008,11 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
         { stopUnconfirmed: true, naturalExit: false, spawnFailure: false },
         { stopUnconfirmed: false, naturalExit: true, spawnFailure: false },
         { stopUnconfirmed: false, naturalExit: false, spawnFailure: true },
+        { stopUnconfirmed: false, naturalExit: false, spawnFailure: false, clearedFalse: true },
+        { stopUnconfirmed: false, naturalExit: true, spawnFailure: false, clearedFalse: true },
+        { stopUnconfirmed: false, naturalExit: false, spawnFailure: true, clearedFalse: true },
       ])(
-        "keeps shared runner ownership through teardown: unconfirmed=$stopUnconfirmed natural=$naturalExit spawn=$spawnFailure",
+        "keeps shared runner ownership through teardown: unconfirmed=$stopUnconfirmed natural=$naturalExit spawn=$spawnFailure clearedFalse=$clearedFalse",
         (ending) => Effect.scoped(shareSpawned({ built: true, reuse: true, ...ending })),
       );
 

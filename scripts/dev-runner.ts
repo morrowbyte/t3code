@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+// @effect-diagnostics nodeBuiltinImport:off -- Owns the detached task controller process.
 
+import * as NodeChildProcess from "node:child_process";
 import * as NodeOS from "node:os";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -19,8 +21,9 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import { Argument, Command, Flag } from "effect/cli";
-import { ChildProcess } from "effect/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as DevRunnerControl from "@t3tools/shared/node/devRunnerControl";
 import { type DevShareError, shareDevServer, unshareDevServer } from "./lib/dev-share.ts";
@@ -674,24 +677,65 @@ const prepareFirstStart = Effect.fn("dev-runner.prepareFirstStart")(function* (i
   }
 });
 
-interface DevRunnerCliInput {
-  readonly mode: DevMode;
-  readonly t3Home: string | undefined;
-  readonly browser: boolean | undefined;
-  readonly autoBootstrapProjectFromCwd: boolean | undefined;
-  readonly logWebSocketEvents: boolean | undefined;
-  readonly host: string | undefined;
-  readonly port: number | undefined;
-  readonly devUrl: URL | undefined;
-  readonly dryRun: boolean;
-  readonly share: boolean;
-  readonly seed?: boolean | undefined;
-  readonly built: boolean;
-  readonly runArgs: ReadonlyArray<string>;
-}
+export const DevRunnerWorkerInput = Schema.Struct({
+  mode: Schema.Literals(DEV_RUNNER_MODES),
+  t3Home: Schema.optionalKey(Schema.String),
+  browser: Schema.optionalKey(Schema.Boolean),
+  autoBootstrapProjectFromCwd: Schema.optionalKey(Schema.Boolean),
+  logWebSocketEvents: Schema.optionalKey(Schema.Boolean),
+  host: Schema.optionalKey(Schema.String),
+  port: Schema.optionalKey(Schema.Number),
+  devUrl: Schema.optionalKey(Schema.URLFromString),
+  dryRun: Schema.Boolean,
+  share: Schema.Boolean,
+  seed: Schema.optionalKey(Schema.Boolean),
+  built: Schema.Boolean,
+  runArgs: Schema.Array(Schema.String),
+});
+type DevRunnerCliInput = typeof DevRunnerWorkerInput.Type;
+
+const RunnerConnection = Schema.Struct({
+  serverPort: Schema.String,
+  webPort: Schema.String,
+  baseDir: Schema.String,
+  sharedUrl: Schema.optionalKey(Schema.String),
+  outputPath: Schema.optionalKey(Schema.String),
+});
+const WorkerReady = Schema.Struct({
+  connection: RunnerConnection,
+  reused: Schema.Boolean,
+  outputPath: Schema.optionalKey(Schema.String),
+});
+const WorkerFailure = Schema.Struct({ error: Schema.String });
+const decodeWorkerFailure = Schema.decodeUnknownOption(WorkerFailure);
+const decodeWorkerReady = Schema.decodeUnknownOption(WorkerReady);
+
+export const resolveTaskWorkspace = Effect.fn("dev-runner.resolveTaskWorkspace")(function* (
+  cwd: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  let directory = yield* fs.realPath(cwd);
+  for (;;) {
+    const git = path.join(directory, ".git");
+    const info = yield* fs.stat(git).pipe(Effect.option);
+    if (Option.isSome(info)) {
+      if (info.value.type === "Directory") return directory;
+      if (info.value.type === "File" && /^\s*gitdir:\s*\S/mu.test(yield* fs.readFileString(git)))
+        return directory;
+      return undefined;
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
+  }
+});
 
 export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput")(function* (
   input: DevRunnerCliInput,
+  onReady?: (connection: typeof RunnerConnection.Type, reused: boolean) => void,
+  output?: (chunk: Uint8Array) => void,
+  outputPath?: string,
 ) {
   const { portOffset, devInstance } = yield* OffsetConfig.pipe(
     Effect.mapError(
@@ -716,13 +760,20 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   }
 
   const worktreePath = yield* resolveGitWorktreePath(yield* HostProcess.WorkingDirectory);
+  const workspacePath = yield* resolveTaskWorkspace(yield* HostProcess.WorkingDirectory);
   const hostEnvironment = yield* HostProcess.Environment;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const ownerThreadId = hostEnvironment.T3CODE_THREAD_ID;
   const registration =
-    !input.dryRun && ownerThreadId && worktreePath
+    !input.dryRun && ownerThreadId && workspacePath
       ? yield* DevRunnerControl.registerDevRunner({
           threadId: ownerThreadId,
-          workspacePath: worktreePath,
+          workspacePath,
+          recoverShare: (port) =>
+            unshareDevServer(port).pipe(
+              Effect.map((result) => result.cleared),
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            ),
           reuseKey: JSON.stringify([
             input.mode,
             portOffset,
@@ -750,6 +801,7 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
       `[dev-runner] reusing this task's ${input.mode} process serverPort=${serverPort} webPort=${webPort} baseDir=${baseDir}`,
     );
     if (sharedUrl) yield* Effect.logInfo(`[dev-runner] shared on tailnet: ${sharedUrl}`);
+    onReady?.(registration.connection, true);
     return;
   }
   const control = registration;
@@ -814,7 +866,8 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   let sharedUrl: string | undefined;
   let taskChildRunning = Effect.succeed(false);
   let built = false;
-  let finishShare = Effect.void;
+  let shareCleared = true;
+  let finishShare = Effect.succeed(true);
   if (input.share) {
     if (input.mode === "dev:server") {
       yield* Effect.logInfo("[dev-runner] --share has no effect for dev:server (no web server).");
@@ -825,11 +878,12 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
     } else {
       const shareScope = yield* Scope.make();
       yield* Effect.addFinalizer((exit) => Scope.close(shareScope, exit));
-      finishShare = Scope.close(shareScope, Exit.void);
+      finishShare = Scope.close(shareScope, Exit.void).pipe(Effect.map(() => shareCleared));
       // acquireRelease, not share-then-addFinalizer: the mapping outlives this
       // process (and reboots), so the cleanup has to be registered atomically
       // with creating it. An interrupt landing in between would otherwise
       // leave a mapping pointing at a port nothing is listening on.
+      if (control) yield* control.prepareShare(sharedWebPort);
       const shared = yield* Effect.acquireRelease(
         shareDevServer({
           webPort: sharedWebPort,
@@ -843,7 +897,13 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
                 },
               }
             : {}),
-        }),
+        }).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              shareCleared = false;
+            }),
+          ),
+        ),
         () =>
           Effect.suspend(() => taskChildRunning).pipe(
             Effect.flatMap((running) =>
@@ -852,25 +912,34 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
                     "[dev-runner] retaining the tailnet mapping while the task child may still run.",
                   )
                 : unshareDevServer(sharedWebPort).pipe(
-                    Effect.flatMap((result) =>
-                      result.cleared
-                        ? Effect.void
+                    Effect.flatMap((result) => {
+                      shareCleared = result.cleared;
+                      return result.cleared
+                        ? (control?.confirmShareCleared ?? Effect.void).pipe(Effect.orDie)
                         : Effect.logWarning(
                             `[dev-runner] could not remove the tailnet mapping for port ${String(sharedWebPort)}${
                               result.explanation ? `: ${result.explanation}` : ""
                             }. Remove it with \`tailscale serve --https=${String(sharedWebPort)} --set-path=/ off\`.`,
-                          ),
-                    ),
+                          );
+                    }),
                   ),
             ),
           ),
       ).pipe(
         Effect.provideService(Scope.Scope, shareScope),
         Effect.tapError((error: DevShareError) =>
-          Effect.logWarning(
-            `[dev-runner] could not share on the tailnet: ${error.message}${
-              error.hint ? ` — ${error.hint}` : ""
-            }`,
+          unshareDevServer(sharedWebPort).pipe(
+            Effect.flatMap((result) => {
+              shareCleared = result.cleared;
+              return result.cleared ? (control?.confirmShareCleared ?? Effect.void) : Effect.void;
+            }),
+            Effect.andThen(
+              Effect.logWarning(
+                `[dev-runner] could not share on the tailnet: ${error.message}${
+                  error.hint ? ` — ${error.hint}` : ""
+                }`,
+              ),
+            ),
           ),
         ),
         Effect.option,
@@ -932,8 +1001,8 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   }
   const child = yield* ChildProcess.make(spawnCommand.command, spawnCommand.args, {
     stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
+    stdout: output === undefined ? "inherit" : "pipe",
+    stderr: output === undefined ? "inherit" : "pipe",
     env,
     extendEnv: false,
     shell: spawnCommand.shell,
@@ -957,18 +1026,26 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
       );
     }),
   );
+  if (output !== undefined) {
+    yield* Effect.all(
+      [child.stdout, child.stderr].map((stream) =>
+        Stream.runForEach(stream, (chunk) => Effect.sync(() => output(chunk))),
+      ),
+      { concurrency: "unbounded" },
+    ).pipe(Effect.forkScoped);
+  }
   if (control) {
     taskChildRunning = child.isRunning.pipe(Effect.orElseSucceed(() => true));
     yield* Effect.addFinalizer(() => control.beginTeardown);
-    yield* control.ready(
-      {
-        serverPort: String(env.T3CODE_PORT),
-        webPort: String(env.PORT),
-        baseDir,
-        ...(sharedUrl === undefined ? {} : { sharedUrl }),
-      },
-      child,
-    );
+    const connection = {
+      serverPort: String(env.T3CODE_PORT),
+      webPort: String(env.PORT),
+      baseDir,
+      ...(sharedUrl === undefined ? {} : { sharedUrl }),
+      ...(outputPath === undefined ? {} : { outputPath }),
+    };
+    yield* control.ready(connection, child);
+    onReady?.(connection, false);
   }
 
   const waitForExit = child.exitCode.pipe(
@@ -994,21 +1071,126 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
       .pipe(Effect.timeoutOption("5 seconds"), Effect.option);
     const verified =
       Option.isSome(stopped) && Option.isSome(stopped.value) && !(yield* child.isRunning);
-    if (verified) yield* finishShare;
-    yield* outcome.control.confirmStopped(verified);
-    if (verified) return;
+    const cleared = verified && (yield* finishShare);
+    const accepted = yield* outcome.control.confirmStopped(verified);
+    if (verified && cleared && accepted) return;
     return yield* new DevRunnerControl.DevRunnerControlError({
       operation: "stop",
-      cause: "Child exit was not confirmed",
+      cause: "Child exit or tailnet cleanup was not confirmed",
     });
   }
   const exitCode = outcome.exitCode;
+  if (control) {
+    const cleared = yield* finishShare;
+    const accepted = yield* control.confirmStopped(true);
+    if (!cleared || !accepted)
+      return yield* new DevRunnerControl.DevRunnerControlError({
+        operation: "stop",
+        cause: "Tailnet cleanup was not confirmed",
+      });
+  }
   if (exitCode !== 0) {
     return yield* new DevRunnerProcessExitError({
       ...processContext,
       exitCode,
     });
   }
+});
+
+const runTaskDevRunnerWithInput = Effect.fn("dev-runner.runTaskDevRunnerWithInput")(function* (
+  input: DevRunnerCliInput,
+  onReady?: (ready: typeof WorkerReady.Type) => void,
+) {
+  const environment = yield* HostProcess.Environment;
+  const cwd = yield* HostProcess.WorkingDirectory;
+  if (input.dryRun || !environment.T3CODE_THREAD_ID || !(yield* resolveTaskWorkspace(cwd)))
+    return yield* runDevRunnerWithInput(input);
+
+  const path = yield* Path.Path;
+  const child = yield* Effect.acquireRelease(
+    Effect.try({
+      try: () => {
+        // The task controller owns its Effect scope; releasing this caller only detaches observation.
+        const child = NodeChildProcess.fork(
+          path.join(import.meta.dirname, "dev-runner-worker.ts"),
+          [],
+          {
+            cwd,
+            env: environment,
+            execArgv: [],
+            detached: true,
+            stdio: ["ignore", "ignore", "ignore", "ipc"],
+          },
+        );
+        child.on("error", () => {});
+        return child;
+      },
+      catch: (cause) =>
+        new DevRunnerControl.DevRunnerControlError({ operation: "register", cause }),
+    }),
+    (child) =>
+      Effect.sync(() => {
+        if (child.connected) child.disconnect();
+        child.unref();
+      }),
+  );
+  yield* Effect.callback<void, DevRunnerControl.DevRunnerControlError>((resume) => {
+    const fail = (cause: unknown) =>
+      resume(
+        Effect.fail(new DevRunnerControl.DevRunnerControlError({ operation: "register", cause })),
+      );
+    let inputSent = false;
+    const message = (raw: unknown) => {
+      const failure = decodeWorkerFailure(raw);
+      if (Option.isSome(failure)) {
+        fail(failure.value.error);
+        return;
+      }
+      if (
+        !inputSent &&
+        typeof raw === "object" &&
+        raw !== null &&
+        "type" in raw &&
+        raw.type === "input"
+      ) {
+        inputSent = true;
+        child.send({ ...input, devUrl: input.devUrl?.href }, (error) => {
+          if (error) fail(error);
+        });
+        return;
+      }
+      const ready = decodeWorkerReady(raw);
+      if (Option.isNone(ready)) return;
+      const { connection, reused } = ready.value;
+      Effect.runSync(
+        Effect.logInfo(
+          `[dev-runner] ${reused ? "reusing" : "task controller owns"} ${input.mode} serverPort=${connection.serverPort} webPort=${connection.webPort} baseDir=${connection.baseDir}`,
+        ),
+      );
+      if (connection.sharedUrl)
+        Effect.runSync(Effect.logInfo(`[dev-runner] shared on tailnet: ${connection.sharedUrl}`));
+      if (ready.value.outputPath)
+        Effect.runSync(
+          Effect.logInfo(`[dev-runner] task output (up to 2 MiB): ${ready.value.outputPath}`),
+        );
+      onReady?.(ready.value);
+    };
+    const exit = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (code === 0) resume(Effect.void);
+      else
+        fail(`Task controller exited with ${signal ?? code}; retain any unresolved runner receipt`);
+    };
+    child.on("message", message);
+    child.once("error", fail);
+    child.once("exit", exit);
+    if (child.exitCode !== null || child.signalCode !== null)
+      exit(child.exitCode, child.signalCode);
+    return Effect.sync(() => {
+      child.off("message", message);
+      child.off("error", fail);
+      child.off("exit", exit);
+    });
+  });
 });
 
 const devRunnerCli = Command.make("dev-runner", {
@@ -1086,7 +1268,11 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
 }).pipe(
   Command.withDescription("Run monorepo development modes with deterministic port/env wiring."),
-  Command.withHandler((input) => runDevRunnerWithInput(input)),
+  Command.withHandler((input) =>
+    runTaskDevRunnerWithInput(input, (ready) => {
+      if (process.connected) process.send?.(ready, () => {});
+    }),
+  ),
 );
 
 const cliRuntimeLayer = Layer.mergeAll(

@@ -82,11 +82,15 @@ export default mergeConfig(
       },
     },
     pack: {
-      // The executable embeds one entry; the history worker becomes a hidden
-      // subcommand there instead of a sibling script.
+      // The executable embeds one entry; workers use hidden subcommands instead of sibling scripts.
       entry: packExecutable
         ? ["src/bin.ts"]
-        : ["src/bin.ts", "src/claude-history-worker.ts", "src/streamable-ui/UmlRenderWorker.ts"],
+        : [
+            "src/bin.ts",
+            "src/claude-history-worker.ts",
+            "src/cursor-sdk-worker.ts",
+            "src/streamable-ui/UmlRenderWorker.ts",
+          ],
       outDir: packExecutable ? "dist-exe" : "dist",
       sourcemap: !packExecutable,
       clean: true,

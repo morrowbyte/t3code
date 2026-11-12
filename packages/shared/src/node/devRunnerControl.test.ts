@@ -75,31 +75,58 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("task dev-runner con
     ),
   );
 
-  it.effect.each([true, false])("acknowledges stop only after exit confirmation: %s", (stopped) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const workspacePath = yield* fs.makeTempDirectoryScoped();
-        const directory = path.join(workspacePath, ".t3", "dev-runners");
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const runner = yield* registerDevRunner({ threadId: "owner", workspacePath });
-            const request = yield* stopDevRunners({
-              threadId: "owner",
-              workspacePath,
-              canStop: Effect.succeed(true),
-            }).pipe(Effect.forkChild);
-            yield* runner.stopRequested;
-            assert.lengthOf(yield* fs.readDirectory(directory), 1);
-            yield* runner.confirmStopped(stopped);
-            assert.strictEqual(yield* Fiber.join(request), stopped);
-            assert.lengthOf(yield* fs.readDirectory(directory), stopped ? 0 : 1);
-          }),
-        );
-        assert.lengthOf(yield* fs.readDirectory(directory), stopped ? 0 : 1);
-      }),
-    ),
+  it.effect.each([
+    { stopped: true, shareCleared: true },
+    { stopped: false, shareCleared: true },
+    { stopped: true, shareCleared: false },
+    { stopped: true, shareCleared: true, childRunning: true },
+    { stopped: undefined, shareCleared: true },
+  ])(
+    "acknowledges stop only after exit and share confirmation: $stopped/$shareCleared",
+    ({ stopped, shareCleared, childRunning = false }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const workspacePath = yield* fs.makeTempDirectoryScoped();
+          const directory = path.join(workspacePath, ".t3", "dev-runners");
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const runner = yield* registerDevRunner({ threadId: "owner", workspacePath });
+              yield* runner.prepareChild;
+              yield* runner.ready(
+                { serverPort: "13773", webPort: "5733", baseDir: workspacePath },
+                {
+                  pid: 1,
+                  isRunning: Effect.succeed(childRunning),
+                },
+              );
+              if (!shareCleared) yield* runner.prepareShare(5733);
+              if (stopped === undefined) return;
+              const request = yield* stopDevRunners({
+                threadId: "owner",
+                workspacePath,
+                canStop: Effect.succeed(true),
+              }).pipe(Effect.forkChild);
+              yield* runner.stopRequested;
+              assert.lengthOf(yield* fs.readDirectory(directory), 1);
+              yield* runner.confirmStopped(stopped);
+              assert.strictEqual(
+                yield* Fiber.join(request),
+                stopped && shareCleared && !childRunning,
+              );
+              assert.lengthOf(
+                yield* fs.readDirectory(directory),
+                stopped && shareCleared && !childRunning ? 0 : 1,
+              );
+            }),
+          );
+          assert.lengthOf(
+            yield* fs.readDirectory(directory),
+            stopped && shareCleared && !childRunning ? 0 : 1,
+          );
+        }),
+      ),
   );
 
   it.effect.each(
@@ -117,6 +144,11 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("task dev-runner con
       "surviving descendant",
       "zombie group",
       "denied telemetry",
+      "pending share",
+      "share recovery",
+      "failed share recovery",
+      "changed share receipt",
+      "unstarted share recovery",
     ].flatMap((kind) =>
       ["dead owner", "reboot", "windows reboot"].includes(kind)
         ? [
@@ -151,6 +183,11 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("task dev-runner con
           const bootId = "11111111-1111-1111-1111-111111111111";
           receipt.owner = { bootId, pid: 12345, start: "10" };
           receipt.child = { bootId, pid: 12346, start: "20" };
+          if (kind.includes("share")) receipt.sharePort = 5733;
+          if (kind === "unstarted share recovery") {
+            receipt.launching = false;
+            delete receipt.child;
+          }
           if (kind === "legacy") {
             delete receipt.owner;
             delete receipt.child;
@@ -194,7 +231,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("task dev-runner con
                       pathOrDescriptor: file,
                     }),
                   );
-                if (kind === "changed receipt")
+                if (kind === "changed receipt" || kind === "changed share receipt")
                   return fs
                     .writeFileString(receiptPath, replacement)
                     .pipe(Effect.andThen(missing(file)));
@@ -222,7 +259,18 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("task dev-runner con
                     stopped ? Effect.void : Effect.fail(new Error("Recovery refused")),
                   ),
                 )
-              : registerDevRunner(input);
+              : registerDevRunner({
+                  ...input,
+                  ...(kind.includes("recovery") || kind === "changed share receipt"
+                    ? {
+                        recoverShare: (port: number) =>
+                          Effect.sync(() => {
+                            assert.strictEqual(port, 5733);
+                            return kind !== "failed share recovery";
+                          }),
+                      }
+                    : {}),
+                });
           const result = yield* recovery.pipe(
             Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.provideService(
@@ -243,6 +291,8 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("task dev-runner con
             "reboot",
             "windows reboot",
             "zombie group",
+            "share recovery",
+            "unstarted share recovery",
           ].includes(kind);
           assert.strictEqual(Exit.isSuccess(result), recoverable);
           if (recoverable) {
@@ -251,7 +301,9 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("task dev-runner con
           } else {
             assert.strictEqual(
               yield* fs.readFileString(receiptPath),
-              kind === "changed receipt" ? replacement : original,
+              kind === "changed receipt" || kind === "changed share receipt"
+                ? replacement
+                : original,
             );
           }
         }),
