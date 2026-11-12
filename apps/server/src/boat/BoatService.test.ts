@@ -93,7 +93,7 @@ function setup(
   const subagents = new Map<ThreadId, OrchestrationV2Subagent[]>();
   const gitCwds: string[] = [];
   let onGitRead = () => {};
-  let commandResult: { processId: number; exitCode?: number | null } = {
+  let commandResult: { processId: number; commandId?: string; exitCode?: number | null } = {
     processId: 123,
     exitCode: 0,
   };
@@ -2175,14 +2175,32 @@ it.effect.each([
   ["expired", null],
   ["missing", null],
   ["unavailable", null],
+  ["unknown", null],
+  ["stopped", null],
+  ["cancelled", null],
+  ["explicit-stop", null],
+  ["late-start", null],
+  ["receipt-bound", null],
 ] as const)(
   "tracks only the started check's command ID until %s with exitCode=%s",
   ([end, exitCode]) => {
     let statusFailure: number | null = null;
-    const test = setup((path) =>
-      path.endsWith("/commands/456") && statusFailure !== null
-        ? Effect.fail(new BoatError({ category: "provider", status: statusFailure }))
-        : Effect.void,
+    const submitted = Deferred.makeUnsafe<void>();
+    const reply = Deferred.makeUnsafe<void>();
+    const test = setup((path, method, body) =>
+      Effect.gen(function* () {
+        if (path.endsWith("/commands") && method === "POST") {
+          assert.propertyVal(body, "detached", true);
+          assert.notProperty(body, "timeoutSeconds");
+          assert.include((body as { command: string }).command, "timeout --signal=TERM");
+          if (end === "late-start") {
+            yield* Deferred.succeed(submitted, undefined);
+            yield* Deferred.await(reply);
+          }
+        }
+        if (path.endsWith("/commands/456") && statusFailure !== null)
+          return yield* new BoatError({ category: "provider", status: statusFailure });
+      }),
     );
     return Effect.gen(function* () {
       yield* Effect.gen(function* () {
@@ -2191,17 +2209,64 @@ it.effect.each([
         yield* boat.configureDefaults({ ttlMinutes: 1, retentionDays: 14 });
         yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true });
         yield* boat.operate({ action: "start", projectId, requestId: "command" }, ownerThreadId);
-        test.setCommandResult({ processId: 456, ...(exitCode === undefined ? {} : { exitCode }) });
-        yield* boat.operate(
+        if (end === "receipt-bound") {
+          for (let index = 0; index < 20; index++) {
+            test.setCommandResult({ processId: 1000 + index, exitCode: 0 });
+            yield* boat.operate(
+              {
+                action: "exec",
+                projectId,
+                requestId: "command",
+                command: "printf done",
+                backgroundSeconds: 45,
+              },
+              ownerThreadId,
+            );
+          }
+        }
+        test.setCommandResult({
+          processId: 456,
+          commandId: "cmd-focused",
+          ...(exitCode === undefined ? {} : { exitCode }),
+        });
+        const launch = boat.operate(
           {
             action: "exec",
             projectId,
             requestId: "command",
             command: "vp test run focused.test.ts",
+            backgroundSeconds: 45,
           },
           ownerThreadId,
         );
+        if (end === "late-start") {
+          const launching = yield* Effect.forkChild(launch);
+          yield* Deferred.await(submitted);
+          yield* boat.operate({ action: "stop", projectId, requestId: "command" }, ownerThreadId);
+          yield* boat.operate(
+            { action: "resume", projectId, requestId: "command", ttlMinutes: 1 },
+            ownerThreadId,
+          );
+          yield* Deferred.succeed(reply, undefined);
+          const late = yield* Fiber.join(launching);
+          assert.equal(late.instances[0]?.commands?.[0]?.status, "stop_requested");
+          test.setOwnerActive(false);
+          yield* boat.reconcile();
+          assert.deepEqual((yield* boat.read(projectId)).instances[0]?.leases, []);
+          return;
+        }
+        const started = yield* launch;
+        assert.deepEqual(started.instances[0]?.commands?.at(-1), {
+          processId: 456,
+          commandId: "cmd-focused",
+          threadId: ownerThreadId,
+          expiresAt: started.instances[0]!.expiresAt,
+          status: "unknown",
+          exitCode: null,
+        });
+        if (end === "receipt-bound") assert.lengthOf(started.instances[0]!.commands!, 21);
       }).pipe(Effect.scoped);
+      if (end === "late-start") return;
       test.setCommandStatus({
         processId: 456,
         ...(exitCode === undefined ? {} : { exitCode }),
@@ -2216,9 +2281,52 @@ it.effect.each([
       yield* reopened.reconcile();
       assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
       assert.include(test.calls, "GET /sandboxes/bx_23456789/commands/456");
+      assert.equal(
+        (yield* reopened.read(projectId)).instances[0]?.commands?.find(
+          (command) => command.processId === 456,
+        )?.status,
+        "running",
+      );
+      const unregistered = yield* reopened
+        .operate(
+          { action: "cancel", projectId, requestId: "command", processId: 999 },
+          ownerThreadId,
+        )
+        .pipe(Effect.flip);
+      assert.equal(unregistered.category, "not_found");
+      assert.notInclude(test.calls, "DELETE /sandboxes/bx_23456789/commands/999");
       if (end === "completed" || end === "failed")
-        test.setCommandStatus({ exitCode: end === "completed" ? 0 : 1 });
-      else if (end === "missing") statusFailure = 404;
+        test.setCommandStatus({ exitCode: end === "completed" ? 0 : 1, stdout: "finished output" });
+      else if (end === "unknown")
+        test.setCommandStatus({ known: false, running: false, exitCode: null });
+      else if (end === "stopped")
+        test.setCommandStatus({ known: true, running: false, exitCode: null });
+      else if (end === "cancelled") {
+        test.setCommandStatus({ known: true, running: false, exitCode: 143 });
+        const cancelled = yield* reopened.operate(
+          { action: "cancel", projectId, requestId: "command", processId: 456 },
+          ownerThreadId,
+        );
+        assert.equal(cancelled.instances[0]?.commands?.[0]?.exitCode, 143);
+        assert.include(test.calls, "DELETE /sandboxes/bx_23456789/commands/456");
+      } else if (end === "explicit-stop") {
+        const stopped = yield* reopened.operate(
+          { action: "stop", projectId, requestId: "command" },
+          ownerThreadId,
+        );
+        assert.equal(stopped.instances[0]?.commands?.[0]?.status, "stop_requested");
+      } else if (end === "receipt-bound") {
+        const stopped = yield* reopened.operate(
+          { action: "stop", projectId, requestId: "command" },
+          ownerThreadId,
+        );
+        assert.lengthOf(stopped.instances[0]!.commands!, 20);
+        assert.isFalse(
+          stopped.instances[0]!.commands!.some(
+            (command) => command.status === "running" || command.status === "unknown",
+          ),
+        );
+      } else if (end === "missing") statusFailure = 404;
       else if (end === "unavailable") {
         statusFailure = 503;
         yield* reopened.reconcile();
@@ -2227,6 +2335,14 @@ it.effect.each([
       } else yield* TestClock.adjust("61 seconds");
       yield* reopened.reconcile();
       assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
+      if (end === "completed" || end === "failed") {
+        const receipt = yield* reopened.operate(
+          { action: "logs", projectId, requestId: "command", processId: 456 },
+          ownerThreadId,
+        );
+        assert.equal(receipt.instances[0]?.output, "finished output\n");
+        assert.notProperty(receipt.instances[0]?.commands?.[0], "output");
+      }
       assert.notInclude(test.calls, "PATCH /sandboxes/bx_23456789");
       assert.deepEqual((yield* reopened.read(projectId)).instances[0]?.leases, []);
     }).pipe(Effect.scoped, Effect.provide(test.services));
@@ -2242,6 +2358,18 @@ it.effect.each(["ttl", "budget"] as const)("stops active owners at the hard %s l
     yield* boat.configure(projectId, { ...DEFAULT_BOAT_PROJECT, enabled: true, budgetUsd: 0.1 });
     yield* boat.operate({ action: "start", projectId, requestId: "limit" }, ownerThreadId);
     yield* boat.operate({ action: "prepare", projectId, requestId: "limit" }, ownerThreadId);
+    test.setCommandResult({ processId: 456 });
+    test.setCommandStatus({ known: true, running: true, exitCode: null });
+    yield* boat.operate(
+      {
+        action: "exec",
+        projectId,
+        requestId: "limit",
+        command: "node finite.js",
+        backgroundSeconds: 90,
+      },
+      ownerThreadId,
+    );
     if (limit === "ttl") yield* TestClock.adjust("61 seconds");
     else test.setCost(0.1);
     yield* boat.reconcile();
