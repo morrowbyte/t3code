@@ -1,4 +1,4 @@
-import { isDeepStrictEqual } from "node:util";
+import * as NodeUtil from "node:util";
 
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
@@ -942,7 +942,7 @@ export function mergeToolCallState(
     (next.command === undefined || next.command === previous.command) &&
     (next.data.name === undefined || next.data.name === previous.data.name) &&
     (next.data.rawInput === undefined ||
-      isDeepStrictEqual(next.data.rawInput, previous.data.rawInput));
+      NodeUtil.isDeepStrictEqual(next.data.rawInput, previous.data.rawInput));
   const title = retainTitle ? previous.title : (next.title ?? previous?.title);
   const status = next.status ?? previous?.status;
   const command = next.command ?? previous?.command;

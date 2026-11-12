@@ -338,7 +338,10 @@ describe("AcpRuntimeModel", () => {
           { data: { ...finished.toolCall.data, rawInput: { action: "change" } } },
           { data: { ...finished.toolCall.data, name: "another-tool" } },
           { kind: "execute", command: "node other-check.mjs" },
-          { title: "Andere Paketversionen prüfen", data: { title: "Andere Paketversionen prüfen" } },
+          {
+            title: "Andere Paketversionen prüfen",
+            data: { title: "Andere Paketversionen prüfen" },
+          },
         ]) {
           expect(
             mergeToolCallState(named.toolCall, { ...finished.toolCall, ...changed }).title,
