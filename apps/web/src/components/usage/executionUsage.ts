@@ -7,7 +7,9 @@ export function summarizeExecutions(entries: readonly ExecutionUsageEntry[]) {
       known.length > 0
         ? known.reduce((sum, entry) => sum + (entry.estimatedCostUsd ?? 0), 0)
         : null,
-    incomplete: entries.some((entry) => entry.partial || entry.unmeasuredSubagents),
+    incomplete: entries.some(
+      (entry) => entry.partial || entry.unmeasuredSubagents || entry.delegatedChildren > 0,
+    ),
     unknown: entries.filter((entry) => entry.estimatedCostUsd === null).length,
   };
 }

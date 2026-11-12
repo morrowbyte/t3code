@@ -59,9 +59,10 @@ export const layer = Layer.effect(
           AND deleted_at IS NULL
           AND (${input.projectId ?? null} IS NULL OR project_id = ${input.projectId ?? null})
         UNION
-        SELECT t.thread_id FROM orchestration_v2_projection_threads t JOIN scoped s
-          ON json_extract(t.payload_json, '$.lineage.parentThreadId') = s.thread_id
-        WHERE json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+        -- Keep parents outermost and remove CTE text affinity for the JSON expression index.
+        SELECT t.thread_id FROM scoped s CROSS JOIN orchestration_v2_projection_threads t
+        WHERE json_extract(t.payload_json, '$.lineage.parentThreadId') = +s.thread_id
+          AND json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
           AND t.deleted_at IS NULL
       )
       SELECT r.run_id, r.thread_id, t.project_id, t.title,

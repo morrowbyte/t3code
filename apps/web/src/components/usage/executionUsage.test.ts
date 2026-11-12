@@ -47,6 +47,11 @@ describe("execution usage", () => {
     expect(
       summarizeExecutions([entry(), entry({ estimatedCostUsd: 0.02, partial: false })]),
     ).toEqual({ estimatedCostUsd: 0.02, incomplete: true, unknown: 1 });
+    expect(
+      summarizeExecutions([
+        entry({ estimatedCostUsd: 0.02, partial: false, delegatedChildren: 1 }),
+      ]),
+    ).toEqual({ estimatedCostUsd: 0.02, incomplete: true, unknown: 0 });
     expect(executionCostLabel(null)).toBe("Unknown");
     expect(peakExecutionCost([entry()])).toBeNull();
     expect(peakExecutionCost([entry(), entry({ estimatedCostUsd: 0 })])).toBe(0);
