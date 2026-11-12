@@ -243,6 +243,7 @@ export function createPreviewStreamClient(
   let failures = 0;
   let control: PreviewStreamControl | null = null;
   let fileChooser: string | null = null;
+  let releaseSequence = 0;
   let releasing: {
     readonly socket: WebSocket;
     readonly requestId: string;
@@ -454,7 +455,7 @@ export function createPreviewStreamClient(
       )
         return Promise.reject(new Error("The local browser viewer cannot be released."));
       return new Promise<void>((resolve, reject) => {
-        const requestId = crypto.randomUUID();
+        const requestId = `release-${++releaseSequence}`;
         const abort = () => complete(new Error("Browser control preparation was cancelled."));
         const complete = (error?: Error) => {
           if (releasing?.requestId !== requestId) return;
