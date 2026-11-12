@@ -386,6 +386,17 @@ describe("DesktopBrowserHost", () => {
         expect(
           events.slice(1).map((entry) => decodeCdpReply((entry as { message: string }).message).id),
         ).toEqual([2, 3]);
+        const refusal = events[1];
+        expect(refusal).toMatchObject({ type: "cdp", ...key });
+        if (refusal?.type !== "cdp") throw new Error("Expected private CDP refusal");
+        const response = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(
+          refusal.message,
+        );
+        expect(response).toEqual({
+          id: 2,
+          sessionId: "t3-preview-page",
+          error: { code: -32000, message: "This tab is private during credential entry." },
+        });
         expect(JSON.stringify(events)).toContain("private during credential entry");
         expect(JSON.stringify(events)).not.toContain("fake-secret-must-not-relay");
         expect(debuggee.sentMethods).not.toContain("DOM.getDocument");
