@@ -163,7 +163,9 @@ export function projectObservatoryTask(
       const run = projection?.runs.find((run) => run.id === item.runId);
       if (
         item.secretStatus !== "pending" ||
-        (run ? !active(run.status) : !summaries.some((summary) => summary.id === item.id))
+        (run
+          ? !active(run.status)
+          : !summaries.some((summary) => summary.id === RuntimeRequestId.make(item.id)))
       )
         continue;
     } else if (
@@ -194,7 +196,7 @@ export function projectObservatoryTask(
         (item) =>
           item.threadId === node.ref.threadId &&
           (item.type === "secret_request" || item.type === "link_request") &&
-          item.id === summary.id,
+          RuntimeRequestId.make(item.id) === summary.id,
       )
     )
       continue;
@@ -245,7 +247,7 @@ export function projectObservatoryTask(
         reason: "The thread is snoozed.",
         nextStep: "Use Wake now in the thread status controls to end the snooze.",
       }
-    : presentTaskInterruption(shell.goal, shell.status === "failed");
+    : presentTaskInterruption(shell.goal ?? null, shell.status === "failed");
   const lastError = interruption
     ? projection?.turnItems.findLast(
         (item) =>

@@ -38,7 +38,7 @@ import { environmentCatalog } from "../../connection/catalog";
 import { act, fakeTimers, render, stubGlobal } from "../../../test/render";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { MessagesTimeline } from "./MessagesTimeline";
-import { makeStreamingTimelineFixture } from "../../test-fixtures";
+import { makeStreamingTimelineFixture, makeThreadProjectionFixture } from "../../test-fixtures";
 import {
   type PendingApproval,
   deriveTimelineEntriesFromVisibleTurnItems,
@@ -842,10 +842,22 @@ describe("MessagesTimeline citations", () => {
           text: kind === "reply" ? "" : "the cited answer",
         },
       };
+      const projection = makeThreadProjectionFixture();
       const thread = {
         environmentId: targetEnvironmentId,
-        projection: { visibleTurnItems: [original] },
-      } as NonNullable<Atom.Type<ReturnType<typeof environmentThreadDetails.quietThreadAtom>>>;
+        projection: {
+          ...projection,
+          thread: {
+            ...projection.thread,
+            id: targetThreadId,
+            lineage: { ...projection.thread.lineage, rootThreadId: targetThreadId },
+          },
+          turnItems: [original.item],
+          visibleTurnItems: [original],
+        },
+      } satisfies NonNullable<
+        Atom.Type<ReturnType<typeof environmentThreadDetails.quietThreadAtom>>
+      >;
       using _thread = vi
         .spyOn(environmentThreadDetails, "quietThreadAtom")
         .mockReturnValue(Atom.make(thread));

@@ -3834,7 +3834,7 @@ function ChatViewContent(props: ChatViewProps) {
                                 void navigate({
                                   to: "/$environmentId/$threadId",
                                   params: buildThreadRouteParams(routeThreadRef),
-                                  search: { requestId: undefined },
+                                  search: {},
                                 });
                               }}
                             />

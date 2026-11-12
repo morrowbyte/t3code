@@ -1,4 +1,9 @@
-import { MessageId, ThreadId, type OrchestrationV2TurnItem } from "@t3tools/contracts";
+import {
+  MessageId,
+  ProviderDriverKind,
+  ThreadId,
+  type OrchestrationV2TurnItem,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 import {
@@ -645,7 +650,7 @@ describe("agentDelegationText", () => {
       type: "subagent" as const,
       subagentId: "task" as Extract<OrchestrationV2TurnItem, { type: "subagent" }>["subagentId"],
       origin: "app_owned" as const,
-      driver: "codex" as const,
+      driver: ProviderDriverKind.make("codex"),
       providerInstanceId: "codex" as Extract<
         OrchestrationV2TurnItem,
         { type: "subagent" }

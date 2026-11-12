@@ -82,6 +82,13 @@ describe("agent task status", () => {
     expect(projectObservatoryTask(blocked, [blocked], null).lastError).toBeNull();
     expect(projectObservatoryTask(blocked, [blocked], null).lastUpdate).toBeNull();
     expect(presentTaskInterruption({ ...goal, status: "complete" })).toBeNull();
+    const failedWithoutGoal = { ...node, shell: { ...node.shell, status: "failed" as const } };
+    expect(
+      projectObservatoryTask(failedWithoutGoal, [failedWithoutGoal], null).interruption,
+    ).toEqual({
+      reason: "The last run failed.",
+      nextStep: "Review the last error and send a follow-up in the thread.",
+    });
   });
 
   it.each([

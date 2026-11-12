@@ -43,7 +43,7 @@ function EnvironmentAttention({
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(ref),
-      search: { requestId },
+      search: requestId === undefined ? {} : { requestId },
     })
       .then(() => {
         onClose();

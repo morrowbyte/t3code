@@ -2,7 +2,6 @@ import type { ThreadStructure } from "@t3tools/client-runtime/state/shell";
 import { Link } from "@tanstack/react-router";
 import type {
   EnvironmentId,
-  OrchestrationV2PendingRuntimeRequestSummary,
   OrchestrationV2ThreadShell,
   ProviderInstanceId,
   ServerProvider,
@@ -27,7 +26,7 @@ export function AttentionRequestTarget({
   requestId: string;
   environmentId: EnvironmentId;
   projection: ThreadStructure | null;
-  summaries?: ReadonlyArray<OrchestrationV2PendingRuntimeRequestSummary>;
+  summaries?: OrchestrationV2ThreadShell["pendingRuntimeRequests"];
   deliveryFailure?: OrchestrationV2ThreadShell["requestDeliveryFailure"];
   live: boolean;
   provider: ServerProvider | null;
