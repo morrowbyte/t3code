@@ -170,7 +170,7 @@ const makeAssetUrlHarness = Effect.fn("TestAssetUrl.makeHarness")(function* (
             httpBaseUrl: "https://primary.example.test",
           },
     ),
-  ]) as ReturnType<typeof createAssetEnvironmentAtoms>;
+  ]) as ReturnType<typeof createAssetEnvironmentAtoms<never, never>>;
   return {
     started,
     read: (environmentId: EnvironmentId) =>
