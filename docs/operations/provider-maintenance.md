@@ -34,9 +34,16 @@ one provider does not require replacing the other providers or their user state.
 
 Use an isolated provider home and a single provider instance. For Codex, install
 an unmodified upstream release, verify its version and app-server initialization,
-then exercise context delivery, Stop, and resumption with the existing adapter
-tests. Keep the context chunking, goal-stop ordering and shadow-home checks when
-changing a protocol or executable baseline. The
+then probe that candidate's live app-server. Observe application context in its
+model request, a terminal interrupted turn after Stop, and native thread
+resumption after restarting that process with the same isolated home. A local
+inference fixture can exercise this wire/lifecycle path without paid inference.
+The [replay recorder](../../apps/server/scripts/record-codex-app-server-replay-fixture.ts)
+also accepts `T3_CODEX_BIN` to select the candidate for a live recording.
+
+Run existing adapter tests separately to check the app's context chunking,
+goal-stop ordering and shadow-home behavior. Mocked/replayed tests do not execute
+the candidate binary and cannot establish its compatibility. The
 [upstream app-server contract](https://developers.openai.com/codex/app-server)
 defines cancellation as a terminal `turn/completed` with `interrupted` status;
 an accepted interrupt request alone is insufficient evidence.
