@@ -686,15 +686,14 @@ it.effect.each(["worker shutdown", "provider cancellation"] as const)(
                       effectId,
                       cause: "simulated SQL write failure",
                     }),
-                  ).pipe(
-                    Effect.onError(() => Deferred.succeed(firstWrite, undefined)),
-                  )
+                  ).pipe(Effect.onError(() => Deferred.succeed(firstWrite, undefined)))
                 : scenario === "worker shutdown"
                   ? Effect.die("The shutdown must finish before another handoff write.")
                   : Effect.succeed(true),
             ),
           ),
-        succeed: () => Ref.update(settlements, (items) => [...items, "succeed"]).pipe(Effect.as(true)),
+        succeed: () =>
+          Ref.update(settlements, (items) => [...items, "succeed"]).pipe(Effect.as(true)),
         retry: () => Ref.update(settlements, (items) => [...items, "retry"]).pipe(Effect.as(true)),
         fail: () => Ref.update(settlements, (items) => [...items, "fail"]).pipe(Effect.as(true)),
       });
