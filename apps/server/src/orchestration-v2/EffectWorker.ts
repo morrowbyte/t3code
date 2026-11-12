@@ -876,41 +876,34 @@ export const layerWithOptions = (
             .execute(effect, { willRetry })
             .pipe(boundExecution(effect));
           const steering = effect.request.type === "provider-turn.steer" ? effect.request : null;
-          const execution =
-            steering === null
-              ? nativeExecution.pipe(Effect.as({ handedOff: false, settlementFailure: null }))
-              : Effect.uninterruptibleMask((restore) =>
-                  restore(nativeExecution).pipe(
-                    Effect.flatMap((result) =>
-                      result === undefined
-                        ? Effect.succeed({ handedOff: false, settlementFailure: null })
-                        : outbox
-                            .recordSteeringAcceptance({
-                              effectId: effect.id,
-                              workerId,
-                              messageId: steering.messageId,
-                              providerTurnId: steering.providerTurnId,
-                            })
-                            .pipe(
-                              Effect.retry({
-                                schedule: Schedule.exponential("100 millis").pipe(
-                                  Schedule.modifyDelay(({ duration }) =>
-                                    Effect.succeed(Duration.min(duration, Duration.seconds(30))),
-                                  ),
-                                ),
-                              }),
-                              Effect.matchCause({
-                                onFailure: (cause) => ({
-                                  handedOff: false,
-                                  settlementFailure: cause,
-                                }),
-                                onSuccess: (handedOff) => ({ handedOff, settlementFailure: null }),
-                              }),
-                            ),
+          const execution = Effect.gen(function* () {
+            const result = yield* Effect.raceFirst(nativeExecution, cancellation);
+            if (result === "cancelled") return result;
+            if (steering === null || result === undefined) {
+              return { handedOff: false, settlementFailure: null };
+            }
+            return yield* outbox
+              .recordSteeringAcceptance({
+                effectId: effect.id,
+                workerId,
+                messageId: steering.messageId,
+                providerTurnId: steering.providerTurnId,
+              })
+              .pipe(
+                Effect.retry({
+                  schedule: Schedule.exponential("100 millis").pipe(
+                    Schedule.modifyDelay(({ duration }) =>
+                      Effect.succeed(Duration.min(duration, Duration.seconds(30))),
                     ),
                   ),
-                );
-          const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
+                }),
+                Effect.matchCause({
+                  onFailure: (cause) => ({ handedOff: false, settlementFailure: cause }),
+                  onSuccess: (handedOff) => ({ handedOff, settlementFailure: null }),
+                }),
+              );
+          });
+          const exit = yield* Effect.exit(execution).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),
           );
           if (Exit.isSuccess(exit) && exit.value === "cancelled") {

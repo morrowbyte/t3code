@@ -22,9 +22,11 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
@@ -633,6 +635,104 @@ it.effect.each(["provider-turn.start", "provider-turn.steer"] as const)(
       assert.isDefined(terminalError);
       assert.include(terminalError, "after execution started");
       assert.include(terminalError, failureDetail);
+    }),
+);
+
+it.effect.each(["worker shutdown", "provider cancellation"] as const)(
+  "keeps accepted steering handoff subject only to worker lifetime (%s)",
+  (scenario) =>
+    Effect.gen(function* () {
+      const now = DateTime.formatIso(yield* DateTime.now);
+      const effectId = "effect:worker-steering-handoff-lifetime";
+      const workerId = "worker-steering-handoff-lifetime";
+      const claimedEffect: EffectOutbox.OrchestrationEffectV2 = {
+        id: effectId,
+        commandId: CommandId.make("command:worker-steering-handoff-lifetime"),
+        threadId,
+        request: {
+          type: "provider-turn.steer",
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+          messageId: MessageId.make("message:worker-steering-handoff-lifetime"),
+        },
+        status: "running",
+        attemptCount: 1,
+        availableAt: now,
+        leaseOwner: workerId,
+        createdAt: now,
+        updatedAt: now,
+        completedAt: null,
+        lastError: null,
+      };
+      const firstWrite = yield* Deferred.make<void>();
+      const cancellation = yield* Deferred.make<void>();
+      const writes = yield* Ref.make(0);
+      const executions = yield* Ref.make(0);
+      const finalizations = yield* Ref.make(0);
+      const settlements = yield* Ref.make<ReadonlyArray<string>>([]);
+      const layerOutbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
+        claimNext: () => Effect.succeedSome(claimedEffect),
+        get: () => Effect.succeedSome(claimedEffect),
+        awaitCancellation: () => Deferred.await(cancellation),
+        clearCancellation: () => Ref.update(finalizations, (count) => count + 1),
+        recordSteeringAcceptance: () =>
+          Ref.updateAndGet(writes, (count) => count + 1).pipe(
+            Effect.flatMap((attempt) =>
+              attempt === 1
+                ? Effect.fail(
+                    new EffectOutbox.EffectOutboxError({
+                      operation: "record-steering-acceptance",
+                      effectId,
+                      cause: "simulated SQL write failure",
+                    }),
+                  ).pipe(
+                    Effect.onError(() => Deferred.succeed(firstWrite, undefined)),
+                  )
+                : scenario === "worker shutdown"
+                  ? Effect.die("The shutdown must finish before another handoff write.")
+                  : Effect.succeed(true),
+            ),
+          ),
+        succeed: () => Ref.update(settlements, (items) => [...items, "succeed"]).pipe(Effect.as(true)),
+        retry: () => Ref.update(settlements, (items) => [...items, "retry"]).pipe(Effect.as(true)),
+        fail: () => Ref.update(settlements, (items) => [...items, "fail"]).pipe(Effect.as(true)),
+      });
+      const layerExecutor = Layer.succeed(
+        EffectWorker.OrchestrationEffectExecutorV2,
+        EffectWorker.OrchestrationEffectExecutorV2.of({
+          execute: () =>
+            Ref.update(executions, (count) => count + 1).pipe(
+              Effect.as({ steeringAccepted: true } as const),
+            ),
+        }),
+      );
+      const layerWorker = EffectWorker.layerWithOptions({ workerId }).pipe(
+        Layer.provide(Layer.merge(layerOutbox, layerExecutor)),
+      );
+      const running = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
+        Effect.flatMap((worker) => worker.runOnce),
+        Effect.provide(layerWorker),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(firstWrite);
+      if (scenario === "worker shutdown") {
+        running.interruptUnsafe();
+      } else {
+        yield* Deferred.succeed(cancellation, undefined);
+      }
+      // A second-write defect bounds cleanup without allowing a successful handoff after shutdown.
+      yield* TestClock.adjust("100 millis");
+      const exit = yield* Fiber.await(running);
+      assert.equal(yield* Ref.get(executions), 1);
+      assert.equal(yield* Ref.get(writes), scenario === "worker shutdown" ? 1 : 2);
+      assert.equal(yield* Ref.get(finalizations), 1);
+      assert.deepEqual(yield* Ref.get(settlements), []);
+      if (scenario === "worker shutdown") {
+        assert.isTrue(Exit.hasInterrupts(exit));
+      } else {
+        assert.deepEqual(exit, Exit.succeed(true));
+      }
     }),
 );
 
