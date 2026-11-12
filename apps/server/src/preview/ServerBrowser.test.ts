@@ -309,6 +309,7 @@ let focusedFrame: ReturnType<typeof makeFrame> | null = null;
 let contextFailure: Error | null = null;
 let initialNavigation: (() => Promise<void>) | null = null;
 let desktopRendersNext = false;
+let desktopChannelAvailable = true;
 let desktopPageUrl = "about:blank";
 /** Replaces the answer to the desktop page's size reads. */
 let desktopSizeAnswer: (() => Promise<Record<string, unknown>>) | null = null;
@@ -361,7 +362,7 @@ const dependencies = Layer.mergeAll(
     installed: Effect.die("mock Chromium does not need an executable"),
   }),
   Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
-    available: true,
+    get available() { return desktopChannelAvailable; },
     registerPrivateEntryHandler: (handler) =>
       Effect.acquireRelease(
         Effect.sync(() => {
@@ -497,6 +498,7 @@ beforeEach(() => {
   focusedFrame = null;
   desktopTabs.clear();
   desktopRendersNext = false;
+  desktopChannelAvailable = true;
   desktopAttachWaits.length = 0;
   desktopAttachGate = null;
   desktopPageUrl = "about:blank";
@@ -851,11 +853,13 @@ it.live.each(["desktop" as const, undefined])(
     ).pipe(Effect.provide(layer)),
 );
 
-it.effect("a tab the desktop does not draw is marked headless, so the desktop streams it", () =>
+it.effect.each([false, true])("a tab the desktop does not draw is marked headless before a late attachment: %s", (available) =>
   Effect.scoped(
     Effect.gen(function* () {
+      desktopChannelAvailable = available;
       const { broker, tabId } = yield* ready;
       const manager = yield* Manager.PreviewManager;
+      desktopChannelAvailable = true;
       desktopRendersNext = true;
       const desktopTab = yield* broker.invoke<PreviewAutomationStatus>({
         scope,

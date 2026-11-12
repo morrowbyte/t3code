@@ -112,8 +112,11 @@ const takeEvents = (host: DesktopBrowserHost.DesktopBrowserHost["Service"], coun
     Effect.map((lines) => lines.map((line) => decodeEvent(new TextDecoder().decode(line)))),
   );
 
-const connect = Effect.fn(function* (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) {
-  const connection = host.createConnection();
+const connect = Effect.fn(function* (
+  host: DesktopBrowserHost.DesktopBrowserHost["Service"],
+  environmentId?: string,
+) {
+  const connection = host.createConnection(environmentId);
   const messages = yield* Queue.unbounded<typeof DesktopBrowserEvent.Type>();
   yield* connection.events.pipe(
     Stream.runForEach((line) => Queue.offer(messages, decodeEvent(new TextDecoder().decode(line)))),
@@ -439,45 +442,117 @@ describe("DesktopBrowserHost", () => {
       }).pipe(Effect.scoped),
   );
 
-  it.effect(
-    "captures old command settlement across private resume, replacement and half-close",
-    () =>
+  it.effect.each([undefined, "environment-a"])(
+    "isolates same-ID targets across private resume, replacement and half-close: %s",
+    (environmentId) =>
       Effect.gen(function* () {
         const host = yield* DesktopBrowserHost.make;
+        expect(host.hostedEnvironmentIds()).toEqual([]);
         const debuggee = makeDebuggee();
-        host.attach(key, debuggee.tab);
-        const old = yield* connect(host);
-        yield* Queue.take(old.messages);
+        const otherDebuggee = makeDebuggee();
+        const targetKey = { ...key, ...(environmentId === undefined ? {} : { environmentId }) };
+        const otherKey = { ...key, environmentId: "environment-b" };
+        host.attach(targetKey, debuggee.tab);
+        const old = yield* connect(host, environmentId);
+        expect(host.hostedEnvironmentIds()).toEqual(environmentId === undefined ? [] : [environmentId]);
+        const attached = yield* Queue.take(old.messages);
+        expect(attached).toEqual({ type: "attached", ...key, privateEntry: expect.any(Object) });
+        const acquired = yield* grant(host, old, debuggee.tab.webContents);
+        host.attach(otherKey, otherDebuggee.tab);
+        const other = yield* connect(host, otherKey.environmentId);
+        const hosted = [...(environmentId === undefined ? [] : [environmentId]), otherKey.environmentId];
+        expect(host.hostedEnvironmentIds()).toEqual(hosted);
+        expect(yield* Queue.take(other.messages)).toEqual({
+          type: "attached",
+          ...key,
+          privateEntry: expect.any(Object),
+        });
+        expect(acquired.lease.current()).toBe(true);
+        expect(host.canRequestPrivateEntry(debuggee.tab.webContents)).toBe(true);
+        expect(yield* Queue.size(old.messages)).toBe(0);
+        const otherAcquired = yield* grant(host, other, otherDebuggee.tab.webContents);
+        yield* old.connection.handleCommandLine(
+          encodeJson({ ...otherAcquired.response, type: "private-entry-revoked", reason: "closed" }),
+        );
+        yield* other.connection.handleCommandLine(
+          encodeJson({ ...acquired.response, type: "private-entry-revoked", reason: "closed" }),
+        );
+        expect(acquired.lease.current()).toBe(true);
+        expect(otherAcquired.lease.current()).toBe(true);
         const line = (id: number) =>
           encodeJson({
             type: "cdp",
             ...key,
             message: encodeJson({ id, method: "DOM.enable", sessionId: "t3-preview-page" }),
           });
+        const sent = debuggee.nextSend();
         const pending = yield* old.connection.dispatchCommandLine!(line(200));
         expect(pending).toBeDefined();
-        yield* settle;
+        yield* Effect.promise(() => sent);
+        const otherSent = otherDebuggee.nextSend();
+        const otherPending = yield* other.connection.dispatchCommandLine!(line(300));
+        yield* Effect.promise(() => otherSent);
+        expect(debuggee.sent).toEqual([undefined]);
+        expect(otherDebuggee.sent).toEqual([undefined]);
         host.setPrivateEntry(debuggee.tab.webContents, true);
         host.setPrivateEntry(debuggee.tab.webContents, false);
-        const replacement = yield* connect(host);
-        yield* Queue.take(replacement.messages);
+        const replacement = yield* connect(host, environmentId);
+        expect([...host.hostedEnvironmentIds()].sort()).toEqual([...hosted].sort());
+        const replacementAttached = yield* Queue.take(replacement.messages);
+        expect(replacementAttached).toMatchObject({ type: "attached", ...key });
+        expect(replacementAttached).not.toEqual(attached);
+        expect(acquired.lease.current()).toBe(false);
+        expect(otherAcquired.lease.current()).toBe(true);
+        expect(yield* Queue.size(other.messages)).toBe(0);
+        host.setPrivateEntry(debuggee.tab.webContents, false);
+        const currentAcquired = yield* grant(host, replacement, debuggee.tab.webContents);
+        yield* replacement.connection.handleCommandLine(encodeJson(acquired.response));
+        expect(acquired.lease.current()).toBe(false);
+        expect(currentAcquired.lease.current()).toBe(true);
         yield* old.connection.closed;
         yield* old.connection.closed;
+        yield* old.connection.handleCommandLine(line(202));
         expect(yield* old.connection.dispatchCommandLine!(line(202))).toBeUndefined();
+        const currentSent = debuggee.nextSend();
         const current = yield* replacement.connection.dispatchCommandLine!(line(201));
-        yield* settle;
+        yield* Effect.promise(() => currentSent);
         debuggee.release();
         yield* Effect.promise(() => pending!.settled);
         yield* Effect.promise(() => current!.settled);
         const reply = yield* Queue.take(replacement.messages);
         expect(reply.type === "cdp" && decodeCdpReply(reply.message).id).toBe(201);
         expect(yield* Queue.size(replacement.messages)).toBe(0);
+        expect(yield* Queue.size(other.messages)).toBe(0);
+        otherDebuggee.release();
+        yield* Effect.promise(() => otherPending!.settled);
+        const otherReply = yield* Queue.take(other.messages);
+        expect(otherReply.type === "cdp" && decodeCdpReply(otherReply.message).id).toBe(300);
+        const halfClosedSent = debuggee.nextSend();
         const halfClosed = yield* replacement.connection.dispatchCommandLine!(line(203));
-        yield* settle;
+        yield* Effect.promise(() => halfClosedSent);
         yield* replacement.connection.closed;
+        expect(host.hostedEnvironmentIds()).toEqual([otherKey.environmentId]);
+        expect(currentAcquired.lease.current()).toBe(false);
+        expect(otherAcquired.lease.current()).toBe(true);
         debuggee.release();
         yield* Effect.promise(() => halfClosed!.settled);
         expect(yield* replacement.connection.dispatchCommandLine!(line(204))).toBeUndefined();
+        const survivingSent = otherDebuggee.nextSend();
+        const surviving = yield* other.connection.dispatchCommandLine!(line(301));
+        yield* Effect.promise(() => survivingSent);
+        otherDebuggee.release();
+        yield* Effect.promise(() => surviving!.settled);
+        const survivingReply = yield* Queue.take(other.messages);
+        expect(survivingReply.type === "cdp" && decodeCdpReply(survivingReply.message).id).toBe(301);
+        expect(yield* Queue.size(replacement.messages)).toBe(0);
+        expect(yield* Queue.size(other.messages)).toBe(0);
+        expect(debuggee.sent).toHaveLength(3);
+        expect(otherDebuggee.sent).toHaveLength(2);
+        host.detach(targetKey);
+        expect(otherAcquired.lease.current()).toBe(true);
+        yield* other.connection.closed;
+        expect(host.hostedEnvironmentIds()).toEqual([]);
+        expect(otherAcquired.lease.current()).toBe(false);
       }).pipe(Effect.scoped),
   );
 
