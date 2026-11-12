@@ -303,7 +303,7 @@ describe("AcpRuntimeModel", () => {
         title: intent,
         kind: "other",
         status: "in_progress",
-        rawInput: { action: "inspect" },
+        rawInput: { action: "inspect", cwd: "/workspace" },
       },
     } satisfies EffectAcpSchema.SessionNotification).events[0];
     if (named?._tag !== "ToolCallUpdated") throw new Error("expected named tool call");
@@ -325,14 +325,20 @@ describe("AcpRuntimeModel", () => {
       expect(mergeToolCallState(named.toolCall, finished.toolCall)).toMatchObject({
         title: intent,
         status: "completed",
-        data: { rawInput: { action: "inspect" } },
+        data: { rawInput: { action: "inspect", cwd: "/workspace" } },
       });
-      expect(
-        mergeToolCallState(named.toolCall, {
-          ...finished.toolCall,
-          data: { ...finished.toolCall.data, rawInput: { action: "inspect" } },
-        }).title,
-      ).toBe(intent);
+      for (const rawInput of [
+        {},
+        { action: "inspect" },
+        { action: "inspect", cwd: "/workspace" },
+      ]) {
+        expect(
+          mergeToolCallState(named.toolCall, {
+            ...finished.toolCall,
+            data: { ...finished.toolCall.data, rawInput },
+          }).title,
+        ).toBe(intent);
+      }
       if (content) {
         for (const changed of [
           { data: { ...finished.toolCall.data, rawInput: { action: "change" } } },

@@ -933,6 +933,7 @@ export function mergeToolCallState(
 ): AcpToolCallState {
   const nextKind = next.kind ?? (typeof next.data.kind === "string" ? next.data.kind : undefined);
   const kind = nextKind ?? previous?.kind;
+  const data = mergeToolActivityData(previous?.data, next.data) ?? next.data;
   const retainTitle =
     previous?.title !== undefined &&
     !isGenericToolActivityTitle(previous.title) &&
@@ -941,13 +942,11 @@ export function mergeToolCallState(
     (nextKind === undefined || nextKind === previous.kind) &&
     (next.command === undefined || next.command === previous.command) &&
     (next.data.name === undefined || next.data.name === previous.data.name) &&
-    (next.data.rawInput === undefined ||
-      NodeUtil.isDeepStrictEqual(next.data.rawInput, previous.data.rawInput));
+    NodeUtil.isDeepStrictEqual(data.rawInput, previous.data.rawInput);
   const title = retainTitle ? previous.title : (next.title ?? previous?.title);
   const status = next.status ?? previous?.status;
   const command = next.command ?? previous?.command;
   const detail = next.detail ?? previous?.detail;
-  const data = mergeToolActivityData(previous?.data, next.data) ?? next.data;
   return {
     toolCallId: next.toolCallId,
     ...(kind ? { kind } : {}),

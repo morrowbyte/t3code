@@ -704,7 +704,9 @@ function ThreadWorkGroupList(props: {
       Math.max(0, props.activities.length - measuredContent.rowCount) *
         (props.rowSizing.estimatedRowHeight + WORK_ROW_GAP),
   );
-  const height = Math.min(contentHeight, WORK_GROUP_MAX_HEIGHT);
+  const detailsOpen = props.activities.some((row) => props.expandedRows[row.id]);
+  const height = detailsOpen ? contentHeight : Math.min(contentHeight, WORK_GROUP_MAX_HEIGHT);
+  const wasDetailsOpen = useRef(detailsOpen);
   const scrollOffset = useSharedValue(initialPosition?.scrollOffset ?? 0);
   const sharedValues = { scrollOffset };
 
@@ -718,7 +720,7 @@ function ThreadWorkGroupList(props: {
     ),
   }));
   const rememberPosition = () => {
-    if (!loadedRef.current) return;
+    if (!loadedRef.current || detailsOpen || wasDetailsOpen.current) return;
     const state = listRef.current?.getState();
     const position = state && resolveWorkGroupScrollAnchor(state);
     if (!state || !position) return;
@@ -822,7 +824,17 @@ function ThreadWorkGroupList(props: {
         extraData={props.renderRow}
         renderItem={renderItem}
         sharedValues={sharedValues}
-        onLayout={finishPendingAppend}
+        onLayout={() => {
+          if (wasDetailsOpen.current && !detailsOpen) {
+            const position = resolveThreadWorkGroupInitialScroll(
+              props.activities,
+              props.scrollPositions.get(props.groupId),
+            );
+            if (position) void listRef.current?.scrollToIndex({ ...position, animated: false });
+          }
+          wasDetailsOpen.current = detailsOpen;
+          finishPendingAppend();
+        }}
         onLoad={() => {
           loadedRef.current = true;
           setRestoringPosition(false);
@@ -844,10 +856,11 @@ function ThreadWorkGroupList(props: {
           userScrollingRef.current = false;
           rememberPosition();
         }}
-        maintainVisibleContentPosition
-        nestedScrollEnabled
+        maintainVisibleContentPosition={!detailsOpen}
+        scrollEnabled={!detailsOpen}
+        nestedScrollEnabled={!detailsOpen}
         directionalLockEnabled
-        showsVerticalScrollIndicator
+        showsVerticalScrollIndicator={!detailsOpen}
         scrollsToTop={false}
         bounces={false}
         keyboardShouldPersistTaps="handled"
@@ -856,14 +869,22 @@ function ThreadWorkGroupList(props: {
       <Animated.View
         pointerEvents="none"
         className="absolute inset-x-0 top-0"
-        style={[{ height: WORK_GROUP_EDGE_FADE_HEIGHT }, topFadeStyle]}
+        style={[
+          { height: WORK_GROUP_EDGE_FADE_HEIGHT },
+          topFadeStyle,
+          detailsOpen ? { opacity: 0 } : undefined,
+        ]}
       >
         <EdgeFade color={props.edgeFadeColor} direction="down" />
       </Animated.View>
       <Animated.View
         pointerEvents="none"
         className="absolute inset-x-0 bottom-0"
-        style={[{ height: WORK_GROUP_EDGE_FADE_HEIGHT }, bottomFadeStyle]}
+        style={[
+          { height: WORK_GROUP_EDGE_FADE_HEIGHT },
+          bottomFadeStyle,
+          detailsOpen ? { opacity: 0 } : undefined,
+        ]}
       >
         <EdgeFade color={props.edgeFadeColor} direction="up" />
       </Animated.View>
