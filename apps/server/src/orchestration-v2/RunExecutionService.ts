@@ -1019,7 +1019,10 @@ export const layer: Layer.Layer<
         });
         const resolvedSettings = yield* Effect.gen(function* () {
           const resolvedSettings = yield* serverSettings.getSettings.pipe(
-            Effect.map((settings) => resolveProjectSettings(settings, input.appThread.projectId)),
+            Effect.map((settings) => ({
+              ...resolveProjectSettings(settings, input.appThread.projectId),
+              environmentPreferences: settings.agentPreferences,
+            })),
           );
           // Side chats share the parent's worktree; a snapshot would capture the parent's edits.
           yield* (
@@ -1805,9 +1808,10 @@ export const layer: Layer.Layer<
           message: {
             ...input.message,
             text: agentPreferencePrompt({
-              entries: resolvedSettings.settings.agentPreferences,
+              entries: resolvedSettings.environmentPreferences,
+              projectEntries: resolvedSettings.overrides.agentPreferences ?? [],
               threadId: input.run.threadId,
-              scope: resolvedSettings.overrides.agentPreferences?.map((entry) => entry.key) ?? [],
+              scope: "environment",
               message: input.message,
             }),
           },

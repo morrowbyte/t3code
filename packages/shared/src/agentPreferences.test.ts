@@ -90,6 +90,29 @@ describe("confirmed agent preferences", () => {
     expect(nextThread).not.toContain("Pause this task.");
     expect(nextThread).not.toContain("Publish the recovery.");
     expect(nextThread).toContain("[]");
+    for (const status of ["active", "inactive", "completed"] as const) {
+      const projectEntries = [
+        {
+          ...preference,
+          text: "Use English for this task.",
+          appliesTo: { kind: "task" as const, threadId },
+          status,
+        },
+      ];
+      const ownTask = agentPreferenceContext([preference], threadId, "environment", projectEntries);
+      expect(ownTask).not.toContain(preference.text);
+      expect(ownTask.includes(projectEntries[0]!.text)).toBe(status === "active");
+      const otherTask = agentPreferenceContext(
+        [preference],
+        ThreadId.make("thread:next"),
+        "environment",
+        projectEntries,
+      );
+      expect(JSON.parse(otherTask.split("\n")[1]!)).toMatchObject([
+        { preference: preference.text, source: preference.source, scope: "environment" },
+      ]);
+      expect(otherTask).not.toContain(projectEntries[0]!.text);
+    }
   });
 
   it("rejects unbounded lists, duplicate topics and task decisions without a thread", () => {

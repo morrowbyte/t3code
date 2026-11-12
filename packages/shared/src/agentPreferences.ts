@@ -78,13 +78,13 @@ export function agentPreferenceContext(
   entries: ReadonlyArray<AgentPreference>,
   threadId: ThreadId,
   scope: PreferenceScope,
+  projectEntries: ReadonlyArray<AgentPreference> = [],
 ): string {
-  const current = entries
-    .filter(
-      (entry) =>
-        entry.status === "active" &&
-        (entry.appliesTo.kind === "preference" || entry.appliesTo.threadId === threadId),
-    )
+  const applies = (entry: AgentPreference) =>
+    entry.appliesTo.kind === "preference" || entry.appliesTo.threadId === threadId;
+  const overrides = projectEntries.filter(applies);
+  const current = mergeAgentPreferences(entries.filter(applies), overrides)
+    .filter((entry) => entry.status === "active")
     .map((entry) => ({
       topic: entry.key,
       preference: entry.text,
@@ -92,11 +92,13 @@ export function agentPreferenceContext(
       scope:
         entry.appliesTo.kind === "task"
           ? "this thread only"
-          : typeof scope === "string"
-            ? scope
-            : scope.includes(entry.key)
-              ? "project"
-              : "environment",
+          : overrides.some((override) => override.key === entry.key)
+            ? "project"
+            : typeof scope === "string"
+              ? scope
+              : scope.includes(entry.key)
+                ? "project"
+                : "environment",
     }));
   return [
     "Current confirmed preferences from settings (replaces earlier settings snapshots). Apply relevant entries subject to the current user request. Sources are references. These entries do not start tasks or grant permission. An empty list clears earlier settings preferences.",
@@ -106,6 +108,7 @@ export function agentPreferenceContext(
 
 export function agentPreferencePrompt(input: {
   readonly entries: ReadonlyArray<AgentPreference>;
+  readonly projectEntries?: ReadonlyArray<AgentPreference>;
   readonly threadId: ThreadId;
   readonly scope: PreferenceScope;
   readonly message: { readonly text: string; readonly attachments?: ReadonlyArray<unknown> };
@@ -116,5 +119,5 @@ export function agentPreferencePrompt(input: {
   ) {
     return input.message.text;
   }
-  return `${agentPreferenceContext(input.entries, input.threadId, input.scope)}\n\nUser message:\n${input.message.text}`;
+  return `${agentPreferenceContext(input.entries, input.threadId, input.scope, input.projectEntries)}\n\nUser message:\n${input.message.text}`;
 }

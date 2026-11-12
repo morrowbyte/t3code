@@ -17,6 +17,7 @@ import {
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
   ProviderDriverKind,
+  ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
@@ -840,7 +841,7 @@ it.effect("passes current preferences and safe MCP app context to the provider",
 
     yield* runExecution.startRootRun({
       commandId: CommandId.make("command:run-execution-app-context"),
-      appThread: rootAppThread(threadId),
+      appThread: { ...rootAppThread(threadId), projectId: ProjectId.make("project:preferences") },
       providerSessionId: ProviderSessionId.make("session:run-execution-app-context"),
       session,
       run: {
@@ -883,6 +884,7 @@ it.effect("passes current preferences and safe MCP app context to the provider",
     ]);
     assert.include(input.message.text, "Use short German answers.");
     assert.include(input.message.text, "thread:confirmation/message:format");
+    assert.notInclude(input.message.text, "Use English for the other task.");
     assert.include(input.message.text, "What is on my list?");
   }).pipe(
     Effect.provide(
@@ -920,6 +922,19 @@ it.effect("passes current preferences and safe MCP app context to the provider",
                   status: "active",
                 },
               ],
+              projectSettingsOverrides: {
+                "project:preferences": {
+                  agentPreferences: [
+                    {
+                      key: "answer-format",
+                      text: "Use English for the other task.",
+                      source: "thread:other/message:task-choice",
+                      appliesTo: { kind: "task", threadId: ThreadId.make("thread:other") },
+                      status: "active",
+                    },
+                  ],
+                },
+              },
             }),
           ),
         ),
