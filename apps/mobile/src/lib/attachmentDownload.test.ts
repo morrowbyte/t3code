@@ -10,7 +10,6 @@ const mocks = vi.hoisted(() => ({
   write: vi.fn(),
   deleteFile: vi.fn(),
   share: vi.fn(),
-  shareFromSource: vi.fn(),
   available: vi.fn(),
   open: vi.fn(),
   uuid: vi.fn(),
@@ -96,7 +95,7 @@ vi.mock("expo-sharing", () => ({
 }));
 
 vi.mock("./uuid", () => ({ uuidv4: mocks.uuid }));
-vi.mock("./shareFileFromSource", () => ({ shareFileFromSource: mocks.shareFromSource }));
+vi.mock("./shareFileFromSource", () => ({ shareFileFromSource: mocks.share }));
 
 import {
   downloadAndSaveAttachment,
@@ -129,13 +128,11 @@ beforeEach(() => {
   mocks.pickDirectory.mockImplementation(async () => new Directory("content://chosen-directory"));
   mocks.write.mockResolvedValue(undefined);
   mocks.share.mockReset();
-  mocks.shareFromSource.mockReset();
   mocks.available.mockReset();
   mocks.uuid.mockReset();
   mocks.download.mockImplementation(async (_url: string, file: { uri: string }) => file);
   mocks.copy.mockResolvedValue(undefined);
   mocks.share.mockResolvedValue(undefined);
-  mocks.shareFromSource.mockResolvedValue(undefined);
   mocks.available.mockResolvedValue(true);
   let sequence = 0;
   mocks.uuid.mockImplementation(
@@ -283,6 +280,7 @@ describe("downloadAndShareAttachment", () => {
         mimeType: "application/pdf",
         dialogTitle: "report.pdf",
       },
+      undefined,
     );
     expect(mocks.deleted).not.toHaveBeenCalled();
   });
@@ -413,8 +411,7 @@ describe("attachment preview files", () => {
     async (sourceIdentifier) => {
       const opened = Promise.withResolvers<void>();
       const sharing = Promise.withResolvers<void>();
-      const nativeShare = sourceIdentifier ? mocks.shareFromSource : mocks.share;
-      nativeShare.mockImplementationOnce(() => {
+      mocks.share.mockImplementationOnce(() => {
         opened.resolve();
         return sharing.promise;
       });
@@ -455,7 +452,6 @@ describe("attachment preview files", () => {
       available.resolve(true);
       await share;
       expect(mocks.share).not.toHaveBeenCalled();
-      expect(mocks.shareFromSource).not.toHaveBeenCalled();
       expect(mocks.deleted).toHaveBeenCalledTimes(1);
     },
   );
@@ -471,7 +467,11 @@ describe("attachment preview files", () => {
       uri,
       expect.stringMatching(/^file:\/\/\/cache\/.+\/report\.pdf$/),
     );
-    expect(mocks.share).toHaveBeenCalledWith(mocks.copy.mock.calls[0]![1], expect.any(Object));
+    expect(mocks.share).toHaveBeenCalledWith(
+      mocks.copy.mock.calls[0]![1],
+      expect.any(Object),
+      undefined,
+    );
     expect(mocks.download).not.toHaveBeenCalled();
     expect(mocks.deleted).not.toHaveBeenCalled();
   });

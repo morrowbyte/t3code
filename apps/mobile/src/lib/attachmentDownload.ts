@@ -130,13 +130,9 @@ async function createCachedAttachmentFile(attachment: AttachmentFileMetadata) {
             mimeType: attachment.mimeType.split(";", 1)[0]?.trim() || "application/octet-stream",
             dialogTitle: attachment.name,
           };
-          if (sourceIdentifier) {
-            const { shareFileFromSource } = await import("./shareFileFromSource");
-            if (signal.aborted || disposed) return;
-            await shareFileFromSource(file.uri, options, sourceIdentifier);
-          } else {
-            await Sharing.shareAsync(file.uri, options);
-          }
+          const { shareFileFromSource } = await import("./shareFileFromSource");
+          if (signal.aborted || disposed) return;
+          await shareFileFromSource(file.uri, options, sourceIdentifier);
           shared = true;
         } catch (cause) {
           if (!signal.aborted) {
