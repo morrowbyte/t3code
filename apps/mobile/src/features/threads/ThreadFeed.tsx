@@ -3232,6 +3232,9 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
         case "save":
           shareFileChip(target);
           return;
+        case "save-file":
+          shareFileChip(target, "save");
+          return;
       }
     },
   };

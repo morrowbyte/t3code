@@ -12,16 +12,24 @@ import {
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { View } from "react-native";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { ComposerAttachmentButton } from "./ComposerAttachmentButton";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
 import { pickComposerFiles, pickComposerMedia } from "../../lib/composerImages";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { useNavigation } from "@react-navigation/native";
-import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
+import {
+  FilePreviewModal,
+  type FilePreviewItem,
+  type FilePreviewSource,
+} from "../../components/FilePreviewModal";
 import { VideoPreviewModal, type VideoPreviewSource } from "../../components/VideoPreviewModal";
 import { useServerConfigs } from "../../state/entities";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { applyComposerImageAnnotation } from "../../state/apply-image-annotation";
+import { composerImageGallery } from "../../lib/composerImageGallery";
+import { filePreviewKey } from "../../lib/filePreviewGallery";
+import type { SendImageAnnotation } from "../../lib/imageAnnotation";
 import {
   appendComposerDraftAttachments,
   composerDraftsAtom,
@@ -51,6 +59,14 @@ export function QuestionAttachments(props: {
     (selectedThread
       ? { environmentId: selectedThread.environmentId, threadId: selectedThread.id }
       : null);
+  const key = origin
+    ? questionAttachmentDraftKey(
+        origin.environmentId,
+        origin.threadId,
+        props.requestId,
+        props.question.id,
+      )
+    : null;
   const navigation = useNavigation();
   const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
   const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
@@ -58,11 +74,26 @@ export function QuestionAttachments(props: {
   const drafts = useAtomValue(composerDraftsAtom);
   const focusedRef = useRef(false);
   const onInputFocusChange = props.onInputFocusChange;
+  const annotationTarget = useRef({
+    key,
+    disabled: props.disabled,
+    value: props.value,
+    onChangeText: props.onChangeText,
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Async annotation callbacks must use the committed question, response lock and answer.
+  useLayoutEffect(() => {
+    annotationTarget.current = {
+      key,
+      disabled: props.disabled,
+      value: props.value,
+      onChangeText: props.onChangeText,
+    };
+  }, [key, props.disabled, props.value, props.onChangeText]);
   // The caller keys this component by request and question, so unmounting ends any open
   // picker's scope.
   const pickerScope = useRef<{ active: boolean }>({ active: false });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- opens a scope that native picker and paste callbacks check, and closes it on unmount
-  useEffect(() => {
+  useLayoutEffect(() => {
     const scope = { active: true };
     pickerScope.current = scope;
     return () => {
@@ -125,17 +156,55 @@ export function QuestionAttachments(props: {
       )
       .finally(() => changeQuestionAttachmentPreparation(key, -1));
   });
-  if (!origin || props.question.allowCustomAnswer === false) return null;
+  if (!origin || !key || props.question.allowCustomAnswer === false) return null;
   const { environmentId, threadId } = origin;
   const capabilities = configs.get(environmentId)?.environment.capabilities;
   const canAttach = capabilities !== undefined;
-  const key = questionAttachmentDraftKey(
-    environmentId,
-    threadId,
-    props.requestId,
-    props.question.id,
-  );
   const attachments = drafts[key]?.attachments ?? [];
+  const getImageAnnotation = (item: FilePreviewItem) => {
+    const attachmentId = "attachment" in item ? item.attachment.id : item.draftAttachmentId;
+    const attachment = attachments.find((entry) => entry.id === attachmentId);
+    if (!attachment) return undefined;
+    return (async (image, text, signal) => {
+      const scope = pickerScope.current;
+      const isCurrent = () =>
+        scope.active &&
+        navigation.isFocused() &&
+        annotationTarget.current.key === key &&
+        !annotationTarget.current.disabled;
+      if (!isCurrent()) return false;
+      changeQuestionAttachmentPreparation(key, 1);
+      return applyComposerImageAnnotation({
+        draftKey: key,
+        attachmentId: attachment.id,
+        image,
+        text,
+        signal,
+        isCurrent: () =>
+          isCurrent() && (appAtomRegistry.get(questionAttachmentPreparationAtom)[key] ?? 0) > 0,
+        onComment: (comment) => {
+          const target = annotationTarget.current;
+          target.onChangeText(`${target.value}${target.value ? "\n\n" : ""}${comment}`);
+        },
+      }).finally(() => changeQuestionAttachmentPreparation(key, -1));
+    }) satisfies SendImageAnnotation;
+  };
+  const openPreview = (source: FilePreviewSource) => {
+    if (source.kind !== "image") {
+      setPreviewFile(source);
+      return;
+    }
+    const gallery = composerImageGallery(attachments).map((item) => ({
+      ...item,
+      onApplyAnnotation: getImageAnnotation(item),
+    }));
+    setPreviewFile({
+      ...source,
+      gallery,
+      onApplyAnnotation: gallery.find((item) => filePreviewKey(item) === filePreviewKey(source))
+        ?.onApplyAnnotation,
+    });
+  };
   const pick = async (kind: "media" | "files") => {
     const scope = pickerScope.current;
     changeQuestionAttachmentPreparation(key, 1);
@@ -186,7 +255,7 @@ export function QuestionAttachments(props: {
         onRemove={(id) => {
           if (!props.disabled) removeComposerDraftAttachment(key, id);
         }}
-        onPressPreview={setPreviewFile}
+        onPressPreview={openPreview}
         onPressVideo={(attachment, sourceIdentifier) =>
           setPreviewVideo({ type: "local", attachment, sourceIdentifier })
         }

@@ -54,7 +54,7 @@ export function drawAnnotationStrokes(
     context.fillStyle = stroke.color;
     context.lineWidth = Math.max(1, stroke.width * Math.min(size.width, size.height));
     context.beginPath();
-    if (points.length === 1) {
+    if (points.every((point) => point.x === first.x && point.y === first.y)) {
       context.arc(first.x, first.y, context.lineWidth / 2, 0, Math.PI * 2);
       context.fill();
     } else {

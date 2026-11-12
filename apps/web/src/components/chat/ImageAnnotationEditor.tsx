@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { MinusIcon, PlusIcon, RotateCcwIcon, Trash2Icon, Undo2Icon } from "lucide-react";
+import {
+  HandIcon,
+  MinusIcon,
+  PencilIcon,
+  PlusIcon,
+  RotateCcwIcon,
+  Trash2Icon,
+  Undo2Icon,
+} from "lucide-react";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -30,11 +38,12 @@ const WIDTHS = [
 export interface ImageAnnotationEditorProps {
   readonly src: string;
   readonly name: string;
-  readonly renderImage: (overlay: ReactNode) => ReactNode;
+  readonly renderImage: (overlay: ReactNode, drawing: boolean) => ReactNode;
   readonly onZoom: (factor: number) => void;
   readonly onFit: () => void;
   readonly onCancel: () => void;
   readonly onSend: (file: File, text: string, signal: AbortSignal) => Promise<boolean>;
+  readonly submission?: "send" | "apply";
   readonly dictationTarget?: {
     readonly environmentId: EnvironmentId | null;
     readonly targetKey: string;
@@ -57,6 +66,7 @@ export function ImageAnnotationEditor({
   onFit,
   onCancel,
   onSend,
+  submission = "send",
   dictationTarget,
 }: ImageAnnotationEditorProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -72,6 +82,7 @@ export function ImageAnnotationEditor({
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [strokes, setStrokes] = useState<ReadonlyArray<ImageAnnotationStroke>>([]);
   const [drawing, setDrawing] = useState(false);
+  const [mode, setMode] = useState<"draw" | "move">("draw");
   const [color, setColor] = useState<string>(COLORS[0].value);
   const [width, setWidth] = useState<number>(WIDTHS[1].value);
   const [message, setMessage] = useState("");
@@ -155,11 +166,15 @@ export function ImageAnnotationEditor({
           controller.signal.throwIfAborted();
           const accepted = await onSend(file, message, controller.signal);
           if (!accepted && !controller.signal.aborted)
-            setError("The image was not sent. Your marks and message are still here.");
+            setError(
+              submission === "apply"
+                ? "The image was not applied. Your marks and message are still here."
+                : "The image was not sent. Your marks and message are still here.",
+            );
         } catch (cause) {
           if (!controller.signal.aborted)
             setError(
-              cause instanceof Error ? cause.message : "The annotated image could not be sent.",
+              cause instanceof Error ? cause.message : "The annotated image could not be saved.",
             );
         }
       },
@@ -179,6 +194,7 @@ export function ImageAnnotationEditor({
       aria-label="Draw on image"
       tabIndex={0}
       className="absolute inset-0 h-full w-full touch-none cursor-crosshair outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      style={{ pointerEvents: mode === "move" ? "none" : undefined }}
       onPointerDown={(event) => {
         if (!size.width || sending || active.current || event.button !== 0) return;
         const point = annotationPoint(event, event.currentTarget.getBoundingClientRect());
@@ -262,6 +278,27 @@ export function ImageAnnotationEditor({
         aria-label="Annotation tools"
         className="flex max-w-full flex-wrap items-center justify-center gap-1"
       >
+        <Button
+          size="sm"
+          variant={mode === "draw" ? "secondary" : "ghost"}
+          aria-pressed={mode === "draw"}
+          disabled={sending || drawing}
+          onClick={() => setMode("draw")}
+        >
+          <PencilIcon />
+          Draw
+        </Button>
+        <Button
+          size="sm"
+          variant={mode === "move" ? "secondary" : "ghost"}
+          aria-pressed={mode === "move"}
+          disabled={sending || drawing}
+          onClick={() => setMode("move")}
+        >
+          <HandIcon />
+          Move
+        </Button>
+        <span className="mx-1 h-5 border-l border-border" />
         {COLORS.map((entry) => (
           <Button
             key={entry.value}
@@ -331,7 +368,7 @@ export function ImageAnnotationEditor({
           <RotateCcwIcon />
         </Button>
       </div>
-      {renderImage(overlay)}
+      {renderImage(overlay, mode === "draw")}
       <div className="w-full min-w-0 max-w-2xl space-y-2">
         <Textarea
           size="sm"
@@ -360,7 +397,13 @@ export function ImageAnnotationEditor({
               void send();
             }}
           >
-            {sending ? "Sending…" : "Send annotation"}
+            {submission === "apply"
+              ? sending
+                ? "Applying…"
+                : "Apply annotation"
+              : sending
+                ? "Sending…"
+                : "Send annotation"}
           </Button>
         </div>
       </div>

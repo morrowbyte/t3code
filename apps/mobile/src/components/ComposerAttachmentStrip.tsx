@@ -150,6 +150,7 @@ function ComposerImageAttachment(
                     kind: "image",
                     uri: attachment.dataUrl ?? attachment.previewUri,
                     name: attachment.name,
+                    draftAttachmentId: attachment.id,
                     sourceIdentifier,
                   },
             ),

@@ -443,6 +443,29 @@ describe("composerDraftStore addImages", () => {
     URL.revokeObjectURL = originalRevokeObjectUrl;
   });
 
+  it("replaces only the current image while retaining draft text, references and other attachments", () => {
+    const store = useComposerDraftStore.getState();
+    const image = makeImage({ id: "edited", previewUrl: "blob:original" });
+    const other = makeImage({ id: "other", name: "other.png", previewUrl: "blob:other" });
+    const replacement = {
+      ...image,
+      file: new File(["marked"], "marked.png"),
+      previewUrl: "blob:marked",
+    };
+    store.addImages(threadRef, [image, other]);
+    store.setPrompt(threadRef, "Keep [image](t3-context://v1/image/image_edited) and this text.");
+    const before = store.getComposerDraft(threadRef)!;
+
+    expect(store.replaceImage(threadRef, image, replacement)).toBe(true);
+    const after = store.getComposerDraft(threadRef)!;
+    expect(after.prompt).toBe(before.prompt);
+    expect(after.images).toEqual([replacement, other]);
+    expect(after.files).toBe(before.files);
+    expect(revokeSpy).toHaveBeenCalledWith("blob:original");
+    expect(store.replaceImage(threadRef, image, replacement)).toBe(false);
+    expect(store.getComposerDraft(threadRef)).toBe(after);
+  });
+
   it("restores images with matching metadata without replacing unsent bytes", () => {
     const store = useComposerDraftStore.getState();
     const unsent = makeImage({ id: "unsent", previewUrl: "blob:unsent" });

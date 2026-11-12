@@ -109,7 +109,6 @@ function SnapShotAttachmentFrame({
 
 /** Image, SnapShot and video tiles above the composer editor. */
 export function ComposerAttachmentMediaRow({
-  images,
   expandedImages,
   preparingImages,
   videos,
@@ -124,11 +123,11 @@ export function ComposerAttachmentMediaRow({
   attachmentDraftTarget,
   canOperateThread,
   onExpandImage,
+  onExpandComposerImage,
   onFileOpen,
   onRemoveImage,
   onRemoveFile,
 }: {
-  readonly images: ReadonlyArray<ComposerImageAttachment>;
   readonly expandedImages: ReadonlyArray<ComposerImageAttachment>;
   readonly preparingImages: ReadonlyArray<PreparingComposerImage>;
   readonly videos: ReadonlyArray<ComposerFileAttachment>;
@@ -143,6 +142,7 @@ export function ComposerAttachmentMediaRow({
   readonly attachmentDraftTarget: ScopedThreadRef | DraftId;
   readonly canOperateThread: boolean;
   readonly onExpandImage: (preview: ExpandedImagePreview) => void;
+  readonly onExpandComposerImage: (imageId: string) => void;
   readonly onFileOpen: (attachment: ChatFileAttachment) => void;
   readonly onRemoveImage: (imageId: string) => void;
   readonly onRemoveFile: (fileId: string) => void;
@@ -199,9 +199,7 @@ export function ComposerAttachmentMediaRow({
                   aria-label={`Preview ${image.name}`}
                   disabled={!ready}
                   onClick={() => {
-                    const preview = buildExpandedImagePreview(images, image.id);
-                    if (!preview) return;
-                    onExpandImage(preview);
+                    onExpandComposerImage(image.id);
                   }}
                 >
                   <ComposerImageThumbnail
@@ -552,15 +550,13 @@ export function ComposerFilePreviewDialog({
 /** Thumbnails beside the single-line prompt while the composer rests. */
 export function ComposerRestingImagePreviews({
   images,
-  allImages,
   resolvedTheme,
   onExpandImage,
   onShowMore,
 }: {
   readonly images: ReadonlyArray<ComposerImageAttachment>;
-  readonly allImages: ReadonlyArray<ComposerImageAttachment>;
   readonly resolvedTheme: "light" | "dark";
-  readonly onExpandImage: (preview: ExpandedImagePreview) => void;
+  readonly onExpandImage: (imageId: string) => void;
   readonly onShowMore: () => void;
 }) {
   const counts = getRestingComposerImagePreviewCounts(images.length);
@@ -574,10 +570,7 @@ export function ComposerRestingImagePreviews({
           className="relative size-7 shrink-0 cursor-zoom-in overflow-hidden rounded-md border border-border/70 bg-muted/60"
           aria-label={`Preview ${image.name}`}
           onPointerDown={(event) => event.preventDefault()}
-          onClick={() => {
-            const preview = buildExpandedImagePreview(allImages, image.id);
-            if (preview) onExpandImage(preview);
-          }}
+          onClick={() => onExpandImage(image.id)}
         >
           {image.previewUrl ? (
             <ComposerImageThumbnail

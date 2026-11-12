@@ -562,6 +562,11 @@ interface ComposerDraftStoreState {
     options?: { allowDuplicates?: boolean },
   ) => string[];
   removeImage: (threadRef: ComposerThreadTarget, imageId: string) => void;
+  replaceImage: (
+    threadRef: ComposerThreadTarget,
+    previous: ComposerImageAttachment,
+    image: ComposerImageAttachment,
+  ) => boolean;
   /** Returns the ids of files appended; a re-pick that replaces a marker is not listed. */
   addFiles: (
     threadRef: ComposerThreadTarget,
@@ -3372,6 +3377,35 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             };
           });
           return acceptedIds;
+        },
+        replaceImage: (threadRef, previous, image) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef);
+          if (!threadKey || previous.id !== image.id) return false;
+          let replaced = false;
+          set((state) => {
+            const current = state.draftsByThreadKey[threadKey];
+            if (!current?.images.includes(previous)) return state;
+            replaced = true;
+            return {
+              draftsByThreadKey: {
+                ...state.draftsByThreadKey,
+                [threadKey]: {
+                  ...current,
+                  images: current.images.map((entry) => (entry === previous ? image : entry)),
+                  nonPersistedImageIds: current.nonPersistedImageIds.filter(
+                    (id) => id !== image.id,
+                  ),
+                  persistedAttachments: current.persistedAttachments.filter(
+                    (entry) => entry.id !== image.id,
+                  ),
+                },
+              },
+            };
+          });
+          if (replaced && previous.previewUrl !== image.previewUrl) {
+            revokeObjectPreviewUrl(previous.previewUrl);
+          }
+          return replaced;
         },
         removeImage: (threadRef, imageId) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
