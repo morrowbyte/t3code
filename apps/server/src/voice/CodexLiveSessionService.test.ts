@@ -1478,6 +1478,9 @@ it.effect.each([false, true])(
           "repeated projection updates do not redeliver the first paragraph",
         );
         durableProjection = beforeStreaming;
+        const deliveryTemplate = beforeStreaming.turnItems.find(
+          (item) => item.type === "assistant_message",
+        )!;
         const deliveryFailureItems = [
           [
             "turn-item:steering-delivery-failure:correction",
@@ -1488,7 +1491,7 @@ it.effect.each([false, true])(
             "The agent did not confirm this answer.",
           ],
         ].map(([id, message], index) => ({
-          ...beforeStreaming.turnItems[0]!,
+          ...deliveryTemplate,
           id: id as never,
           type: "error" as const,
           status: "failed" as const,
@@ -1516,7 +1519,7 @@ it.effect.each([false, true])(
             id: progressMessage.nodeId,
           };
           const progressItem = {
-            ...beforeStreaming.turnItems[0]!,
+            ...deliveryTemplate,
             id: `delivery-progress-item-${index}` as never,
             type: "assistant_message" as const,
             nodeId: progressNode.id,
@@ -2573,7 +2576,18 @@ it.effect.each([false, true])(
             };
             yield* Deferred.succeed(lateSendStarted, undefined);
             yield* Deferred.await(releaseLateSend);
-            return { delivery: "queued" as const, run: queuedRun };
+            return {
+              delivery: "queued" as const,
+              run: queuedRun,
+              dispatch: { sequence: 0, storedEvents: [] },
+              projection: durableProjection,
+              message: {
+                ...durableProjection.messages[0]!,
+                id: queuedRun.userMessageId,
+                runId: queuedRun.id,
+              },
+              turnItem: null,
+            };
           });
         const lateSubmit = yield* invokeWithPlanner(
           "planner-native-2",
@@ -3282,6 +3296,7 @@ it.effect.each([false, true])(
         };
         const independentSeeds = new Map<string, OrchestrationV2ThreadProjection>();
         let admissions = 0;
+        const admissionScope = yield* Effect.scope;
         admitIndependent = (command) =>
           Effect.gen(function* () {
             const index = ++admissions;
@@ -3386,7 +3401,7 @@ it.effect.each([false, true])(
                 } as never),
               ],
             };
-          });
+          }).pipe(Effect.provideService(Scope.Scope, admissionScope));
         const parallelLease = yield* service.prepare(session, {
           threadId,
           clientRequestId: "parallel-voice-replay",
@@ -3763,7 +3778,7 @@ it.effect.each([false, true])(
         );
         const third = independentJobs.get(failedChild)!;
         const failedDelivery = {
-          ...third.turnItems[0]!,
+          ...third.turnItems.find((item) => item.type === "assistant_message")!,
           id: TurnItemId.make("turn-item:steering-delivery-failure:failed-child"),
           type: "error" as const,
           status: "failed" as const,
@@ -4111,7 +4126,9 @@ it.effect.each([false, true])(
                     turnItems: [
                       ...durableProjection.turnItems,
                       {
-                        ...durableProjection.turnItems[0]!,
+                        ...durableProjection.turnItems.find(
+                          (item) => item.type === "assistant_message",
+                        )!,
                         type: "user_message" as const,
                         id: TurnItemId.make(`turn-item:message:${input.messageId}`),
                         messageId: input.messageId,

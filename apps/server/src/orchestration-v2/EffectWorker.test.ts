@@ -3,7 +3,10 @@ import {
   CheckpointId,
   CheckpointScopeId,
   CommandId,
+  MessageId,
   NodeId,
+  ProjectId,
+  ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -12,6 +15,7 @@ import {
   RuntimeRequestId,
   ThreadId,
   VcsProcessExitError,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -82,6 +86,7 @@ function layerExecutorFor(input: {
   readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
+  readonly steer?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["steer"];
   readonly rollback?: CheckpointRollbackService.CheckpointRollbackServiceV2Shape["execute"];
   readonly respond?: RuntimeRequestService.RuntimeRequestServiceV2["Service"]["respond"];
 }) {
@@ -91,7 +96,7 @@ function layerExecutorFor(input: {
       ProviderTurnControlService.ProviderTurnControlServiceV2,
       ProviderTurnControlService.ProviderTurnControlServiceV2.of({
         interrupt: input.interrupt ?? (() => Effect.void),
-        steer: () => Effect.void,
+        steer: input.steer ?? (() => Effect.void),
         interruptAndAwaitTerminal: (request) =>
           record(
             request.replacementProviderSessionId === undefined
@@ -217,6 +222,98 @@ it.effect.each([
     }).pipe(Effect.provide(layer));
     assert.deepEqual(yield* Ref.get(events), dispatched);
   }),
+);
+
+it.effect.each([false, true])(
+  "settles a disabled steering fallback without another provider call (mailbox: %s)",
+  (mailbox) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const messageId = MessageId.make("message:disabled-steering-fallback");
+      const layer = layerExecutorFor({
+        events,
+        steer: () =>
+          Ref.update(events, (current) => [...current, "steer"]).pipe(
+            Effect.andThen(
+              new ProviderTurnControlService.ProviderTurnControlError({
+                threadId,
+                operation: "steer",
+                providerTurnId,
+                turnCompleted: true,
+                cause: "The provider turn completed before accepting this correction.",
+              }),
+            ),
+          ),
+        threads: {
+          getThreadRecords: () =>
+            Effect.succeed({
+              messages: [
+                {
+                  id: messageId,
+                  runId,
+                  text: "Keep the existing result and apply this correction",
+                  attachments: [],
+                  createdBy: "user",
+                  creationSource: "web",
+                  ...(mailbox
+                    ? {
+                        delegatedCompletion: {
+                          parentRunId: runId,
+                          generation: 1,
+                          taskIds: [NodeId.make("task:disabled-steering-fallback")],
+                        },
+                      }
+                    : {}),
+                },
+              ],
+              runs: [
+                {
+                  id: runId,
+                  modelSelection: {
+                    instanceId: ProviderInstanceId.make("codex"),
+                    model: "test-model",
+                  },
+                },
+              ],
+            } as unknown as OrchestrationV2ThreadProjection),
+          dispatch: (command) =>
+            Effect.gen(function* () {
+              if (command.type === "message.dispatch") {
+                yield* Ref.update(events, (current) => [...current, "fallback-disabled"]);
+                return yield* new ThreadManagementService.ThreadManagementProviderInstanceDisabledError(
+                  {
+                    projectId: ProjectId.make("project:disabled-steering-fallback"),
+                    instanceId: ProviderInstanceId.make("codex"),
+                  },
+                );
+              }
+              assert.equal(command.type, "message.steering.settle");
+              if (command.type === "message.steering.settle") {
+                assert.equal(command.threadId, threadId);
+                assert.equal(command.messageId, messageId);
+                assert.equal(command.providerTurnId, providerTurnId);
+                yield* Ref.update(events, (current) => [...current, command.status]);
+              }
+              return { sequence: 1, storedEvents: [] };
+            }),
+        },
+      });
+      yield* Effect.gen(function* () {
+        const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+        yield* executor.execute({
+          ...restartEffect(now, { type: "detach" }),
+          request: {
+            type: "provider-turn.steer",
+            providerSessionId: oldSessionId,
+            providerThreadId,
+            providerTurnId,
+            messageId,
+          },
+        });
+      }).pipe(Effect.provide(layer));
+      assert.deepEqual(yield* Ref.get(events), ["steer", "fallback-disabled", "failed"]);
+    }),
 );
 
 const lockedIndexMessage =
@@ -459,72 +556,106 @@ it.effect("arms cancellation before the durable pre-execution check", () =>
   }),
 );
 
-it.effect("terminalizes a process-bound claim when success settlement fails", () =>
-  Effect.gen(function* () {
-    const now = DateTime.formatIso(yield* DateTime.now);
-    const effectId = "effect:worker-process-bound-settlement-failure";
-    const workerId = "worker-process-bound-settlement-failure";
-    const claimedEffect: EffectOutbox.OrchestrationEffectV2 = {
-      id: effectId,
-      commandId: CommandId.make("command:worker-process-bound-settlement-failure"),
-      threadId: ThreadId.make("thread:worker-process-bound-settlement-failure"),
-      request: {
-        type: "provider-turn.start",
-        runId: RunId.make("run:worker-process-bound-settlement-failure"),
-      },
-      status: "running",
-      attemptCount: 1,
-      availableAt: now,
-      leaseOwner: workerId,
-      createdAt: now,
-      updatedAt: now,
-      completedAt: null,
-      lastError: null,
-    };
-    const retries = yield* Ref.make(0);
-    const terminalErrors = yield* Ref.make<ReadonlyArray<string>>([]);
-    const executionCount = yield* Ref.make(0);
-    const layerOutbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
-      claimNext: () => Effect.succeedSome(claimedEffect),
-      get: () => Effect.succeedSome(claimedEffect),
-      awaitCancellation: () => Effect.never,
-      clearCancellation: () => Effect.void,
-      succeed: () =>
-        Effect.fail(
-          new EffectOutbox.EffectOutboxError({
-            operation: "succeed",
-            effectId,
-            cause: "simulated success settlement failure",
-          }),
-        ),
-      retry: () => Ref.update(retries, (count) => count + 1).pipe(Effect.as(true)),
-      fail: ({ error }) =>
-        Ref.update(terminalErrors, (existing) => [...existing, error]).pipe(Effect.as(true)),
-    });
-    const layerExecutor = Layer.succeed(
-      EffectWorker.OrchestrationEffectExecutorV2,
-      EffectWorker.OrchestrationEffectExecutorV2.of({
-        execute: () => Ref.update(executionCount, (count) => count + 1),
-      }),
-    );
-    const layerWorker = EffectWorker.layerWithOptions({ workerId }).pipe(
-      Layer.provide(Layer.merge(layerOutbox, layerExecutor)),
-    );
+it.effect.each(["provider-turn.start", "provider-turn.steer", "steering-ack"] as const)(
+  "terminalizes a process-bound claim when success settlement fails (%s)",
+  (kind) =>
+    Effect.gen(function* () {
+      const now = DateTime.formatIso(yield* DateTime.now);
+      const effectId = "effect:worker-process-bound-settlement-failure";
+      const workerId = "worker-process-bound-settlement-failure";
+      const claimedEffect: EffectOutbox.OrchestrationEffectV2 = {
+        id: effectId,
+        commandId: CommandId.make("command:worker-process-bound-settlement-failure"),
+        threadId: ThreadId.make("thread:worker-process-bound-settlement-failure"),
+        request:
+          kind === "provider-turn.start"
+            ? {
+                type: "provider-turn.start",
+                runId: RunId.make("run:worker-process-bound-settlement-failure"),
+              }
+            : {
+                type: "provider-turn.steer",
+                providerSessionId: oldSessionId,
+                providerThreadId,
+                providerTurnId,
+                messageId: MessageId.make("message:worker-process-bound-settlement-failure"),
+              },
+        status: "running",
+        attemptCount: 1,
+        availableAt: now,
+        leaseOwner: workerId,
+        createdAt: now,
+        updatedAt: now,
+        completedAt: null,
+        lastError: null,
+      };
+      const retries = yield* Ref.make(0);
+      const terminalErrors = yield* Ref.make<ReadonlyArray<string>>([]);
+      const executionCount = yield* Ref.make(0);
+      const acknowledgementAttempts = yield* Ref.make(0);
+      const failureDetail =
+        kind === "steering-ack"
+          ? "simulated acknowledgement persistence failure"
+          : "simulated success settlement failure";
+      const layerOutbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
+        claimNext: () => Effect.succeedSome(claimedEffect),
+        get: () => Effect.succeedSome(claimedEffect),
+        awaitCancellation: () => Effect.never,
+        clearCancellation: () => Effect.void,
+        succeed: () =>
+          Effect.fail(
+            new EffectOutbox.EffectOutboxError({
+              operation: "succeed",
+              effectId,
+              cause: failureDetail,
+            }),
+          ),
+        retry: () => Ref.update(retries, (count) => count + 1).pipe(Effect.as(true)),
+        fail: ({ error }) =>
+          Ref.update(terminalErrors, (existing) => [...existing, error]).pipe(Effect.as(true)),
+      });
+      const layerExecutor = Layer.succeed(
+        EffectWorker.OrchestrationEffectExecutorV2,
+        EffectWorker.OrchestrationEffectExecutorV2.of({
+          execute: () =>
+            Ref.update(executionCount, (count) => count + 1).pipe(
+              Effect.as(
+                kind === "steering-ack"
+                  ? {
+                      settle: Ref.update(acknowledgementAttempts, (count) => count + 1).pipe(
+                        Effect.andThen(
+                          new EffectWorker.OrchestrationEffectExecutionError({
+                            effectId,
+                            effectType: "provider-turn.steer",
+                            cause: failureDetail,
+                          }),
+                        ),
+                      ),
+                    }
+                  : undefined,
+              ),
+            ),
+        }),
+      );
+      const layerWorker = EffectWorker.layerWithOptions({ workerId }).pipe(
+        Layer.provide(Layer.merge(layerOutbox, layerExecutor)),
+      );
 
-    const exit = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-      Effect.flatMap((worker) => worker.runOnce),
-      Effect.provide(layerWorker),
-      Effect.exit,
-    );
+      const exit = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
+        Effect.flatMap((worker) => worker.runOnce),
+        Effect.provide(layerWorker),
+        Effect.exit,
+      );
 
-    assert.isTrue(Exit.isFailure(exit));
-    assert.equal(yield* Ref.get(executionCount), 1);
-    assert.equal(yield* Ref.get(retries), 0);
-    const terminalError = (yield* Ref.get(terminalErrors))[0];
-    assert.isDefined(terminalError);
-    assert.include(terminalError, "after execution started");
-    assert.include(terminalError, "simulated success settlement failure");
-  }),
+      assert.isTrue(Exit.isFailure(exit));
+      assert.equal(yield* Ref.get(executionCount), 1);
+      assert.equal(yield* Ref.get(retries), 0);
+      assert.equal(yield* Ref.get(acknowledgementAttempts), kind === "steering-ack" ? 5 : 0);
+      const terminalError = (yield* Ref.get(terminalErrors))[0];
+      assert.isDefined(terminalError);
+      assert.include(terminalError, "after execution started");
+      assert.include(terminalError, failureDetail);
+    }),
 );
 
 it.effect("settles a delegated child once its restart continuation fails for good", () =>

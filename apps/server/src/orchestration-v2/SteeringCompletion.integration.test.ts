@@ -1,4 +1,4 @@
-import { assert, it } from "@effect/vitest";
+import { assert, it, vi } from "@effect/vitest";
 import {
   CommandId,
   MessageId,
@@ -19,11 +19,15 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
@@ -42,6 +46,9 @@ it.effect.each(
       [false, "before dispatch"],
       [true, "after delivery"],
       [false, "after delivery"],
+      [false, "after ACK commit failure"],
+      [true, "after ACK commit failure"],
+      [true, "after notification commit failure"],
       [true, "without native steering"],
       [true, "with interrupting native steering"],
       [true, "settled only"],
@@ -66,6 +73,19 @@ it.effect.each(
       const steerEntered = yield* Deferred.make<void>();
       const rejectSteer = yield* Deferred.make<void>();
       let steerCalls = 0;
+      const acceptedBeforeCompletion =
+        timing === "after delivery" ||
+        timing === "after ACK commit failure" ||
+        timing === "after notification commit failure";
+      const faultCommand =
+        timing === "after ACK commit failure"
+          ? "message.steering.settle"
+          : timing === "after notification commit failure"
+            ? "notification.delivery.accept"
+            : undefined;
+      const commitEntered = yield* Deferred.make<void>();
+      const releaseCommit = yield* Deferred.make<void>();
+      const databaseLayer = SqlitePersistence.layerMemory;
       const capabilities = {
         ...CodexProviderCapabilitiesV2,
         turns: {
@@ -152,7 +172,7 @@ it.effect.each(
                       cause: "activeTurnNotSteerable",
                     });
                   }
-                  if (timing === "after delivery" || timing === "during continuation") return;
+                  if (acceptedBeforeCompletion || timing === "during continuation") return;
                   yield* Deferred.succeed(steerEntered, undefined);
                   yield* Deferred.await(rejectSteer);
                   return yield* new ProviderAdapter.ProviderAdapterSteerRunError({
@@ -386,7 +406,59 @@ it.effect.each(
           );
           return;
         }
-        if (timing === "after delivery") yield* worker.drain();
+        if (acceptedBeforeCompletion) {
+          const sink = yield* EventSink.EventSinkV2;
+          const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+          const commit = sink.commitCommand;
+          let faults = 0;
+          const spy = vi.spyOn(sink, "commitCommand").mockImplementation((input, options) =>
+            input.threadId === threadId && input.commandType === faultCommand && faults++ === 0
+              ? Effect.gen(function* () {
+                  yield* Deferred.succeed(commitEntered, undefined);
+                  yield* Deferred.await(releaseCommit);
+                  return yield* new EventSink.EventSinkWriteError({
+                    eventCount: input.events.length,
+                    commandId: input.commandId,
+                    cause: "injected steering acknowledgement persistence failure",
+                  });
+                })
+              : commit(input, options),
+          );
+          yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+          const delivering = yield* worker.drain().pipe(Effect.forkScoped);
+          const ackCommandId = CommandId.make("steer:steering-delivery-accepted");
+          if (faultCommand !== undefined) {
+            yield* Deferred.await(commitEntered);
+            const pending = yield* orchestrator.getThreadProjection(threadId);
+            assert.equal(steerCalls, 1);
+            assert.equal(started.length, 1);
+            assert.isFalse(pending.turnItems.some((item) => item.type === "error"));
+            assert.equal(
+              pending.turnItems.find((item) =>
+                mailbox
+                  ? item.type === "notification"
+                  : item.type === "user_message" && item.messageId === messageId,
+              )?.status,
+              faultCommand === "message.steering.settle" ? "pending" : "completed",
+            );
+            assert.equal(
+              Option.isSome(yield* receipts.getByCommandId(ackCommandId)),
+              faultCommand === "notification.delivery.accept",
+            );
+            if (mailbox) assert.equal(pending.subagents[0]?.completionDelivery?.state, "claimed");
+            yield* Deferred.succeed(releaseCommit, undefined);
+          }
+          yield* Fiber.join(delivering);
+          if (faultCommand !== undefined) {
+            yield* TestClock.adjust("100 millis");
+            yield* worker.drain();
+            assert.equal(faults, 2);
+            assert.equal(steerCalls, 1);
+            assert.isTrue(Option.isSome(yield* receipts.getByCommandId(ackCommandId)));
+            const accepted = yield* orchestrator.getThreadProjection(threadId);
+            assert.isFalse(accepted.turnItems.some((item) => item.type === "error"));
+          }
+        }
         const delivery =
           timing === "during delivery" ? yield* worker.runOnce.pipe(Effect.forkScoped) : null;
         if (delivery !== null) yield* Deferred.await(steerEntered);
@@ -429,7 +501,7 @@ it.effect.each(
         yield* worker.drain();
         yield* orchestrator.resumeQueuedRuns;
         yield* worker.drain();
-        if (timing === "after delivery") {
+        if (acceptedBeforeCompletion) {
           assert.equal(steerCalls, 1);
           assert.equal(started.length, 1);
           if (!mailbox) {
@@ -561,17 +633,21 @@ it.effect.each(
         }
       }).pipe(
         Effect.provide(
-          ProviderReplayHarness.layerWithRegistry(
-            { name: `steering-completion-${timing}` },
-            ProviderAdapterRegistry.layerSingle(adapter),
-            {
-              runEffectWorker: false,
-              runContinuationWorker: mailbox && timing === "rejected while running",
-              projectServiceLayer: layerForProject(
-                ProjectId.make("project:steering-completion"),
-                cwd,
-              ),
-            },
+          Layer.merge(
+            ProviderReplayHarness.layerWithRegistry(
+              { name: `steering-completion-${timing}` },
+              ProviderAdapterRegistry.layerSingle(adapter),
+              {
+                runEffectWorker: false,
+                databaseLayer,
+                runContinuationWorker: mailbox && timing === "rejected while running",
+                projectServiceLayer: layerForProject(
+                  ProjectId.make("project:steering-completion"),
+                  cwd,
+                ),
+              },
+            ),
+            CommandReceiptStore.layer.pipe(Layer.provide(databaseLayer)),
           ),
         ),
       );

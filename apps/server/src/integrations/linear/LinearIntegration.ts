@@ -259,7 +259,7 @@ const make = Effect.gen(function* () {
       })
       .pipe(Effect.mapError(() => new LinearIntegrationError({ reason: "target_unavailable" })));
     yield* updateDelivery(delivery.id, {
-      outcome: "delivered",
+      outcome: sent.delivery === "failed" ? "failed" : "delivered",
       runId: sent.run.id,
       dispatch: sent.delivery,
     });

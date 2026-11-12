@@ -50,6 +50,7 @@ function fixture(configured = true) {
     archived: false,
     deleted: false,
     failAfterCommit: false,
+    delivery: "steered" as Threads.ThreadManagementSendResult["delivery"],
   };
   const issue = () => ({
     id: upstream.issueId,
@@ -112,7 +113,7 @@ function fixture(configured = true) {
         receipts.add(input.commandId);
         if (target.failAfterCommit)
           return yield* new LinearIntegrationError({ reason: "target_unavailable" });
-        return { run: { id: RunId.make("existing-run") }, delivery: "steered" };
+        return { run: { id: RunId.make("existing-run") }, delivery: target.delivery };
       }),
   } as unknown as Threads.ThreadManagementService["Service"];
   const permissions = new Map<string, number>();
@@ -259,10 +260,11 @@ it.effect(
   },
 );
 
-it.effect(
-  "a signed bound event durably deduplicates delivery IDs and digests and steers once",
-  () => {
+it.effect.each(["accepted", "started", "queued", "steered", "restarted", "failed"] as const)(
+  "a signed bound event durably deduplicates delivery IDs and digests and sends once (%s)",
+  (delivery) => {
     const f = fixture();
+    f.target.delivery = delivery;
     return Effect.gen(function* () {
       const service = yield* LinearIntegration.LinearIntegration;
       yield* connect;
@@ -274,7 +276,9 @@ it.effect(
       assert.equal(f.sends.length, 1);
       assert.equal(f.sends[0]?.mode, "steer");
       assert.equal(f.sends[0]?.threadId, threadId);
-      assert.equal((yield* service.settings).deliveries[0]?.outcome, "delivered");
+      const expectedOutcome = delivery === "failed" ? "failed" : "delivered";
+      assert.equal((yield* service.settings).deliveries[0]?.outcome, expectedOutcome);
+      assert.equal((yield* service.settings).deliveries[0]?.dispatch, delivery);
       assert.equal((yield* service.settings).deliveries[0]?.runId, "existing-run");
       assert.equal(yield* service.receive(request), "duplicate");
       assert.equal(
@@ -292,6 +296,9 @@ it.effect(
       yield* reopened.drain;
       assert.equal(f.sends.length, 1);
       const status = yield* reopened.settings;
+      assert.equal(status.deliveries[0]?.outcome, expectedOutcome);
+      assert.equal(status.deliveries[0]?.dispatch, delivery);
+      assert.equal(status.deliveries[0]?.runId, "existing-run");
       assert.equal(status.bindings[0]?.workspaceId, "workspace-one");
       assert.equal(status.bindings[0]?.teamId, "team-one");
       assert.equal(status.bindings[0]?.linearProjectId, "linear-project-one");

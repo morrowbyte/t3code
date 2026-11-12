@@ -2260,7 +2260,9 @@ export const layer: Layer.Layer<
             })
             .pipe(Effect.mapError(() => liveError("dispatch_conflict")));
         }
-        const updated = yield* threads.getThreadRecords(row.thread_id, ["turnItems"]);
+        const updated = yield* threads.getThreadRecords(ThreadId.make(row.thread_id), [
+          "turnItems",
+        ]);
         const item = updated.turnItems.find(
           (item) => item.type === "user_message" && item.messageId === messageId,
         );
