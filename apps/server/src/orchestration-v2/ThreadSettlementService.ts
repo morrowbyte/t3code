@@ -24,6 +24,7 @@ import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import { ChildProcessSpawner } from "effect/process";
 
 import * as DevRunnerControl from "@t3tools/shared/node/devRunnerControl";
 import * as GitManager from "../git/GitManager.ts";
@@ -300,6 +301,7 @@ export const make = Effect.gen(function* () {
   const pullRequests = yield* PullRequestService.PullRequestService;
   const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
+  const processSpawner = yield* Effect.serviceOption(ChildProcessSpawner.ChildProcessSpawner);
   // A shell merge or close sends no event, and the branch lookup caches an open pull request for
   // a minute, so these threads' next lookup reads the host fresh.
   const shellClosedThreads = new Set<ThreadId>();
@@ -633,7 +635,12 @@ export const make = Effect.gen(function* () {
               current.settledOverride === "active" ||
               current.activeRunId !== null ||
               (current.pendingBackgroundTasks ?? []).some(
-                (task) => !(stoppingRunner && peerId === threadId && task.kind === "command"),
+                (task) =>
+                  !(
+                    stoppingRunner &&
+                    current.settledOverride === "settled" &&
+                    task.kind === "command"
+                  ),
               ) ||
               !["idle", "completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
                 current.status,
@@ -648,11 +655,16 @@ export const make = Effect.gen(function* () {
       if (!(yield* canCleanUp(true))) return;
       const settledAtMs = toMillis(thread.settledAt);
       if (settledAtMs === null || settleActionRunAt.get(threadId) === settledAtMs) return;
-      const runnersStopped = yield* DevRunnerControl.stopDevRunners({
+      const stopRunners = DevRunnerControl.stopDevRunners({
         threadId,
         workspacePath: worktreePath,
         canStop: canCleanUp(true),
       }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+      const runnersStopped = yield* Option.isSome(processSpawner)
+        ? stopRunners.pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, processSpawner.value),
+          )
+        : stopRunners;
       if (!runnersStopped) return;
       // Stop confirmation only covers the captured child; the prune script still checks process refs.
       if (!(yield* canCleanUp())) return;

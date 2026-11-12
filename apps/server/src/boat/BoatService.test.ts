@@ -348,6 +348,10 @@ function setup(
     setOwnerActive: (active: boolean) => {
       ownerActive = active;
     },
+    settleOwner: () => {
+      ownerActive = false;
+      threads.set(threadId, { ...threads.get(threadId), settledOverride: "settled" });
+    },
     setProjectRoot: (root: string) => {
       workspaceRoot = root;
     },
@@ -537,7 +541,7 @@ it.effect.each(["stop", "delete", "lease removed"] as const)(
         assert.equal((yield* boat.read(projectId)).instances[0]?.threadId, ownerThreadId);
       }
       if (end === "lease removed") {
-        test.setOwnerActive(false);
+        test.settleOwner();
         yield* boat.reconcile();
       } else {
         yield* boat.operate({ action: end, projectId, requestId: "private-web" });
@@ -642,7 +646,7 @@ it.effect("shares one authorized SSH identity across private forwards", () => {
       assert.equal(forward[forward.indexOf("-i") + 1], binding.identityFile);
       assert.include(forward, `UserKnownHostsFile=${binding.knownHostsFile}`);
     }
-    test.setOwnerActive(false);
+    test.settleOwner();
     yield* boat.reconcile();
     assert.isTrue(Exit.isFailure(yield* tunnels.openAuthorized(binding, 6082).pipe(Effect.exit)));
     assert.lengthOf(test.privateForwards, 2);
@@ -713,7 +717,7 @@ it.effect("keeps borrowed desktop access alive until its source generation is re
     const next = yield* boat.openDesktopAccess(target, ownerThreadId, desktopDescriptor);
     assert.equal(next.binding.sourceTree, "b".repeat(40));
     assert.notEqual(next.binding.leaseGeneration, access.binding.leaseGeneration);
-    test.setOwnerActive(false);
+    test.settleOwner();
     yield* boat.reconcile();
     yield* next.lease.revoked;
     assert.isTrue(
@@ -753,7 +757,7 @@ it.effect(
         viewerId: "viewer-human",
       });
       yield* viewer.activate;
-      test.setOwnerActive(false);
+      test.settleOwner();
       yield* boat.reconcile();
       yield* access.lease.check;
       assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
@@ -804,7 +808,7 @@ it.effect.each(["passive", "release", "disconnect", "scope"] as const)(
       if (end === "release") yield* viewer.deactivate;
       if (end === "disconnect") yield* viewer.disconnect;
       if (end === "scope") yield* Scope.close(scope, Exit.void);
-      test.setOwnerActive(false);
+      test.settleOwner();
       yield* boat.reconcile();
       assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
       yield* access.lease.revoked;
@@ -855,7 +859,7 @@ it.effect("binds desktop usage to the exact viewer generation and hard Boat dead
     yield* previous.deactivate;
     yield* previous.disconnect;
     assert.isTrue(Exit.isFailure(yield* previous.activate.pipe(Effect.exit)));
-    test.setOwnerActive(false);
+    test.settleOwner();
     yield* TestClock.adjust("59 seconds");
     yield* current.touch;
     yield* boat.reconcile();
@@ -947,7 +951,7 @@ it.effect("authorizes a pinned SSH binding without opening a web forward", () =>
     assert.equal((yield* fs.stat(binding.knownHostsFile)).mode & 0o777, 0o600);
     assert.lengthOf(test.privateForwards, 0);
     assert.lengthOf(test.openedPreviews, 0);
-    test.setOwnerActive(false);
+    test.settleOwner();
     yield* boat.reconcile();
     assert.isTrue(Exit.isFailure(yield* binding.check.pipe(Effect.exit)));
   }).pipe(Effect.scoped, Effect.provide(test.services));
@@ -1005,7 +1009,7 @@ it.effect("cancels an in-flight SSH grant on lease removal without public fallba
         .operate({ action: "prepare", projectId, requestId: "pending" }, ownerThreadId)
         .pipe(Effect.exit, Effect.forkChild);
       yield* Deferred.await(entered);
-      test.setOwnerActive(false);
+      test.settleOwner();
       yield* boat.reconcile();
       assert.isTrue(Exit.isFailure(yield* Fiber.join(pending)));
       assert.lengthOf(test.privateForwards, 0);
@@ -1111,7 +1115,7 @@ it.effect.each(["stop", "delete", "lease removed"] as const)(
       );
       assert.lengthOf(test.deviceOpens, 1);
       if (end === "lease removed") {
-        test.setOwnerActive(false);
+        test.settleOwner();
         yield* boat.reconcile();
       } else {
         yield* boat.operate({ action: end, projectId, requestId: "private-android" });
@@ -1191,7 +1195,7 @@ it.effect("cancels an in-flight private Android open when the lease ends", () =>
       .pipe(Effect.exit, Effect.forkChild);
     yield* Effect.raceFirst(Deferred.await(entered), Fiber.join(opening));
     assert.lengthOf(test.deviceOpens, 1);
-    test.setOwnerActive(false);
+    test.settleOwner();
     yield* boat.reconcile();
     assert.isTrue(Exit.isFailure(yield* Fiber.join(opening)));
     yield* test.deviceReleased;
@@ -1561,7 +1565,7 @@ it.effect(
         yield* TestClock.adjust("31 seconds");
         yield* boat.reconcile();
         assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");
-        test.setOwnerActive(false);
+        test.settleOwner();
         yield* boat.reconcile();
         assert.notInclude(test.calls, "PATCH /sandboxes/bx_23456789");
         assert.include(test.calls, "POST /sandboxes/bx_23456789/stop");
@@ -1830,7 +1834,7 @@ it.effect("shares an owner's VM with its child without replacing the bound sourc
       .operate({ action: "renew", projectId, requestId: "shared-source" }, childThreadId)
       .pipe(Effect.flip);
     assert.equal(renewalDenied.category, "conflict");
-    test.setOwnerActive(false);
+    test.settleOwner();
     yield* boat.reconcile();
     assert.deepEqual((yield* boat.read(projectId)).instances[0]?.leases, [childThreadId]);
     assert.notInclude(test.calls, "POST /sandboxes/bx_23456789/stop");

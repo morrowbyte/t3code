@@ -453,7 +453,7 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
               assert.strictEqual(result._tag, kind === "settlement" ? "Success" : "Failure");
               assert.strictEqual(kills, 1);
             }
-            assert.deepEqual(yield* fs.readDirectory(directory), []);
+            assert.lengthOf(yield* fs.readDirectory(directory), running ? 1 : 0);
           }),
         ),
     );
@@ -580,10 +580,22 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
         readonly ambientBundledDev?: string | undefined;
         readonly built?: boolean;
         readonly host?: string;
+        readonly reuse?: boolean;
+        readonly stopUnconfirmed?: boolean;
       }) =>
         Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const workspacePath = yield* fs.makeTempDirectoryScoped();
+          yield* fs.writeFileString(
+            path.join(workspacePath, ".git"),
+            "gitdir: /repo/.git/worktrees/task\n",
+          );
+          const ready = yield* Deferred.make<void>();
+          const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
           let captured: Record<string, string | undefined> | undefined;
           let vpArgs: ReadonlyArray<string> = [];
+          let vpStarts = 0;
           const tailscaleCalls: Array<ReadonlyArray<string>> = [];
           const spawnerLayer = Layer.succeed(
             ChildProcessSpawner.ChildProcessSpawner,
@@ -594,9 +606,20 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
                 readonly options?: { readonly env?: Record<string, string | undefined> };
               };
               if (spawned.command === "vp") {
+                vpStarts += 1;
                 captured = spawned.options?.env;
                 vpArgs = spawned.args;
-                return Effect.succeed(mockProcess(0));
+                return Effect.succeed(
+                  input.reuse
+                    ? ChildProcessSpawner.makeHandle({
+                        ...mockProcess(0),
+                        isRunning: Effect.succeed(input.stopUnconfirmed ?? false),
+                        exitCode: Deferred.succeed(ready, undefined).pipe(
+                          Effect.andThen(Deferred.await(exited)),
+                        ),
+                      })
+                    : mockProcess(0),
+                );
               }
               tailscaleCalls.push(spawned.args);
               return Effect.succeed(
@@ -623,26 +646,88 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
             }),
           );
 
-          yield* runDevRunnerWithInput({
+          const run = runDevRunnerWithInput({
             ...devServerInput,
             mode: "dev",
-            port: undefined,
+            port: input.reuse ? 13773 : undefined,
             share: true,
             built: input.built ?? false,
             host: input.host,
           }).pipe(
             Effect.provide(Layer.mergeAll(emptyConfigLayer, netServiceLayer, spawnerLayer)),
             Effect.provideService(HostProcess.Platform, "linux"),
-            Effect.provideService(
-              HostProcess.Environment,
-              input.ambientBundledDev === undefined
+            Effect.provideService(HostProcess.Environment, {
+              ...(input.ambientBundledDev === undefined
                 ? {}
-                : { T3CODE_BUNDLED_DEV: input.ambientBundledDev },
-            ),
+                : { T3CODE_BUNDLED_DEV: input.ambientBundledDev }),
+              ...(input.reuse ? { T3CODE_THREAD_ID: "share-owner" } : {}),
+            }),
+            Effect.provideService(HostProcess.WorkingDirectory, workspacePath),
           );
+          if (input.reuse) {
+            const first = yield* run.pipe(Effect.scoped, Effect.exit, Effect.forkChild);
+            yield* Deferred.await(ready);
+            const originalCalls = [...tailscaleCalls];
+            const initialOffCount = originalCalls.filter((args) => args.includes("off")).length;
+            const messages: string[] = [];
+            yield* run.pipe(
+              Effect.scoped,
+              Effect.provide(
+                Logger.layer([
+                  Logger.make((options) => {
+                    messages.push(String(options.message));
+                  }),
+                ]),
+              ),
+            );
+            assert.strictEqual(vpStarts, 1);
+            assert.deepEqual(tailscaleCalls, originalCalls);
+            assert.isTrue(
+              messages.some((message) =>
+                message.includes(`serverPort=${captured?.T3CODE_PORT} webPort=${captured?.PORT}`),
+              ),
+            );
+            assert.isTrue(
+              messages.some((message) => message.includes("https://host.example.ts.net")),
+            );
+            assert.isFalse(messages.some((message) => message.includes("selectedOffset")));
+            if (input.stopUnconfirmed) {
+              assert.isFalse(
+                yield* stopDevRunners({
+                  threadId: "share-owner",
+                  workspacePath,
+                  canStop: Effect.succeed(true),
+                }),
+              );
+              assert.strictEqual((yield* Fiber.join(first))._tag, "Failure");
+              assert.lengthOf(
+                tailscaleCalls.filter((args) => args.includes("off")),
+                initialOffCount,
+              );
+              assert.lengthOf(
+                yield* fs.readDirectory(path.join(workspacePath, ".t3", "dev-runners")),
+                1,
+              );
+            } else {
+              yield* Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0));
+              assert.strictEqual((yield* Fiber.join(first))._tag, "Success");
+              assert.lengthOf(
+                tailscaleCalls.filter((args) => args.includes("off")),
+                initialOffCount + 1,
+              );
+            }
+          } else {
+            yield* run;
+          }
 
           return { env: captured, vpArgs, tailscaleCalls };
         });
+
+      it.effect.each([false, true])(
+        "reuses --built --share and preserves a surviving child mapping: unconfirmed=%s",
+        (stopUnconfirmed) =>
+          Effect.scoped(shareSpawned({ built: true, reuse: true, stopUnconfirmed })),
+      );
 
       it.effect("keeps an explicit T3CODE_BUNDLED_DEV=0 opt-out", () =>
         Effect.gen(function* () {

@@ -1299,6 +1299,7 @@ effectIt.effect.each([
     const check = vi.fn(async () => ({ code: failure.code, message: failure.message }));
     const harness = makeLocalCommandHarness({
       text: "Inspect storage and clean up only this task's disposable output",
+      compute: { boat: computeBoat(), resources: healthyHostResources },
       storageGuard: {
         check,
         checkRunning: async () => null,
