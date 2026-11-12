@@ -1322,7 +1322,7 @@ export const layer: Layer.Layer<
             Effect.ensuring(
               outputLocks.withLock(
                 leaseKey(leaseId, generation),
-                stopReadbackWorkers(leaseId, generation),
+                Effect.suspend(() => stopReadbackWorkers(leaseId, generation)),
               ),
             ),
             Effect.catchCause(() => markUnknown(leaseId, generation).pipe(Effect.ignore)),

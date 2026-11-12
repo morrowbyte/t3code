@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import {
   AuthOrchestrationOperateScope,
   AuthSessionId,
+  MessageId,
   TurnItemId,
   NodeId,
   RunId,
@@ -209,10 +210,12 @@ it.effect.each([false, true])(
       const waitForFinalDelivery = (messageId: string) =>
         new Promise<void>((resolve) => finalDeliveryWaiters.set(messageId, resolve));
       let nativeEventHandled: (() => void) | undefined;
+      let failedRuntimeStarted: (() => void) | undefined;
       let failedRuntimeFinished: (() => void) | undefined;
       const deliveryTracer = Tracer.make({
         span: (options) => {
           const span = new Tracer.NativeSpan(options);
+          if (span.name === "CodexLiveSessionService.stopFailedRuntime") failedRuntimeStarted?.();
           const end = span.end.bind(span);
           span.end = (time, exit) => {
             end(time, exit);
@@ -306,7 +309,7 @@ it.effect.each([false, true])(
           }),
         );
       const readbackSubscriptions = new Map<string, Set<symbol>>();
-      let readbackSubscribed: (() => void) | undefined;
+      let readbackSubscribed: ((count: number) => void) | undefined;
       let plannerCalls = 0;
       let plannerAttempts = 0;
       let plannerFailure: "managed_account_required" | "planner_restriction_failed" | undefined;
@@ -696,7 +699,7 @@ it.effect.each([false, true])(
                       readbackSubscriptions.get(input.threadId) ?? new Set<symbol>();
                     subscriptions.add(subscription);
                     readbackSubscriptions.set(input.threadId, subscriptions);
-                    if (subscriptions.size === 5) readbackSubscribed?.();
+                    readbackSubscribed?.(subscriptions.size);
                   }),
                 ),
                 Stream.ensuring(
@@ -2485,7 +2488,9 @@ it.effect.each([false, true])(
         );
 
         const completedSubscriptions = new Promise<void>((resolve) => {
-          readbackSubscribed = resolve;
+          readbackSubscribed = (count) => {
+            if (count === 5) resolve();
+          };
         });
         yield* invokeWithPlanner(
           "planner-native-2",
@@ -2538,10 +2543,59 @@ it.effect.each([false, true])(
         );
         yield* raceGateRead;
         yield* Effect.promise(() => principalGate.started);
+        const lateSendStarted = yield* Deferred.make<void>();
+        const releaseLateSend = yield* Deferred.make<void>();
+        const subscriptionsBeforeLateSend = readbackSubscriptions.get(threadId)!.size;
+        const lateSubscriptions = new Promise<void>((resolve) => {
+          readbackSubscribed = (count) => {
+            if (count === subscriptionsBeforeLateSend + 5) resolve();
+          };
+        });
+        const beforeLateSend = mainSend;
+        mainSend = () =>
+          Effect.gen(function* () {
+            sends += 1;
+            const queuedRun = {
+              ...durableProjection.runs[0]!,
+              id: RunId.make(`durable-run-${sends}`),
+              ordinal: sends,
+              userMessageId: MessageId.make(`user-durable-run-${sends}`),
+              rootNodeId: null,
+              activeAttemptId: null,
+              status: "queued" as const,
+              startedAt: null,
+              completedAt: null,
+              checkpointId: null,
+            };
+            durableProjection = {
+              ...durableProjection,
+              runs: [...durableProjection.runs, queuedRun],
+            };
+            yield* Deferred.succeed(lateSendStarted, undefined);
+            yield* Deferred.await(releaseLateSend);
+            return { delivery: "queued" as const, run: queuedRun };
+          });
+        const lateSubmit = yield* invokeWithPlanner(
+          "planner-native-2",
+          "call-admitted-before-native-error",
+          "Queue another task before the native connection fails",
+          "planner-turn-admitted-before-native-error",
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(lateSendStarted);
+        const failureStarted = new Promise<void>((resolve) => {
+          failedRuntimeStarted = resolve;
+        });
         yield* Queue.offer(secondNativeEvents, {
           type: "error",
           plannerNativeThreadId: "planner-native-2",
         });
+        yield* Effect.promise(() => failureStarted);
+        failedRuntimeStarted = undefined;
+        yield* Deferred.succeed(releaseLateSend, undefined);
+        yield* Fiber.join(lateSubmit);
+        mainSend = beforeLateSend;
+        yield* Effect.promise(() => lateSubscriptions);
+        readbackSubscribed = undefined;
         yield* waitForEvent(
           (event) =>
             event.type === "status" &&
@@ -2559,7 +2613,7 @@ it.effect.each([false, true])(
         );
         assert.equal(duplicateRaceReceipt, raceReceipt);
         yield* Effect.promise(() => refusalSettled);
-        assert.equal(sends, 6);
+        assert.equal(sends, 7);
         assert.equal(
           appendAttempts,
           attemptsBeforeFinal + 3,
@@ -2585,7 +2639,7 @@ it.effect.each([false, true])(
         assert.equal(
           readbackSubscriptions.get(threadId)?.size ?? 0,
           0,
-          "native failure releases completed and in-flight readback subscriptions without a closed event",
+          "native failure releases completed, in-flight and late-registered readback subscriptions without a closed event",
         );
         assert.isTrue(runtimes.has(runtime.providerSessionId));
 
