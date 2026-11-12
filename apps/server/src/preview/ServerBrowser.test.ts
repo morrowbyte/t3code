@@ -1194,9 +1194,14 @@ it.live("streams to a read-only viewer without allowing takeover, input, or view
   ).pipe(Effect.provide(layer)),
 );
 
-it.live.each([false, true])(
-  "takeover waits for the running agent and revokes snapshot refs before returning control (native=%s)",
-  (native) =>
+it.live.each([
+  { native: false, challengeDuringDrain: false },
+  { native: true, challengeDuringDrain: false },
+  { native: false, challengeDuringDrain: true },
+  { native: true, challengeDuringDrain: true },
+])(
+  "takeover drains the agent and survives challenges (native=$native, duringDrain=$challengeDuringDrain)",
+  ({ native, challengeDuringDrain }) =>
     Effect.scoped(
       Effect.gen(function* () {
         desktopRendersNext = native;
@@ -1258,6 +1263,12 @@ it.live.each([false, true])(
           control = yield* Queue.take(viewer.output);
         }
         expect(control.ready).toBe(false);
+        const challenge = () =>
+          context.page.emit(
+            "framenavigated",
+            makeFrame("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/widget"),
+          );
+        if (challengeDuringDrain) challenge();
         const rejected = yield* broker
           .invoke<void>({ scope, tabId, operation: "evaluate", input: { expression: "racing()" } })
           .pipe(Effect.flip);
@@ -1276,10 +1287,19 @@ it.live.each([false, true])(
         finish.resolve({ result: { value: "finished" } });
         expect(yield* Fiber.join(running)).toBe("finished");
         yield* Fiber.join(takeover);
-        do {
-          control = yield* Queue.take(viewer.output);
-        } while (control._tag !== "control" || control.controller !== "you" || !control.ready);
-        expect(control.ready).toBe(true);
+        const drained = yield* Queue.takeAll(viewer.output);
+        expect(drained.findLast((event) => event._tag === "control")).toMatchObject({
+          controller: "you",
+          ready: true,
+        });
+        if (!challengeDuringDrain) {
+          challenge();
+          const challenged = yield* Queue.takeAll(viewer.output);
+          expect(challenged.findLast((event) => event._tag === "control")).toMatchObject({
+            controller: "you",
+            ready: true,
+          });
+        }
         yield* viewer.input({ type: "releaseControl" });
         const stale = yield* broker
           .invoke<void>({ scope, tabId, operation: "click", input: { locator: `aria-ref=${ref}` } })

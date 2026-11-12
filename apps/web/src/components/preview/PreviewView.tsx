@@ -1160,7 +1160,7 @@ export function PreviewView({
               />
             </div>
           </>
-        ) : runtimeTabId && snapshot && !showEmptyState ? (
+        ) : runtimeTabId && snapshot && (nativeServerTab || !showEmptyState) ? (
           previewBridge ? (
             nativeServerTab ? (
               <ServerBrowserSurface
@@ -1180,12 +1180,12 @@ export function PreviewView({
                   if (!ready) setPickActive(false);
                 }}
                 onPopup={(popupTabId) => showPreviewPopup(threadRef, popupTabId, "panel")}
-                className="absolute inset-0 h-full w-full"
+                className={cn("absolute inset-0 h-full w-full", showEmptyState && "invisible")}
               >
                 {(interactive) => (
                   <BrowserSurfaceSlot
                     tabId={runtimeTabId}
-                    visible={visible && !isUnreachable}
+                    visible={visible && !showEmptyState && !isUnreachable}
                     interactive={interactive}
                     className="absolute inset-0 h-full w-full"
                   />

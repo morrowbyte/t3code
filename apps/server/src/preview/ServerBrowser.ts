@@ -832,7 +832,14 @@ const make = Effect.gen(function* () {
 
   const requireHumanForChallenge = (tab: ServerTab) => {
     if (tab.closing || tab.control.requiresHuman) return;
+    const generation = tab.control.generation;
     tab.control.requireHuman();
+    // Challenges invalidate queued input without undraining an established controller.
+    for (const viewer of tab.viewers) {
+      if (tab.control.controller === viewer.id && viewer.readyGeneration === generation) {
+        viewer.readyGeneration = tab.control.generation;
+      }
+    }
     broadcastControl(tab);
     runFork(
       manager
@@ -3027,9 +3034,26 @@ const make = Effect.gen(function* () {
             if (message.type === "takeControl") {
               viewer.readyGeneration = null;
               const taking = tab.control.take(viewer.id);
-              const generation = tab.control.generation;
+              let generation = tab.control.generation;
               broadcastControl(tab);
-              await taking;
+              try {
+                await taking;
+              } catch (error) {
+                if (
+                  tab.control.controller !== viewer.id ||
+                  !tab.control.requiresHuman ||
+                  tab.control.generation === generation
+                )
+                  throw error;
+              }
+              if (
+                tab.control.controller === viewer.id &&
+                tab.control.requiresHuman &&
+                tab.control.generation !== generation
+              ) {
+                generation = tab.control.generation;
+                await tab.control.take(viewer.id);
+              }
               if (tab.control.controller === viewer.id && tab.control.generation === generation) {
                 viewer.readyGeneration = generation;
               }
