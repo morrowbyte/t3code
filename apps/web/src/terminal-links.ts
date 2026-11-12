@@ -7,6 +7,7 @@ export interface TerminalLinkMatch {
   text: string;
   start: number;
   end: number;
+  isDirectory?: boolean;
 }
 
 export interface TerminalBufferLineLike {
@@ -111,7 +112,15 @@ function collectMatches(
 export function extractTerminalLinks(line: string): TerminalLinkMatch[] {
   const promptPath = POWERSHELL_PROMPT_PATH_PATTERN.exec(line)?.[1];
   const promptMatches: TerminalLinkMatch[] = promptPath
-    ? [{ kind: "path", text: promptPath, start: 3, end: 3 + promptPath.length }]
+    ? [
+        {
+          kind: "path",
+          text: promptPath,
+          start: 3,
+          end: 3 + promptPath.length,
+          isDirectory: true,
+        },
+      ]
     : [];
   const nonPathRanges = Array.from(
     [...line.matchAll(REQUEST_ROUTE_PATTERN), ...line.matchAll(SCHEME_URL_PATTERN)],

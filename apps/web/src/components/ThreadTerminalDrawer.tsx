@@ -569,7 +569,9 @@ function TerminalSessionViewport({
     environmentId,
     serverConfig?.availableEditors ?? [],
   );
-  const openTerminalPath = useEffectEvent((target: string) => openInPreferredEditor(target));
+  const openTerminalPath = useEffectEvent((target: string, isDirectory?: boolean) =>
+    openInPreferredEditor(target, isDirectory ? { isFile: false } : undefined),
+  );
   const openPreview = useAtomCommand(previewEnvironment.open, {
     reportFailure: false,
   });
@@ -717,7 +719,7 @@ function TerminalSessionViewport({
         onResize: (cols, rows) => void resizeTerminal(cols, rows),
         onSelectionChange: () => handleSelectionChange(),
         beforeKey: (event) => handleBeforeKey(event),
-        onLinkActivate: (text, event) => handleLinkActivate(text, event),
+        onLinkActivate: (text, event, isDirectory) => handleLinkActivate(text, event, isDirectory),
         canActivateLink: (text) => canActivateTerminalLink(text),
         // Surface listeners start before WASM loading finishes and the terminal handler exists.
         onContextMenu: (event) => {
@@ -1053,7 +1055,7 @@ function TerminalSessionViewport({
         return false;
       }
 
-      function handleLinkActivate(text: string, event: MouseEvent): void {
+      function handleLinkActivate(text: string, event: MouseEvent, isDirectory?: boolean): void {
         if (!canActivateTerminalLink(text)) return;
         const latestTerminal = terminalRef.current;
         if (!latestTerminal) return;
@@ -1089,7 +1091,7 @@ function TerminalSessionViewport({
         }
         const target = resolvePathLinkTarget(text, cwd);
         void (async () => {
-          const result = await openTerminalPath(target);
+          const result = await openTerminalPath(target, isDirectory);
           if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
             return;
           }

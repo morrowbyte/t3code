@@ -25,7 +25,7 @@ describe("extractTerminalLinks", () => {
     String.raw`C:\dev\folder (draft)\name!`,
   ])("keeps the full PowerShell prompt path %s in one link", (path) => {
     expect(extractTerminalLinks(`PS ${path}> `)).toEqual([
-      { kind: "path", text: path, start: 3, end: 3 + path.length },
+      { kind: "path", text: path, start: 3, end: 3 + path.length, isDirectory: true },
     ]);
   });
 
@@ -34,7 +34,7 @@ describe("extractTerminalLinks", () => {
     const prompt = `PS ${path}> `;
     const url = "https://example.com";
     expect(extractTerminalLinks(`${prompt}echo ${url}`)).toEqual([
-      { kind: "path", text: path, start: 3, end: 3 + path.length },
+      { kind: "path", text: path, start: 3, end: 3 + path.length, isDirectory: true },
       { kind: "url", text: url, start: prompt.length + 5, end: prompt.length + 5 + url.length },
     ]);
   });
