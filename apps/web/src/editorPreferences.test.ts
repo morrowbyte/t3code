@@ -100,6 +100,8 @@ it.each(["local-exec", "remote-links"] as const)(
       expect(state.openUrl).toHaveBeenCalledExactlyOnceWith(
         "vscode://vscode-remote/ssh-remote+secondary-host/work/folder.with.dot",
       );
+      state.setPreference.mockClear();
+      state.getPreference.mockReturnValue("zed");
       state.openUrl.mockResolvedValueOnce(false);
       const refused = await open("/work/readme.md:5:3");
       assert(refused._tag === "Failure");
@@ -109,6 +111,16 @@ it.each(["local-exec", "remote-links"] as const)(
         editor: "vscode",
       });
       expect(state.run).not.toHaveBeenCalled();
+      expect(state.setPreference).not.toHaveBeenCalled();
+      expect(await open("/work/readme.md:5:3")).toMatchObject({
+        _tag: "Success",
+        value: "vscode",
+      });
+      expect(state.setPreference).toHaveBeenCalledExactlyOnceWith(
+        "t3code:last-editor",
+        "vscode",
+        expect.anything(),
+      );
       return;
     }
     expect(state.run).toHaveBeenCalledExactlyOnceWith({

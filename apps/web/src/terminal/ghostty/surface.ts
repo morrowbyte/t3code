@@ -227,6 +227,7 @@ function terminalColumnOffset(row: GhosttySnapshot["rowData"][number], column: n
 export interface TerminalLinkWithRange {
   readonly text: string;
   readonly range: GhosttyCellRange;
+  readonly isDirectory?: boolean;
 }
 
 function isSameTerminalLink(
@@ -292,6 +293,7 @@ export function terminalLinkAtPositionWithRange(
       const endColumn = terminalColumnAtOffset(endRow, match.end - 1 - endSegment.startIndex);
       return {
         text: match.text,
+        ...(match.isDirectory === undefined ? {} : { isDirectory: match.isDirectory }),
         range: {
           start: {
             x: terminalColumnAtOffset(startRow, match.start - startSegment.startIndex),
@@ -523,7 +525,7 @@ export interface GhosttyTerminalSurfaceOptions {
   readonly onResize: (cols: number, rows: number) => void;
   readonly onSelectionChange: () => void;
   readonly beforeKey: (event: KeyboardEvent) => boolean;
-  readonly onLinkActivate: (text: string, event: MouseEvent) => void;
+  readonly onLinkActivate: (text: string, event: MouseEvent, isDirectory?: boolean) => void;
   readonly canActivateLink?: (text: string) => boolean;
   /** The host must prevent the default menu; native Paste cannot reach a canvas terminal. */
   readonly onContextMenu?: (event: MouseEvent) => void;
@@ -1635,7 +1637,7 @@ export class GhosttyTerminalSurface {
         this.sendMouse("release", ghosttyMouseButton(0), event);
       } else {
         const link = this.linkAt(event.clientX, event.clientY);
-        if (link) this.options.onLinkActivate(link.text, event);
+        if (link) this.options.onLinkActivate(link.text, event, link.isDirectory);
         else this.clearSelection();
       }
       return;
@@ -1653,7 +1655,7 @@ export class GhosttyTerminalSurface {
       }
       if (event.type !== "pointercancel") {
         if (link && isSameTerminalLink(link, this.linkAt(event.clientX, event.clientY))) {
-          this.options.onLinkActivate(link.text, event);
+          this.options.onLinkActivate(link.text, event, link.isDirectory);
         }
       }
       return;
