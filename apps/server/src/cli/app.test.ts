@@ -484,7 +484,7 @@ describe("SSH desktop browser helper", () => {
           root,
         ]).pipe(Effect.result, Effect.forkScoped);
         const socket = yield* Effect.promise(() => accepted.promise);
-        const disconnected = NodeEvents.once(socket, "close");
+        const disconnected = NodeEvents.EventEmitter.once(socket, "close");
         expect(JSON.parse(yield* Effect.promise(() => registered.promise))).toEqual({
           type: "desktop-browser-register",
           environmentId: "target-env",

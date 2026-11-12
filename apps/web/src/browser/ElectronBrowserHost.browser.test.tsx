@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   getHostedEnvironmentIds: vi.fn<DesktopPreviewBridge["getHostedEnvironmentIds"]>(),
   onHostedEnvironmentsChange: vi.fn<DesktopPreviewBridge["onHostedEnvironmentsChange"]>(),
   primaryEnvironmentId: null as EnvironmentId | null,
+  discoveryBindings: new Map<symbol, EnvironmentId>(),
 }));
 
 vi.mock(import("~/env"), async (original) => ({ ...(await original()), isElectron: true }));
@@ -65,9 +66,23 @@ vi.mock(import("~/components/preview/usePreviewBridge"), async (original) => ({
 
 vi.mock(import("~/components/preview/usePreviewSession"), async (original) => {
   const actual = await original();
+  const { useEffect } = await import("react");
   return {
     ...actual,
-    useDesktopHostedPreviewSessions: vi.fn(actual.useDesktopHostedPreviewSessions),
+    useDesktopHostedPreviewSessions: vi.fn(function useDesktopHostedPreviewSessions(
+      environmentId: EnvironmentId | null,
+    ) {
+      actual.useDesktopHostedPreviewSessions(environmentId);
+      // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tracks each real discovery hook binding through mount and cleanup
+      useEffect(() => {
+        if (environmentId === null) return;
+        const binding = Symbol(environmentId);
+        mocks.discoveryBindings.set(binding, environmentId);
+        return () => {
+          mocks.discoveryBindings.delete(binding);
+        };
+      }, [environmentId]);
+    }),
   };
 });
 
@@ -100,6 +115,7 @@ const snapshot = (tabId: string, updatedAt: string): PreviewSessionSnapshot => (
 
 function setup(): Disposable {
   vi.mocked(useDesktopHostedPreviewSessions).mockClear();
+  mocks.discoveryBindings.clear();
   mocks.primaryEnvironmentId = null;
   appAtomRegistry.refresh(primaryEnvironmentIdAtom);
   __resetClientSettingsPersistenceForTests();
@@ -203,6 +219,7 @@ describe("ElectronBrowserHost", () => {
     expect(discovery).toHaveBeenCalledWith(primaryEnvironmentId);
     expect(discovery).not.toHaveBeenCalledWith(threadRef.environmentId);
     expect(discovery).not.toHaveBeenCalledWith(otherRemoteEnvironmentId);
+    expect([...mocks.discoveryBindings.values()]).toEqual([primaryEnvironmentId]);
     discovery.mockClear();
 
     const changed = mocks.onHostedEnvironmentsChange.mock.calls[0]![0];
@@ -215,15 +232,16 @@ describe("ElectronBrowserHost", () => {
       ]),
     );
     const expectKnownDiscovery = () => {
-      const ids = discovery.mock.calls.map(([environmentId]) => environmentId);
-      const primaryCalls = ids.filter((id) => id === primaryEnvironmentId).length;
-      expect(primaryCalls).toBeGreaterThan(0);
-      expect(ids.filter((id) => id === threadRef.environmentId)).toHaveLength(primaryCalls);
-      expect(ids.filter((id) => id === otherRemoteEnvironmentId)).toHaveLength(primaryCalls);
-      expect(ids).toHaveLength(primaryCalls * 3);
+      expect(discovery).toHaveBeenCalledWith(primaryEnvironmentId);
+      expect(discovery).toHaveBeenCalledWith(threadRef.environmentId);
+      expect(discovery).toHaveBeenCalledWith(otherRemoteEnvironmentId);
+      expect([...mocks.discoveryBindings.values()].sort()).toEqual(
+        [primaryEnvironmentId, threadRef.environmentId, otherRemoteEnvironmentId].sort(),
+      );
       expect(discovery).not.toHaveBeenCalledWith(EnvironmentId.make("unknown"));
     };
     expectKnownDiscovery();
+    const initialDiscoveryBindings = new Map(mocks.discoveryBindings);
     await vi.waitFor(() => expect(mocks.ensureOffscreenHost).toHaveBeenCalledTimes(2));
     const initialHostConnections = mocks.ensureOffscreenHost.mock.calls.length;
     const nativeRuntimeTabId = mocks.ensureOffscreenHost.mock.calls[0]![0].tabId;
@@ -265,6 +283,7 @@ describe("ElectronBrowserHost", () => {
     expect(rendersServerTabNatively(threadRef.environmentId, null, native)).toBe(true);
     await act(() => changed([threadRef.environmentId]));
     expectKnownDiscovery();
+    expect(mocks.discoveryBindings).toEqual(initialDiscoveryBindings);
     expect(screen.container.querySelector("webview")).toBe(legacy);
     expect(mocks.ensureOffscreenHost).toHaveBeenCalledTimes(initialHostConnections);
     expect(mocks.createTab).toHaveBeenCalledTimes(3);

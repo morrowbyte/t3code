@@ -80,7 +80,8 @@ interface TargetConnection {
   readonly token: symbol;
   readonly epoch: string;
   readonly proxyUrl: string | undefined;
-  readonly close: (announce?: boolean) => void;
+  readonly close: (announce?: boolean) => Promise<void>;
+  readonly networkSessions: Set<Electron.Session>;
   readonly agentTurns: Set<string>;
 }
 
@@ -169,8 +170,15 @@ export class DesktopBrowserHost extends Context.Service<
   DesktopBrowserHost,
   {
     readonly events: Stream.Stream<Uint8Array>;
-    readonly createConnection: (targetEnvironmentId?: string, proxyUrl?: string) => DesktopBrowserConnection;
-    readonly configureTargetSession: (environmentId: string | undefined, session: Electron.Session, required?: boolean) => Promise<void>;
+    readonly createConnection: (
+      targetEnvironmentId?: string,
+      proxyUrl?: string,
+    ) => DesktopBrowserConnection;
+    readonly configureTargetSession: (
+      environmentId: string | undefined,
+      session: Electron.Session,
+      required?: boolean,
+    ) => Promise<void>;
     readonly hostedEnvironmentIds: () => ReadonlyArray<string>;
     readonly hostedEnvironmentsChanged: Stream.Stream<ReadonlyArray<string>>;
     /** One line from the backend's browser control fd. */
@@ -233,23 +241,52 @@ export const make = Effect.gen(function* () {
     [...connections.keys()].filter((id): id is string => id !== undefined);
   const announceEnvironments = () =>
     runFork(PubSub.publish(hostedEnvironmentsChanged, hostedEnvironmentIds()));
-  const networkSessions = new WeakMap<Electron.Session, { connection: TargetConnection; proxyUrl: string; ready: Promise<void> }>();
-  const configureTargetSession = (environmentId: string | undefined, session: Electron.Session, required = false): Promise<void> => {
+  const networkSessions = new WeakMap<
+    Electron.Session,
+    { connection: TargetConnection; proxyUrl: string; ready: Promise<void>; allowed: boolean }
+  >();
+  const networkGuards = new WeakSet<Electron.Session>();
+  const configureTargetSession = (
+    environmentId: string | undefined,
+    session: Electron.Session,
+    required = false,
+  ): Promise<void> => {
     const connection = connections.get(environmentId);
-    if (!connection?.proxyUrl) return required
-      ? Promise.reject(new Error("The remote browser network is disconnected."))
-      : Promise.resolve();
+    if (!connection?.proxyUrl)
+      return required
+        ? Promise.reject(new Error("The remote browser network is disconnected."))
+        : Promise.resolve();
     const proxyUrl = connection.proxyUrl;
     const previous = networkSessions.get(session);
-    if (previous?.connection === connection && previous.proxyUrl === proxyUrl) return previous.ready;
+    if (previous?.connection === connection && previous.proxyUrl === proxyUrl)
+      return previous.ready;
+    if (!networkGuards.has(session)) {
+      session.webRequest.onBeforeRequest({ urls: ["<all_urls>"] }, (_request, callback) => {
+        const current = networkSessions.get(session);
+        callback({
+          cancel: !current?.allowed || connections.get(current.connection.environmentId) !== current.connection,
+        });
+      });
+      networkGuards.add(session);
+    }
+    if (previous) previous.allowed = false;
+    connection.networkSessions.add(session);
     const ready = (previous?.ready.catch(() => undefined) ?? Promise.resolve()).then(async () => {
-      await session.setProxy({ mode: "fixed_servers", proxyRules: proxyUrl, proxyBypassRules: "<-loopback>" });
+      await session.setProxy({
+        mode: "fixed_servers",
+        proxyRules: proxyUrl,
+        proxyBypassRules: "<-loopback>",
+      });
       await session.closeAllConnections();
-      if (connections.get(environmentId) !== connection) throw new Error("The browser network target changed.");
+      if (connections.get(environmentId) !== connection)
+        throw new Error("The browser network target changed.");
+      current.allowed = true;
     });
-    const current = { connection, proxyUrl, ready };
+    const current = { connection, proxyUrl, ready, allowed: false };
     networkSessions.set(session, current);
-    void ready.catch(() => { if (networkSessions.get(session) === current) networkSessions.delete(session); });
+    void ready.catch(() => {
+      if (networkSessions.get(session) === current) networkSessions.delete(session);
+    });
     return ready;
   };
   const privateContents = new WeakSet<Electron.WebContents>();
@@ -996,10 +1033,24 @@ export const make = Effect.gen(function* () {
     return tab !== undefined && performance.now() - tab.agentInputAt > AGENT_DOWNLOAD_WINDOW_MS;
   };
 
-  const announceTab = Effect.fn("DesktopBrowserHost.announceTab")(function* (tab: AttachedTab, connection: TargetConnection) {
-    if (connections.get(connection.environmentId) !== connection || tabs.get(keyOf(tab.key)) !== tab) return;
-    if (connection.proxyUrl) yield* Effect.promise(() => configureTargetSession(connection.environmentId, tab.debuggee.webContents.session));
-    if (connections.get(connection.environmentId) !== connection || tabs.get(keyOf(tab.key)) !== tab) return;
+  const announceTab = Effect.fn("DesktopBrowserHost.announceTab")(function* (
+    tab: AttachedTab,
+    connection: TargetConnection,
+  ) {
+    if (
+      connections.get(connection.environmentId) !== connection ||
+      tabs.get(keyOf(tab.key)) !== tab
+    )
+      return;
+    if (connection.proxyUrl)
+      yield* Effect.promise(() =>
+        configureTargetSession(connection.environmentId, tab.debuggee.webContents.session),
+      );
+    if (
+      connections.get(connection.environmentId) !== connection ||
+      tabs.get(keyOf(tab.key)) !== tab
+    )
+      return;
     invalidate(tab);
     tab.attachment = { channelEpoch: connection.epoch, attachmentId: NodeCrypto.randomUUID() };
     tab.cancelled.clear();
@@ -1008,30 +1059,49 @@ export const make = Effect.gen(function* () {
       event: { type: "attached", ...wireKey(tab.key), privateEntry: tab.attachment },
     });
   });
-  const announceAll = (connection: TargetConnection) => Effect.suspend(() => Effect.forEach(
-    [...tabs.values()].filter((tab) => tab.key.environmentId === connection.environmentId),
-    (tab) => announceTab(tab, connection),
-    { discard: true },
-  ));
+  const announceAll = (connection: TargetConnection) =>
+    Effect.suspend(() =>
+      Effect.forEach(
+        [...tabs.values()].filter((tab) => tab.key.environmentId === connection.environmentId),
+        (tab) => announceTab(tab, connection),
+        { discard: true },
+      ),
+    );
 
-  const createConnection = (targetEnvironmentId?: string, proxyUrl?: string): DesktopBrowserConnection => {
+  const createConnection = (
+    targetEnvironmentId?: string,
+    proxyUrl?: string,
+  ): DesktopBrowserConnection => {
     const token = Symbol();
     const epoch = NodeCrypto.randomUUID();
     const stopped = Promise.withResolvers<void>();
     let closed = false;
     let subscribed = false;
+    let closing: Promise<void> | undefined;
     const close = (announce = true) => {
-      if (closed) return;
+      if (closed) return closing ?? Promise.resolve();
       closed = true;
       stopped.resolve();
-      if (connections.get(targetEnvironmentId) !== connection) return;
-      connections.delete(targetEnvironmentId);
-      if (announce) announceEnvironments();
-      for (const tab of tabs.values()) {
-        if (tab.key.environmentId !== targetEnvironmentId) continue;
-        invalidate(tab);
-        tab.attachment = null;
+      const drains: Promise<void>[] = [];
+      for (const session of connection.networkSessions) {
+        const current = networkSessions.get(session);
+        if (current?.connection !== connection) continue;
+        current.allowed = false;
+        current.ready = current.ready.catch(() => undefined).then(() => session.closeAllConnections());
+        drains.push(current.ready);
       }
+      connection.networkSessions.clear();
+      if (connections.get(targetEnvironmentId) === connection) {
+        connections.delete(targetEnvironmentId);
+        if (announce) announceEnvironments();
+        for (const tab of tabs.values()) {
+          if (tab.key.environmentId !== targetEnvironmentId) continue;
+          invalidate(tab);
+          tab.attachment = null;
+        }
+      }
+      closing = Promise.all(drains).then(() => undefined);
+      return closing;
     };
     const connection: TargetConnection = {
       environmentId: targetEnvironmentId,
@@ -1039,10 +1109,11 @@ export const make = Effect.gen(function* () {
       token,
       epoch,
       close,
+      networkSessions: new Set(),
       agentTurns: new Set(),
     };
     return {
-      closed: Effect.sync(close),
+      closed: Effect.promise(() => close()),
       handleCommandLine: (line) =>
         Effect.suspend(() =>
           !closed && connections.get(targetEnvironmentId) === connection
@@ -1052,7 +1123,7 @@ export const make = Effect.gen(function* () {
       dispatchCommandLine: (line) =>
         Effect.suspend(() => {
           if (closed || connections.get(targetEnvironmentId) !== connection)
-            return Effect.void;
+            return Effect.sync(() => undefined);
           return dispatchCommandLine(line, connection).pipe(
             Effect.map((completion) => {
               if (completion) void completion.settled.catch(close);
@@ -1064,9 +1135,10 @@ export const make = Effect.gen(function* () {
         Effect.gen(function* () {
           if (closed || subscribed) return Stream.empty;
           subscribed = true;
-          connections.get(targetEnvironmentId)?.close(false);
+          const previous = connections.get(targetEnvironmentId);
+          if (previous) yield* Effect.promise(() => previous.close(false));
           connections.set(targetEnvironmentId, connection);
-          yield* Effect.addFinalizer(() => Effect.sync(close));
+          yield* Effect.addFinalizer(() => Effect.promise(() => close()));
           const subscription = yield* PubSub.subscribe(outbox);
           yield* announceAll(connection);
           announceEnvironments();

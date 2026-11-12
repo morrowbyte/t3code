@@ -575,8 +575,22 @@ describe("DesktopBrowserHost", () => {
       const debuggee = makeDebuggee();
       const entered = Promise.withResolvers<void>();
       const applied = Promise.withResolvers<void>();
+      let beforeRequest: ((callback: (result: { cancel: boolean }) => void) => void) | undefined;
+      const requestBlocked = () => {
+        let cancelled = false;
+        beforeRequest?.((result) => { cancelled = result.cancel; });
+        return cancelled;
+      };
       const session = {
-        setProxy: vi.fn(async () => { entered.resolve(); await applied.promise; }),
+        webRequest: {
+          onBeforeRequest: vi.fn((_filter: unknown, listener: (_request: unknown, callback: (result: { cancel: boolean }) => void) => void) => {
+            beforeRequest = (callback) => listener({}, callback);
+          }),
+        },
+        setProxy: vi.fn(async () => {
+          entered.resolve();
+          await applied.promise;
+        }),
         closeAllConnections: vi.fn(async () => {}),
       };
       Object.defineProperty(debuggee.tab.webContents, "session", { value: session });
@@ -585,33 +599,69 @@ describe("DesktopBrowserHost", () => {
       const connection = host.createConnection(targetKey.environmentId, "socks5://127.0.0.1:39001");
       const messages = yield* Queue.unbounded<DesktopBrowserEvent>();
       yield* connection.events.pipe(
-        Stream.runForEach((line) => Queue.offer(messages, decodeEvent(new TextDecoder().decode(line)))),
+        Stream.runForEach((line) =>
+          Queue.offer(messages, decodeEvent(new TextDecoder().decode(line))),
+        ),
         Effect.forkScoped,
       );
       yield* Effect.promise(() => entered.promise);
+      expect(requestBlocked()).toBe(true);
       expect(yield* Queue.size(messages)).toBe(0);
       applied.resolve();
       expect(yield* Queue.take(messages)).toMatchObject({ type: "attached", ...key });
       expect(session.setProxy).toHaveBeenCalledWith({
-        mode: "fixed_servers", proxyRules: "socks5://127.0.0.1:39001", proxyBypassRules: "<-loopback>",
+        mode: "fixed_servers",
+        proxyRules: "socks5://127.0.0.1:39001",
+        proxyBypassRules: "<-loopback>",
       });
-      yield* Effect.promise(() => host.configureTargetSession(targetKey.environmentId, debuggee.tab.webContents.session));
+      yield* Effect.promise(() =>
+        host.configureTargetSession(targetKey.environmentId, debuggee.tab.webContents.session),
+      );
       expect(session.closeAllConnections).toHaveBeenCalledTimes(1);
       expect(session.setProxy).toHaveBeenCalledTimes(1);
+      expect(requestBlocked()).toBe(false);
       yield* connection.closed;
-      yield* Effect.promise(() => expect(
-        host.configureTargetSession(targetKey.environmentId, debuggee.tab.webContents.session, true),
-      ).rejects.toThrow("The remote browser network is disconnected."));
-      const replacement = host.createConnection(targetKey.environmentId, "socks5://127.0.0.1:39001");
+      expect(requestBlocked()).toBe(true);
+      expect(session.closeAllConnections).toHaveBeenCalledTimes(2);
+      yield* Effect.promise(() =>
+        expect(
+          host.configureTargetSession(
+            targetKey.environmentId,
+            debuggee.tab.webContents.session,
+            true,
+          ),
+        ).rejects.toThrow("The remote browser network is disconnected."),
+      );
+      const replacement = host.createConnection(
+        targetKey.environmentId,
+        "socks5://127.0.0.1:39001",
+      );
+      const replacementEntered = Promise.withResolvers<void>();
+      const replacementApplied = Promise.withResolvers<void>();
+      session.setProxy.mockImplementationOnce(async () => {
+        replacementEntered.resolve();
+        await replacementApplied.promise;
+      });
       yield* replacement.events.pipe(
-        Stream.runForEach((line) => Queue.offer(messages, decodeEvent(new TextDecoder().decode(line)))),
+        Stream.runForEach((line) =>
+          Queue.offer(messages, decodeEvent(new TextDecoder().decode(line))),
+        ),
         Effect.forkScoped,
       );
+      yield* Effect.promise(() => replacementEntered.promise);
+      expect(requestBlocked()).toBe(true);
+      expect(yield* Queue.size(messages)).toBe(0);
+      replacementApplied.resolve();
       expect(yield* Queue.take(messages)).toMatchObject({ type: "attached", ...key });
       expect(session.setProxy).toHaveBeenLastCalledWith({
-        mode: "fixed_servers", proxyRules: "socks5://127.0.0.1:39001", proxyBypassRules: "<-loopback>",
+        mode: "fixed_servers",
+        proxyRules: "socks5://127.0.0.1:39001",
+        proxyBypassRules: "<-loopback>",
       });
-      expect(session.closeAllConnections).toHaveBeenCalledTimes(2);
+      expect(session.closeAllConnections).toHaveBeenCalledTimes(3);
+      expect(requestBlocked()).toBe(false);
+      yield* connection.closed;
+      expect(requestBlocked()).toBe(false);
       expect(host.canRequestPrivateEntry(debuggee.tab.webContents)).toBe(true);
     }).pipe(Effect.scoped),
   );

@@ -469,6 +469,8 @@ describe("ssh tunnel scripts", () => {
         const receivedReady = yield* Deferred.make<void>();
         const sentEvent = yield* Deferred.make<void>();
         const endEvents = yield* Deferred.make<void>();
+        const helperShutdownStarted = yield* Deferred.make<void>();
+        const finishHelperShutdown = yield* Deferred.make<void>();
         let helperKills = 0;
         let tunnelKills = 0;
         let helperSpawns = 0;
@@ -487,8 +489,14 @@ describe("ssh tunnel scripts", () => {
             if (args.some((arg) => arg.includes("__ssh-helper desktop-browser"))) {
               helperSpawns += 1;
               helperArgs = args;
+              const helper = makeRunningProcess(() => helperKills++);
               return {
-                ...makeRunningProcess(() => helperKills++),
+                ...helper,
+                kill: (options?: ChildProcess.KillOptions) =>
+                  Deferred.succeed(helperShutdownStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(finishHelperShutdown)),
+                    Effect.andThen(helper.kill(options)),
+                  ),
                 stdout: Stream.concat(Stream.make(ready), Stream.never),
                 stdin: Sink.forEach((chunk: Uint8Array) => {
                   assert.deepEqual(chunk, event);
@@ -529,10 +537,23 @@ describe("ssh tunnel scripts", () => {
           );
           yield* Deferred.await(receivedReady);
           yield* Deferred.await(sentEvent);
-          if (owner === "caller") yield* Scope.close(callerScope, Exit.void);
-          else if (owner === "caller EOF") yield* Deferred.succeed(endEvents, undefined);
-          else yield* manager.disconnectEnvironment(target);
-          assert.isTrue(Result.isFailure(yield* Effect.result(transport.closed)));
+          const closed = yield* Effect.forkChild(transport.closed);
+          const closing = yield* Effect.forkChild(
+            owner === "caller"
+              ? Scope.close(callerScope, Exit.void)
+              : owner === "caller EOF"
+                ? Deferred.succeed(endEvents, undefined).pipe(Effect.asVoid)
+                : manager.disconnectEnvironment(target),
+          );
+          yield* Deferred.await(helperShutdownStarted);
+          yield* TestClock.adjust(Duration.zero);
+          const closedBeforeShutdown = closed.pollUnsafe();
+          const commandsBeforeShutdown = reading.pollUnsafe();
+          yield* Deferred.succeed(finishHelperShutdown, undefined);
+          yield* Fiber.join(closing);
+          assert.isUndefined(closedBeforeShutdown);
+          assert.isUndefined(commandsBeforeShutdown);
+          assert.isTrue(Result.isFailure(yield* Effect.result(Fiber.join(closed))));
           assert.isTrue(Result.isFailure(yield* Effect.result(Fiber.join(reading))));
           assert.equal(helperKills, 1);
           assert.equal(tunnelKills, owner === "tunnel" ? 1 : 0);
@@ -563,7 +584,11 @@ describe("ssh tunnel scripts", () => {
           assert.isTrue(Result.isFailure(replay));
           if (Result.isFailure(replay))
             assert.include(replay.failure.message, "cannot be replayed");
-        }).pipe(Effect.provide(layer), Effect.scoped);
+        }).pipe(
+          Effect.ensuring(Deferred.succeed(finishHelperShutdown, undefined)),
+          Effect.provide(layer),
+          Effect.scoped,
+        );
       }),
   );
 

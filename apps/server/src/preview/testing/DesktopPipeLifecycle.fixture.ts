@@ -4,7 +4,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   DESKTOP_BROWSER_REGISTRATION_FILE,
+  DesktopBrowserEvent,
   DesktopBrowserReady,
+  DesktopBrowserRegistration,
   DesktopBrowserRegistrationDescriptor,
   EnvironmentId,
 } from "@t3tools/contracts";
@@ -30,6 +32,8 @@ import * as DesktopBrowserChannel from "../DesktopBrowserChannel.ts";
 
 const key = { threadId: "thread-1", tabId: "tab-1" };
 const remote = { threadId: "remote-thread", tabId: "remote-tab" };
+const encodeRegistration = Schema.encodeEffect(Schema.fromJsonString(DesktopBrowserRegistration));
+const encodeEvent = Schema.encodeEffect(Schema.fromJsonString(DesktopBrowserEvent));
 
 Effect.gen(function* () {
   const configContext = yield* Layer.build(
@@ -96,14 +100,13 @@ Effect.gen(function* () {
         Stream.rechunk(1),
         Stream.toPull,
       );
-      yield* writer.write(
-        `${JSON.stringify({
-          type: "desktop-browser-register",
-          environmentId: descriptor.environmentId,
-          processEpoch: descriptor.processEpoch,
-          token: descriptor.token,
-        })}\n`,
-      );
+      const registration = yield* encodeRegistration({
+        type: "desktop-browser-register",
+        environmentId: descriptor.environmentId,
+        processEpoch: descriptor.processEpoch,
+        token: descriptor.token,
+      });
+      yield* writer.write(`${registration}\n`);
       const [ready] = yield* incoming;
       if (
         !Schema.is(DesktopBrowserReady)(ready) ||
@@ -112,7 +115,8 @@ Effect.gen(function* () {
       ) {
         return yield* Effect.die("OS registration did not acknowledge the target.");
       }
-      yield* writer.write(`${JSON.stringify({ type: "attached", ...remote })}\n`);
+      const attached = yield* encodeEvent({ type: "attached", ...remote });
+      yield* writer.write(`${attached}\n`);
       if (
         !(yield* browser.awaitAttached(remote, "5 seconds")) ||
         !(yield* browser.isAttached(key))

@@ -1804,61 +1804,61 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
             operation: Effect.fn("ssh/tunnel.openDesktopBrowser.authenticate")(function* (
               authOptions: SshAuth.SshAuthOptions,
             ) {
-                const env = yield* SshAuth.buildSshChildEnvironment({
-                  ...(authOptions.authSecret === undefined
-                    ? {}
-                    : { authSecret: authOptions.authSecret }),
-                  ...(authOptions.interactiveAuth === undefined
-                    ? {}
-                    : { interactiveAuth: authOptions.interactiveAuth }),
-                }).pipe(
-                  Effect.mapError(() => failure("Failed to prepare SSH browser authentication.")),
+              const env = yield* SshAuth.buildSshChildEnvironment({
+                ...(authOptions.authSecret === undefined
+                  ? {}
+                  : { authSecret: authOptions.authSecret }),
+                ...(authOptions.interactiveAuth === undefined
+                  ? {}
+                  : { interactiveAuth: authOptions.interactiveAuth }),
+              }).pipe(
+                Effect.mapError(() => failure("Failed to prepare SSH browser authentication.")),
+              );
+              return yield* spawner
+                .spawn(
+                  ChildProcess.make(
+                    sshCommand,
+                    [
+                      ...baseSshArgs(entry.target, { batchMode: authOptions.batchMode ?? "no" }),
+                      "-T",
+                      "-o",
+                      "ExitOnForwardFailure=yes",
+                      "-o",
+                      "ControlMaster=no",
+                      "-o",
+                      "ControlPath=none",
+                      "-o",
+                      "ControlPersist=no",
+                      "-o",
+                      "ServerAliveInterval=15",
+                      "-o",
+                      "ServerAliveCountMax=3",
+                      "-D",
+                      `127.0.0.1:${proxyPort}`,
+                      "--",
+                      hostSpec,
+                      `exec "$HOME"/${shellSingleQuote(`.t3/ssh-launch/${stateKey}/run-t3.sh`)} __ssh-helper desktop-browser ${shellSingleQuote(environmentId)}`,
+                    ],
+                    { env, extendEnv: true, stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+                  ),
+                )
+                .pipe(
+                  Effect.provideService(Scope.Scope, browserScope),
+                  Effect.mapError(() => failure("Failed to spawn SSH desktop browser helper.")),
                 );
-                return yield* spawner
-                  .spawn(
-                    ChildProcess.make(
-                      sshCommand,
-                      [
-                        ...baseSshArgs(entry.target, { batchMode: authOptions.batchMode ?? "no" }),
-                        "-T",
-                        "-o",
-                        "ExitOnForwardFailure=yes",
-                        "-o",
-                        "ControlMaster=no",
-                        "-o",
-                        "ControlPath=none",
-                        "-o",
-                        "ControlPersist=no",
-                        "-o",
-                        "ServerAliveInterval=15",
-                        "-o",
-                        "ServerAliveCountMax=3",
-                        "-D",
-                        `127.0.0.1:${proxyPort}`,
-                        "--",
-                        hostSpec,
-                        `exec "$HOME"/${shellSingleQuote(`.t3/ssh-launch/${stateKey}/run-t3.sh`)} __ssh-helper desktop-browser ${shellSingleQuote(environmentId)}`,
-                      ],
-                      { env, extendEnv: true, stdin: "pipe", stdout: "pipe", stderr: "pipe" },
-                    ),
-                  )
-                  .pipe(
-                    Effect.provideService(Scope.Scope, browserScope),
-                    Effect.mapError(() => failure("Failed to spawn SSH desktop browser helper.")),
-                  );
             }),
           });
           let stopping = false;
           const failTransport = Effect.fn("ssh/tunnel.openDesktopBrowser.fail")(function* (
             error: SshCommandError,
           ) {
-            if (stopping) return;
+            if (stopping) return yield* Deferred.await(completed).pipe(Effect.ignore);
             stopping = true;
-            yield* Deferred.fail(completed, error);
-            yield* Deferred.fail(aborted, error);
             yield* child
               .kill({ killSignal: "SIGTERM", forceKillAfter: TUNNEL_SHUTDOWN_TIMEOUT_MS })
               .pipe(Effect.ignore);
+            yield* Deferred.fail(completed, error);
+            yield* Deferred.fail(aborted, error);
           }, Effect.uninterruptible);
           yield* Scope.addFinalizer(
             browserScope,
@@ -1882,7 +1882,9 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
             Effect.flatMap((exitCode) =>
               Number(exitCode) === 0
                 ? Fiber.join(stderrDrain).pipe(
-                    Effect.andThen(Deferred.succeed(completed, undefined)),
+                    Effect.andThen(() =>
+                      stopping ? Effect.void : Deferred.succeed(completed, undefined),
+                    ),
                   )
                 : failTransport(
                     failure("SSH desktop browser helper exited unsuccessfully.", Number(exitCode)),

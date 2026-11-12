@@ -165,7 +165,7 @@ const connectDesktopBrowser = Effect.fn("sshHelper.connectDesktopBrowser")(
             (NodeFS.constants.O_NOFOLLOW ?? 0) |
             (NodeFS.constants.O_NONBLOCK ?? 0),
         );
-        let descriptor: typeof DesktopBrowserRegistrationDescriptor.Type;
+        let descriptor: DesktopBrowserRegistrationDescriptor;
         try {
           const stat = NodeFS.fstatSync(fd);
           if (

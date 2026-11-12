@@ -154,7 +154,7 @@ const makeTarget = Effect.fn("DesktopBrowserChannel.test.makeTarget")(function* 
 });
 
 const makeLocalPeer = Effect.fn("DesktopBrowserChannel.test.makeLocalPeer")(function* (
-  descriptor: typeof DesktopBrowserRegistrationDescriptor.Type,
+  descriptor: DesktopBrowserRegistrationDescriptor,
 ) {
   const peerScope = yield* Scope.make();
   yield* Effect.addFinalizer(() => Scope.close(peerScope, Exit.void));
@@ -176,7 +176,7 @@ const makeLocalPeer = Effect.fn("DesktopBrowserChannel.test.makeLocalPeer")(func
   }).pipe(Scope.provide(peerScope));
 });
 
-const registration = (descriptor: typeof DesktopBrowserRegistrationDescriptor.Type) => ({
+const registration = (descriptor: DesktopBrowserRegistrationDescriptor) => ({
   type: "desktop-browser-register",
   environmentId: descriptor.environmentId,
   processEpoch: descriptor.processEpoch,
@@ -313,9 +313,7 @@ effectIt.live(
         expect(yield* channel.isAttached(privateTarget)).toBe(false);
         expect(yield* channel.isCurrentPrivateEntryAttachment(privateTarget)).toBe(false);
         expect(yield* Queue.clear(requested)).toEqual([]);
-        expect(yield* relayReader.pull.pipe(Effect.exit).pipe(Effect.map(Exit.isFailure))).toBe(
-          true,
-        );
+        expect(yield* relayReader.pull.pipe(Effect.exit, Effect.map(Exit.isFailure))).toBe(true);
         expect(yield* channel.isAttached(other)).toBe(true);
         expect(channel.available).toBe(true);
         const replacement = {
@@ -408,7 +406,7 @@ effectIt.live.each(["environmentId", "processEpoch", "token", "oversize", "event
             field === "event-first" ? attach : { ...registration(descriptor), [field]: "wrong" },
           );
         }
-        expect(yield* peer.next.pipe(Effect.exit).pipe(Effect.map(Exit.isFailure))).toBe(true);
+        expect(yield* peer.next.pipe(Effect.exit, Effect.map(Exit.isFailure))).toBe(true);
         expect(channel.available).toBe(false);
         expect(yield* channel.isAttached(privateTarget)).toBe(false);
       }).pipe(Effect.provide(NodeServices.layer)),

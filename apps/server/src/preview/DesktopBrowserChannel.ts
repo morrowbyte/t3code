@@ -5,6 +5,7 @@ import { resolveDesktopAppControlAddress } from "@t3tools/shared/desktopAppContr
 import {
   DesktopBrowserCommand,
   DesktopBrowserEvent,
+  DesktopBrowserReady,
   DESKTOP_BROWSER_REGISTRATION_FILE,
   DESKTOP_BROWSER_REGISTRATION_MAX_BYTES,
   DesktopBrowserRegistration,
@@ -40,6 +41,10 @@ import { writeAllToFileDescriptor } from "../resourceTelemetry/DesktopTelemetryR
 
 const decodeEvent = Schema.decodeUnknownEffect(DesktopBrowserEvent);
 const encodeCommand = Schema.encodeEffect(Schema.fromJsonString(DesktopBrowserCommand));
+const encodeReady = Schema.encodeEffect(Schema.fromJsonString(DesktopBrowserReady));
+const encodeDescriptor = Schema.encodeEffect(
+  Schema.fromJsonString(DesktopBrowserRegistrationDescriptor),
+);
 const decodeRegistration = Schema.decodeUnknownEffect(
   Schema.fromJsonString(DesktopBrowserRegistration),
 );
@@ -283,8 +288,8 @@ const make = Effect.gen(function* () {
     }
   }, attachmentLock.withPermits(1));
 
-  const makeConnection = Effect.fn("DesktopBrowserChannel.makeConnection")(function* (
-    write: (line: string) => Effect.Effect<void, unknown>,
+  const makeConnection = Effect.fn("DesktopBrowserChannel.makeConnection")(function* <E>(
+    write: (line: string) => Effect.Effect<void, E>,
   ) {
     const writeLock = yield* Semaphore.make(1);
     const connection: DesktopConnection = {
@@ -315,7 +320,7 @@ const make = Effect.gen(function* () {
   // CDP frames share the transport span rather than creating one span per message.
   const receive = Effect.fnUntraced(function* (
     connection: DesktopConnection,
-    event: typeof DesktopBrowserEvent.Type,
+    event: DesktopBrowserEvent,
   ) {
     if (!connection.live) return;
     const key = { threadId: event.threadId, tabId: event.tabId };
@@ -431,7 +436,7 @@ const make = Effect.gen(function* () {
     }
     const server = yield* NodeSocketServer.make({ path: address.address });
     if (address.directory) yield* fs.chmod(address.address, 0o600);
-    const descriptor: typeof DesktopBrowserRegistrationDescriptor.Type = {
+    const descriptor: DesktopBrowserRegistrationDescriptor = {
       endpoint: address.address,
       token,
       environmentId,
@@ -439,8 +444,9 @@ const make = Effect.gen(function* () {
       processId: process.pid,
     };
     const temporaryPath = path.join(config.stateDir, `.desktop-browser-${processEpoch}.json`);
+    const encodedDescriptor = yield* encodeDescriptor(descriptor);
     yield* fs
-      .writeFileString(temporaryPath, `${JSON.stringify(descriptor)}\n`, {
+      .writeFileString(temporaryPath, `${encodedDescriptor}\n`, {
         flag: "wx",
         mode: 0o600,
       })
@@ -490,9 +496,12 @@ const make = Effect.gen(function* () {
           ) {
             return yield* Effect.fail("Invalid desktop browser registration.");
           }
-          yield* writer.write(
-            `${JSON.stringify({ type: "desktop-browser-ready", environmentId, processEpoch })}\n`,
-          );
+          const ready = yield* encodeReady({
+            type: "desktop-browser-ready",
+            environmentId,
+            processEpoch,
+          });
+          yield* writer.write(`${ready}\n`);
           connection.live = true;
           connections.add(connection);
           return bytes.subarray(end + 1);

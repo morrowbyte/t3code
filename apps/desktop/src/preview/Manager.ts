@@ -2911,7 +2911,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (afterAttach.serverTab) {
         yield* attemptPromise({ operation: "restoreControlSession.targetNetwork", tabId }, () =>
           browserHost.configureTargetSession(
-            afterAttach.serverTab?.environmentId, wc.session,
+            afterAttach.serverTab?.environmentId,
+            wc.session,
             afterAttach.serverTab?.environmentId !== undefined,
           ),
         );
@@ -4567,9 +4568,11 @@ export const make = Effect.gen(function* PreviewManagerMake() {
               (cause) => new PreviewOperationError({ operation: "getBrowserSession", cause }),
             ),
           );
-        yield* attemptPromise({ operation: "getBrowserSession.targetNetwork" }, () =>
-          browserHost.configureTargetSession(targetEnvironmentId, session),
-        );
+        yield* Effect.tryPromise({
+          try: () => browserHost.configureTargetSession(targetEnvironmentId, session),
+          catch: (cause) =>
+            new PreviewOperationError({ operation: "getBrowserSession.targetNetwork", cause }),
+        });
         placeServerDownloads(session);
         passkeys.installSessionHandlers(session);
         return session;
