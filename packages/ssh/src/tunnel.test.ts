@@ -434,7 +434,10 @@ describe("ssh tunnel scripts", () => {
             HttpClient.HttpClient,
             HttpClient.make((request) =>
               Effect.succeed(
-                HttpClientResponse.fromWeb(request, new Response("", { status: ready ? 200 : 503 })),
+                HttpClientResponse.fromWeb(
+                  request,
+                  new Response("", { status: ready ? 200 : 503 }),
+                ),
               ),
             ),
           ),
@@ -459,16 +462,18 @@ describe("ssh tunnel scripts", () => {
       }),
   );
 
-  it.effect.each(["caller", "tunnel"] as const)(
-    "closes only the desktop browser helper when its %s scope closes",
+  it.effect.each(["caller", "caller EOF", "tunnel"] as const)(
+    "closes the desktop browser helper and its proxy on %s closure",
     (owner) =>
       Effect.gen(function* () {
         const receivedReady = yield* Deferred.make<void>();
         const sentEvent = yield* Deferred.make<void>();
+        const endEvents = yield* Deferred.make<void>();
         let helperKills = 0;
         let tunnelKills = 0;
         let helperSpawns = 0;
         let helperArgs: ReadonlyArray<string> = [];
+        let portReservations = 0;
         const target = { alias: "devbox", hostname: "devbox", username: null, port: null };
         const event = new TextEncoder().encode('{"type":"browser-event"}\n');
         const ready = new TextEncoder().encode(
@@ -498,7 +503,10 @@ describe("ssh tunnel scripts", () => {
           NodeServices.layer,
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Layer.succeed(HttpClient.HttpClient, testHttpClient),
-          Layer.succeed(NetService.NetService, testNetService),
+          Layer.succeed(NetService.NetService, {
+            ...testNetService,
+            reserveLoopbackPort: () => Effect.sync(() => 41_773 + portReservations++),
+          }),
           SshAuth.SshPasswordPrompt.disabledLayer,
           SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
         );
@@ -510,7 +518,7 @@ describe("ssh tunnel scripts", () => {
             .openDesktopBrowser(
               target,
               "target-environment'$(false)",
-              Stream.concat(Stream.make(event), Stream.never),
+              Stream.concat(Stream.make(event), Stream.fromEffectDrain(Deferred.await(endEvents))),
             )
             .pipe(Effect.provideService(Scope.Scope, callerScope));
           const reading = yield* Effect.forkChild(
@@ -522,17 +530,25 @@ describe("ssh tunnel scripts", () => {
           yield* Deferred.await(receivedReady);
           yield* Deferred.await(sentEvent);
           if (owner === "caller") yield* Scope.close(callerScope, Exit.void);
+          else if (owner === "caller EOF") yield* Deferred.succeed(endEvents, undefined);
           else yield* manager.disconnectEnvironment(target);
           assert.isTrue(Result.isFailure(yield* Effect.result(transport.closed)));
           assert.isTrue(Result.isFailure(yield* Effect.result(Fiber.join(reading))));
           assert.equal(helperKills, 1);
-          assert.equal(tunnelKills, owner === "caller" ? 0 : 1);
+          assert.equal(tunnelKills, owner === "tunnel" ? 1 : 0);
           assert.equal(helperSpawns, 1);
+          assert.equal(portReservations, 2);
+          assert.equal(transport.proxyUrl, "socks5://127.0.0.1:41774");
+          assert.notEqual(transport.proxyUrl, environment.httpBaseUrl);
+          assert.equal(helperArgs.filter((arg) => arg === "-D").length, 1);
+          assert.equal(helperArgs[helperArgs.indexOf("-D") + 1], "127.0.0.1:41774");
+          assert.include(helperArgs, "ExitOnForwardFailure=yes");
+          assert.notInclude(helperArgs, "ExitOnForwardFailure=no");
           assert.include(helperArgs.at(-1) ?? "", "'target-environment'\\''$(false)'");
           assert.include(helperArgs, "ControlPath=none");
           assert.notInclude(helperArgs, "-N");
           assert.notInclude(helperArgs, "-n");
-          if (owner === "caller") {
+          if (owner !== "tunnel") {
             assert.equal(
               (yield* manager.ensureEnvironment(target)).httpBaseUrl,
               environment.httpBaseUrl,
@@ -541,10 +557,12 @@ describe("ssh tunnel scripts", () => {
             yield* manager.ensureEnvironment(target);
           }
           yield* Scope.close(callerScope, Exit.void);
-          assert.equal(tunnelKills, owner === "caller" ? 0 : 1);
+          assert.equal(tunnelKills, owner === "tunnel" ? 1 : 0);
+          assert.equal(helperKills, 1);
           const replay = yield* Effect.result(Stream.runCollect(transport.commands));
           assert.isTrue(Result.isFailure(replay));
-          if (Result.isFailure(replay)) assert.include(replay.failure.message, "cannot be replayed");
+          if (Result.isFailure(replay))
+            assert.include(replay.failure.message, "cannot be replayed");
         }).pipe(Effect.provide(layer), Effect.scoped);
       }),
   );

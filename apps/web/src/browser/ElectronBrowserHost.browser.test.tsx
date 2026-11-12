@@ -63,6 +63,15 @@ vi.mock(import("~/components/preview/usePreviewBridge"), async (original) => ({
   usePreviewBridge: () => undefined,
 }));
 
+vi.mock(import("~/components/preview/usePreviewSession"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    useDesktopHostedPreviewSessions: vi.fn(actual.useDesktopHostedPreviewSessions),
+  };
+});
+
+import { useDesktopHostedPreviewSessions } from "~/components/preview/usePreviewSession";
 import {
   __resetClientSettingsPersistenceForTests,
   ensureClientSettingsHydrated,
@@ -90,6 +99,7 @@ const snapshot = (tabId: string, updatedAt: string): PreviewSessionSnapshot => (
 });
 
 function setup(): Disposable {
+  vi.mocked(useDesktopHostedPreviewSessions).mockClear();
   mocks.primaryEnvironmentId = null;
   appAtomRegistry.refresh(primaryEnvironmentIdAtom);
   __resetClientSettingsPersistenceForTests();
@@ -137,6 +147,10 @@ async function renderHost(element = <ElectronBrowserHost />) {
 describe("ElectronBrowserHost", () => {
   it("keeps Main-confirmed remote guests through reconnect without replacing legacy guests", async () => {
     using _state = setup();
+    const primaryEnvironmentId = EnvironmentId.make("focused-primary-host");
+    const otherRemoteEnvironmentId = EnvironmentId.make("other-background-host");
+    mocks.primaryEnvironmentId = primaryEnvironmentId;
+    appAtomRegistry.refresh(primaryEnvironmentIdAtom);
     let resolveQuery: ((ids: ReadonlyArray<string>) => void) | undefined;
     mocks.getHostedEnvironmentIds.mockReturnValue(
       new Promise((resolve) => {
@@ -178,14 +192,38 @@ describe("ElectronBrowserHost", () => {
     const legacy = screen.container.querySelector("webview")!;
     legacy.getWebContentsId = () => 7;
     const controlState = () =>
-      screen.container.querySelector("[data-native-controls]")?.getAttribute("data-native-controls");
+      screen.container
+        .querySelector("[data-native-controls]")
+        ?.getAttribute("data-native-controls");
     const legacyRuntimeTabId = mocks.createTab.mock.calls[0]![0];
     expect(rendersServerTabNatively(threadRef.environmentId, null, native)).toBe(false);
     expect(mocks.ensureOffscreenHost).not.toHaveBeenCalled();
     expect(controlState()).toBe("false,false,false,false");
+    const discovery = vi.mocked(useDesktopHostedPreviewSessions);
+    expect(discovery).toHaveBeenCalledWith(primaryEnvironmentId);
+    expect(discovery).not.toHaveBeenCalledWith(threadRef.environmentId);
+    expect(discovery).not.toHaveBeenCalledWith(otherRemoteEnvironmentId);
+    discovery.mockClear();
 
     const changed = mocks.onHostedEnvironmentsChange.mock.calls[0]![0];
-    await act(() => changed([threadRef.environmentId]));
+    await act(() =>
+      changed([
+        primaryEnvironmentId,
+        threadRef.environmentId,
+        threadRef.environmentId,
+        otherRemoteEnvironmentId,
+      ]),
+    );
+    const expectKnownDiscovery = () => {
+      const ids = discovery.mock.calls.map(([environmentId]) => environmentId);
+      const primaryCalls = ids.filter((id) => id === primaryEnvironmentId).length;
+      expect(primaryCalls).toBeGreaterThan(0);
+      expect(ids.filter((id) => id === threadRef.environmentId)).toHaveLength(primaryCalls);
+      expect(ids.filter((id) => id === otherRemoteEnvironmentId)).toHaveLength(primaryCalls);
+      expect(ids).toHaveLength(primaryCalls * 3);
+      expect(discovery).not.toHaveBeenCalledWith(EnvironmentId.make("unknown"));
+    };
+    expectKnownDiscovery();
     await vi.waitFor(() => expect(mocks.ensureOffscreenHost).toHaveBeenCalledTimes(2));
     const initialHostConnections = mocks.ensureOffscreenHost.mock.calls.length;
     const nativeRuntimeTabId = mocks.ensureOffscreenHost.mock.calls[0]![0].tabId;
@@ -226,6 +264,7 @@ describe("ElectronBrowserHost", () => {
     await act(() => changed([]));
     expect(rendersServerTabNatively(threadRef.environmentId, null, native)).toBe(true);
     await act(() => changed([threadRef.environmentId]));
+    expectKnownDiscovery();
     expect(screen.container.querySelector("webview")).toBe(legacy);
     expect(mocks.ensureOffscreenHost).toHaveBeenCalledTimes(initialHostConnections);
     expect(mocks.createTab).toHaveBeenCalledTimes(3);

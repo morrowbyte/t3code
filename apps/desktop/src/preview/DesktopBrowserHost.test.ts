@@ -454,13 +454,18 @@ describe("DesktopBrowserHost", () => {
         const otherKey = { ...key, environmentId: "environment-b" };
         host.attach(targetKey, debuggee.tab);
         const old = yield* connect(host, environmentId);
-        expect(host.hostedEnvironmentIds()).toEqual(environmentId === undefined ? [] : [environmentId]);
+        expect(host.hostedEnvironmentIds()).toEqual(
+          environmentId === undefined ? [] : [environmentId],
+        );
         const attached = yield* Queue.take(old.messages);
         expect(attached).toEqual({ type: "attached", ...key, privateEntry: expect.any(Object) });
         const acquired = yield* grant(host, old, debuggee.tab.webContents);
         host.attach(otherKey, otherDebuggee.tab);
         const other = yield* connect(host, otherKey.environmentId);
-        const hosted = [...(environmentId === undefined ? [] : [environmentId]), otherKey.environmentId];
+        const hosted = [
+          ...(environmentId === undefined ? [] : [environmentId]),
+          otherKey.environmentId,
+        ];
         expect(host.hostedEnvironmentIds()).toEqual(hosted);
         expect(yield* Queue.take(other.messages)).toEqual({
           type: "attached",
@@ -472,7 +477,11 @@ describe("DesktopBrowserHost", () => {
         expect(yield* Queue.size(old.messages)).toBe(0);
         const otherAcquired = yield* grant(host, other, otherDebuggee.tab.webContents);
         yield* old.connection.handleCommandLine(
-          encodeJson({ ...otherAcquired.response, type: "private-entry-revoked", reason: "closed" }),
+          encodeJson({
+            ...otherAcquired.response,
+            type: "private-entry-revoked",
+            reason: "closed",
+          }),
         );
         yield* other.connection.handleCommandLine(
           encodeJson({ ...acquired.response, type: "private-entry-revoked", reason: "closed" }),
@@ -501,6 +510,8 @@ describe("DesktopBrowserHost", () => {
         const replacementAttached = yield* Queue.take(replacement.messages);
         expect(replacementAttached).toMatchObject({ type: "attached", ...key });
         expect(replacementAttached).not.toEqual(attached);
+        yield* replacement.connection.handleCommandLine(encodeJson({ type: "reattach", ...key }));
+        expect(yield* Queue.take(replacement.messages)).toMatchObject({ type: "attached", ...key });
         expect(acquired.lease.current()).toBe(false);
         expect(otherAcquired.lease.current()).toBe(true);
         expect(yield* Queue.size(other.messages)).toBe(0);
@@ -543,7 +554,9 @@ describe("DesktopBrowserHost", () => {
         otherDebuggee.release();
         yield* Effect.promise(() => surviving!.settled);
         const survivingReply = yield* Queue.take(other.messages);
-        expect(survivingReply.type === "cdp" && decodeCdpReply(survivingReply.message).id).toBe(301);
+        expect(survivingReply.type === "cdp" && decodeCdpReply(survivingReply.message).id).toBe(
+          301,
+        );
         expect(yield* Queue.size(replacement.messages)).toBe(0);
         expect(yield* Queue.size(other.messages)).toBe(0);
         expect(debuggee.sent).toHaveLength(3);
@@ -554,6 +567,50 @@ describe("DesktopBrowserHost", () => {
         expect(host.hostedEnvironmentIds()).toEqual([]);
         expect(otherAcquired.lease.current()).toBe(false);
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("binds the existing guest session before announcing its remote target", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee();
+      const entered = Promise.withResolvers<void>();
+      const applied = Promise.withResolvers<void>();
+      const session = {
+        setProxy: vi.fn(async () => { entered.resolve(); await applied.promise; }),
+        closeAllConnections: vi.fn(async () => {}),
+      };
+      Object.defineProperty(debuggee.tab.webContents, "session", { value: session });
+      const targetKey = { ...key, environmentId: "remote-network" };
+      host.attach(targetKey, debuggee.tab);
+      const connection = host.createConnection(targetKey.environmentId, "socks5://127.0.0.1:39001");
+      const messages = yield* Queue.unbounded<DesktopBrowserEvent>();
+      yield* connection.events.pipe(
+        Stream.runForEach((line) => Queue.offer(messages, decodeEvent(new TextDecoder().decode(line)))),
+        Effect.forkScoped,
+      );
+      yield* Effect.promise(() => entered.promise);
+      expect(yield* Queue.size(messages)).toBe(0);
+      applied.resolve();
+      expect(yield* Queue.take(messages)).toMatchObject({ type: "attached", ...key });
+      expect(session.setProxy).toHaveBeenCalledWith({
+        mode: "fixed_servers", proxyRules: "socks5://127.0.0.1:39001", proxyBypassRules: "<-loopback>",
+      });
+      yield* Effect.promise(() => host.configureTargetSession(targetKey.environmentId, debuggee.tab.webContents.session));
+      expect(session.closeAllConnections).toHaveBeenCalledTimes(1);
+      expect(session.setProxy).toHaveBeenCalledTimes(1);
+      yield* connection.closed;
+      const replacement = host.createConnection(targetKey.environmentId, "socks5://127.0.0.1:39002");
+      yield* replacement.events.pipe(
+        Stream.runForEach((line) => Queue.offer(messages, decodeEvent(new TextDecoder().decode(line)))),
+        Effect.forkScoped,
+      );
+      expect(yield* Queue.take(messages)).toMatchObject({ type: "attached", ...key });
+      expect(session.setProxy).toHaveBeenLastCalledWith({
+        mode: "fixed_servers", proxyRules: "socks5://127.0.0.1:39002", proxyBypassRules: "<-loopback>",
+      });
+      expect(session.closeAllConnections).toHaveBeenCalledTimes(2);
+      expect(host.canRequestPrivateEntry(debuggee.tab.webContents)).toBe(true);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("announces tabs already attached to a backend that starts later", () =>

@@ -78,7 +78,7 @@ describe("OS-local desktop browser registration", () => {
   it("keeps the secret in the descriptor and registration, outside browser events and ready", () => {
     const binding = { environmentId: "target", processEpoch: "process", token: "secret" };
     const descriptor = { ...binding, endpoint: "/private/browser.sock", processId: 42 };
-    expect(Schema.decodeUnknownSync(DesktopBrowserRegistrationDescriptor)(descriptor)).toEqual(
+    expect(Schema.decodeSync(DesktopBrowserRegistrationDescriptor)(descriptor)).toEqual(
       descriptor,
     );
     const registration = { type: "desktop-browser-register", ...binding };
@@ -94,7 +94,7 @@ describe("OS-local desktop browser registration", () => {
     expect(() => Schema.decodeUnknownSync(DesktopBrowserReady)({ ...ready, token: "secret" })).toThrow();
     for (const processId of [0, -1, 1.5, Infinity]) {
       expect(() =>
-        Schema.decodeUnknownSync(DesktopBrowserRegistrationDescriptor)({ ...descriptor, processId }),
+        Schema.decodeSync(DesktopBrowserRegistrationDescriptor)({ ...descriptor, processId }),
       ).toThrow();
     }
     for (const field of ["environmentId", "processEpoch", "token"] as const) {
