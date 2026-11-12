@@ -18,9 +18,16 @@ const mocks = vi.hoisted(() => ({
   closeTab: vi.fn<DesktopPreviewBridge["closeTab"]>(),
   registerWebview: vi.fn<DesktopPreviewBridge["registerWebview"]>(),
   getPreviewConfig: vi.fn<DesktopPreviewBridge["getPreviewConfig"]>(),
+  ensureOffscreenHost: vi.fn<DesktopPreviewBridge["ensureOffscreenHost"]>(),
+  primaryEnvironmentId: null as EnvironmentId | null,
 }));
 
 vi.mock(import("~/env"), async (original) => ({ ...(await original()), isElectron: true }));
+
+vi.mock(import("~/state/primaryEnvironment"), async () => {
+  const { Atom } = await import("effect/reactivity");
+  return { primaryEnvironmentIdAtom: Atom.make(() => mocks.primaryEnvironmentId) };
+});
 
 vi.mock(import("~/state/session"), async (original) => ({
   ...(await original()),
@@ -43,6 +50,7 @@ vi.mock(import("~/components/preview/previewBridge"), async (original) => ({
     closeTab: mocks.closeTab,
     registerWebview: mocks.registerWebview,
     getPreviewConfig: mocks.getPreviewConfig,
+    ensureOffscreenHost: mocks.ensureOffscreenHost,
   } as never,
 }));
 
@@ -56,7 +64,8 @@ import {
   ensureClientSettingsHydrated,
 } from "~/hooks/useSettings";
 import { reconcilePreviewServerSessions, resetPreviewStateForTests } from "~/previewStateStore";
-import { AppAtomRegistryProvider } from "~/rpc/atomRegistry";
+import { AppAtomRegistryProvider, appAtomRegistry } from "~/rpc/atomRegistry";
+import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 import { ElectronBrowserHost } from "./ElectronBrowserHost";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
 
@@ -75,12 +84,19 @@ const snapshot = (tabId: string, updatedAt: string): PreviewSessionSnapshot => (
 });
 
 function setup(): Disposable {
+  mocks.primaryEnvironmentId = null;
+  appAtomRegistry.refresh(primaryEnvironmentIdAtom);
   __resetClientSettingsPersistenceForTests();
   mocks.getClientSettings.mockReset().mockResolvedValue(DEFAULT_CLIENT_SETTINGS);
   mocks.setClientSettings.mockReset().mockResolvedValue(undefined);
   mocks.createTab.mockReset().mockResolvedValue(undefined);
   mocks.closeTab.mockReset().mockResolvedValue(undefined);
   mocks.registerWebview.mockReset().mockResolvedValue(undefined);
+  mocks.ensureOffscreenHost.mockReset().mockResolvedValue({
+    kind: "webview",
+    webContentsId: 7,
+    privateEntry: false,
+  });
   mocks.getPreviewConfig.mockReset().mockResolvedValue({
     partition: "persist:t3-preview-default",
     webPreferences: "contextIsolation=yes",
@@ -112,6 +128,64 @@ async function renderHost(element = <ElectronBrowserHost />) {
 
 describe("ElectronBrowserHost", () => {
   it.each([
+    { serverDriven: false, primary: true },
+    { serverDriven: true, primary: true },
+    { serverDriven: false, primary: false },
+  ])(
+    "creates OSR only with the tab's native control binding: %j",
+    async ({ serverDriven, primary }) => {
+      using _state = setup();
+      mocks.primaryEnvironmentId = primary ? threadRef.environmentId : null;
+      appAtomRegistry.refresh(primaryEnvironmentIdAtom);
+      let created: (() => void) | undefined;
+      mocks.createTab.mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            created = resolve;
+          }),
+      );
+      mocks.ensureOffscreenHost.mockResolvedValue({
+        kind: "offscreen",
+        webContentsId: 8,
+        privateEntry: false,
+      });
+      await using screen = await renderHost(
+        <HostedBrowserWebview
+          threadRef={threadRef}
+          tabId="offscreen"
+          runtimeTabId="offscreen"
+          initialUrl="https://example.com/owned"
+          viewport={{ _tag: "freeform", width: 1440, height: 1700 }}
+          pictureInPicture={false}
+          profileId="default"
+          zoomFactor={1}
+          serverDriven={serverDriven}
+        />,
+      );
+      expect(Boolean(screen.container.querySelector("webview"))).toBe(!primary);
+      expect(mocks.ensureOffscreenHost).not.toHaveBeenCalled();
+      await act(() => created?.());
+      if (!primary) {
+        expect(mocks.ensureOffscreenHost).not.toHaveBeenCalled();
+        expect(screen.container.querySelector("webview")?.getAttribute("src")).toBe(
+          "https://example.com/owned",
+        );
+        return;
+      }
+      await vi.waitFor(() =>
+        expect(mocks.ensureOffscreenHost).toHaveBeenCalledWith({
+          tabId: "offscreen",
+          environmentId: threadRef.environmentId,
+          profileId: "default",
+          viewport: { _tag: "freeform", width: 1440, height: 1700 },
+        }),
+      );
+      expect(screen.container.querySelector("webview")).toBeNull();
+      expect(mocks.registerWebview).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
     { serverDriven: true, automationOwned: true, paintable: true },
     { serverDriven: true, automationOwned: false, paintable: false },
     { serverDriven: false, automationOwned: true, paintable: false },
@@ -130,6 +204,9 @@ describe("ElectronBrowserHost", () => {
         serverDriven={input.serverDriven}
         automationOwned={input.automationOwned}
       />,
+    );
+    await vi.waitFor(() =>
+      expect(screen.container.querySelector("[data-preview-rendering]")).not.toBeNull(),
     );
     const wrapper = screen.container.querySelector<HTMLElement>("[data-preview-rendering]")!;
     expect(wrapper).not.toBeNull();
@@ -157,6 +234,7 @@ describe("ElectronBrowserHost", () => {
 
     const host = screen.container.querySelector("[data-electron-browser-host]")!;
     const webviews = () => [...host.querySelectorAll("webview")];
+    await vi.waitFor(() => expect(webviews()).toHaveLength(2));
     const before = webviews();
     expect(before.map((node) => node.getAttribute("data-preview-server-tab")).toSorted()).toEqual([
       "tab_7",

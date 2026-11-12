@@ -313,6 +313,7 @@ let desktopPageUrl = "about:blank";
 /** Replaces the answer to the desktop page's size reads. */
 let desktopSizeAnswer: (() => Promise<Record<string, unknown>>) | null = null;
 const desktopAttachWaits: string[] = [];
+let desktopAttachGate: (() => Promise<boolean>) | null = null;
 const desktopDetaches = new NodeEvents.EventEmitter();
 const desktopEvent = (name: string) =>
   new Promise<void>((resolve) => desktopDetaches.once(name, () => resolve()));
@@ -386,9 +387,10 @@ const dependencies = Layer.mergeAll(
         return true;
       }),
     awaitAttached: (key) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         desktopAttachWaits.push(key.tabId);
-        return desktopRenders(key.tabId);
+        const gate = desktopAttachGate;
+        return gate ? Effect.promise(gate) : Effect.succeed(desktopRenders(key.tabId));
       }),
     detached: Stream.callback<{ threadId: string; tabId: string }>((queue) =>
       Effect.acquireRelease(
@@ -496,6 +498,7 @@ beforeEach(() => {
   desktopTabs.clear();
   desktopRendersNext = false;
   desktopAttachWaits.length = 0;
+  desktopAttachGate = null;
   desktopPageUrl = "about:blank";
   desktopSizeAnswer = null;
   desktopDetachReady = Promise.withResolvers<void>();
@@ -2189,6 +2192,90 @@ it.live("only the current controller can answer a file picker", () =>
       expect(setFiles).not.toHaveBeenCalled();
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  { runtime: "server", lateAttach: false },
+  { runtime: "desktop", lateAttach: false },
+  { runtime: "desktop", lateAttach: true },
+] as const)(
+  "awaits native viewport changes through the existing control session for $runtime tabs (lateAttach=$lateAttach)",
+  ({ runtime, lateAttach }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const browser = yield* ServerBrowser.ServerBrowser;
+        const manager = yield* Manager.PreviewManager;
+        desktopRendersNext = !lateAttach;
+        const { tabId } = yield* manager.open({ threadId: scope.thread.threadId, runtime });
+        const opening = browser.attachViewer({ ...viewerInput(tabId, true), frames: false });
+        const viewer = yield* lateAttach
+          ? Effect.gen(function* () {
+              const waiting = Promise.withResolvers<void>();
+              const attached = Promise.withResolvers<boolean>();
+              yield* Effect.addFinalizer(() => Effect.sync(() => attached.resolve(false)));
+              desktopAttachGate = () => {
+                waiting.resolve();
+                return attached.promise;
+              };
+              const connecting = yield* opening.pipe(Effect.forkScoped);
+              const state = yield* Effect.raceFirst(
+                Effect.promise(() => waiting.promise).pipe(Effect.as("waiting")),
+                Fiber.join(connecting).pipe(Effect.as("connected")),
+              );
+              expect(state).toBe("waiting");
+              expect(desktopConnections).toHaveLength(0);
+              desktopTabs.add(tabId);
+              desktopAttachGate = null;
+              attached.resolve(true);
+              return yield* Fiber.join(connecting);
+            })
+          : opening;
+        const context = desktopConnections[0]!.context;
+        const cdp = context.sessions[0]!;
+        const started = Promise.withResolvers<void>();
+        const finish = Promise.withResolvers<void>();
+        yield* Effect.addFinalizer(() => Effect.sync(() => finish.resolve()));
+        const send = cdp.send;
+        cdp.send = vi.fn(async (method: string, input?: unknown) => {
+          if (method === "Emulation.setDeviceMetricsOverride") {
+            started.resolve();
+            await finish.promise;
+            Object.assign(context.cssViewport, input);
+          }
+          return send(method, input);
+        });
+        yield* viewer.input({ type: "takeControl" });
+        let completed = false;
+        const resizing = yield* viewer
+          .input({
+            type: "viewport",
+            setting: { _tag: "freeform", width: 1440, height: 1700 },
+          })
+          .pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                completed = true;
+              }),
+            ),
+            Effect.forkScoped,
+          );
+        yield* Effect.promise(() => started.promise);
+        expect(completed).toBe(false);
+        expect(context.page.setViewportSize).not.toHaveBeenCalled();
+        finish.resolve();
+        yield* Fiber.join(resizing);
+        expect(viewportSizes(yield* Queue.takeAll(viewer.output))).toContain("1440x1700");
+        yield* viewer.input({ type: "viewport", setting: { _tag: "fill" } });
+        expect(cdp.send).toHaveBeenCalledWith("Emulation.clearDeviceMetricsOverride");
+        const inputSession = context.sessions.at(-1)!;
+        yield* viewer.input({ type: "text", text: "human input" });
+        expect(inputSession.send).toHaveBeenCalledWith("Input.insertText", { text: "human input" });
+        yield* viewer.input({ type: "releaseControl" });
+        inputSession.send.mockClear();
+        yield* viewer.input({ type: "text", text: "released input" });
+        expect(inputSession.send).not.toHaveBeenCalledWith("Input.insertText", expect.anything());
+      }),
+    ).pipe(Effect.provide(layer)),
 );
 
 it.effect(

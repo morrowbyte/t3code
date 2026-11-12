@@ -81,14 +81,26 @@ describe("desktopTabLifetime", () => {
   it("binds an existing desktop lease once when its native environment becomes known", async () => {
     vi.useFakeTimers();
     createTab.mockResolvedValue(undefined);
-    const initial = acquireDesktopTab("late_native_binding");
+    const initial = acquireDesktopTab(
+      "late_native_binding",
+      undefined,
+      "https://example.com/initial",
+    );
     await initial.ready;
+    expect(createTab).toHaveBeenCalledWith("late_native_binding", {
+      ...DEFAULT_TAB_STATE,
+      initialUrl: "https://example.com/initial",
+    });
     const key = { threadId: "thread-native", tabId: "tab-native" };
     const bound = acquireDesktopTab("late_native_binding", key);
     await bound.ready;
     expect(createTab).toHaveBeenLastCalledWith("late_native_binding", { serverTab: key });
     expect(createTab).toHaveBeenCalledTimes(2);
-    const reused = acquireDesktopTab("late_native_binding", key);
+    const reused = acquireDesktopTab(
+      "late_native_binding",
+      key,
+      "https://example.com/do-not-reload",
+    );
     await reused.ready;
     expect(createTab).toHaveBeenCalledTimes(2);
     initial.release();

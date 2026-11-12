@@ -4,6 +4,7 @@ import {
   DesktopBrowserCommand,
   DesktopBrowserEvent,
   DesktopBrowserPrivateEntryResponse,
+  PreviewViewportSetting,
   type DesktopBrowserPrivateEntryAttachment,
   type DesktopBrowserPrivateEntryRequest,
   type DesktopBrowserEvent as DesktopBrowserEventType,
@@ -55,6 +56,9 @@ export interface DesktopBrowserTabKey {
 export interface DesktopBrowserTabDebugger {
   readonly webContents: Electron.WebContents;
   readonly debugger: Electron.Debugger;
+  readonly setViewport?: (setting: PreviewViewportSetting) => Promise<void>;
+  readonly captureRevision?: () => number;
+  readonly acquireCaptureHold?: () => () => void;
 }
 
 const keyOf = ({ threadId, tabId }: DesktopBrowserTabKey) => `${threadId}\u0000${tabId}`;
@@ -148,6 +152,10 @@ export class DesktopBrowserHost extends Context.Service<
     /** Native credential entry blocks every relay operation, including observations. */
     readonly setPrivateEntry: (source: Electron.WebContents, active: boolean) => void;
     readonly isPrivateEntry: (source: Electron.WebContents) => boolean;
+    readonly privateEntryChanges: Stream.Stream<{
+      readonly source: Electron.WebContents;
+      readonly active: boolean;
+    }>;
     readonly canRequestPrivateEntry: (source: Electron.WebContents) => boolean;
     readonly acquirePrivateEntry: (
       source: Electron.WebContents,
@@ -194,10 +202,14 @@ export const make = Effect.gen(function* () {
   /** Threads whose agent turn runs, by the server's account. */
   const agentTurns = new Set<string>();
   const privateContents = new WeakSet<Electron.WebContents>();
+  const privateEntryChanges = yield* PubSub.unbounded<{
+    readonly source: Electron.WebContents;
+    readonly active: boolean;
+  }>();
   let activeConnection: symbol | null = null;
   let closeActiveConnection: (() => void) | null = null;
   let channelEpoch: string | null = null;
-  const setPrivateEntry = (source: Electron.WebContents, active: boolean) => {
+  const updatePrivateEntry = (source: Electron.WebContents, active: boolean) => {
     if (active) privateContents.add(source);
     else privateContents.delete(source);
     for (const tab of tabs.values()) {
@@ -207,6 +219,11 @@ export const make = Effect.gen(function* () {
       tab.downloadDirectory = null;
       tab.pendingDownloadGuid = null;
     }
+  };
+  const setPrivateEntry = (source: Electron.WebContents, active: boolean) => {
+    const changed = privateContents.has(source) !== active;
+    updatePrivateEntry(source, active);
+    if (changed) runFork(PubSub.publish(privateEntryChanges, { source, active }));
   };
   const emit = (event: DesktopBrowserEventType) =>
     runFork(PubSub.publish(outbox, { connection: activeConnection, event }));
@@ -587,11 +604,30 @@ export const make = Effect.gen(function* () {
     const { webContents, debugger: debuggee } = tab.debuggee;
     const connection = activeConnection;
     const closeConnection = closeActiveConnection;
-    const send = (method: string, params: Record<string, unknown>, sessionId?: string) =>
-      sendPageCommand(webContents, debuggee, method, params, sessionId, () => {
+    const send = (method: string, params: Record<string, unknown>, sessionId?: string) => {
+      const current = () => {
         if (privateContents.has(webContents) || tab.relay !== relay)
           throw new Error("Private credential entry");
-      });
+      };
+      if (
+        tab.debuggee.setViewport &&
+        sessionId === undefined &&
+        (method === "Emulation.setDeviceMetricsOverride" ||
+          method === "Emulation.clearDeviceMetricsOverride")
+      ) {
+        current();
+        const setting = Schema.decodeUnknownSync(PreviewViewportSetting)(
+          method === "Emulation.clearDeviceMetricsOverride"
+            ? { _tag: "fill" }
+            : { _tag: "freeform", width: params["width"], height: params["height"] },
+        );
+        return tab.debuggee.setViewport(setting).then(() => {
+          current();
+          return {};
+        });
+      }
+      return sendPageCommand(webContents, debuggee, method, params, sessionId, current);
+    };
     const detachedOwners = new Set<string>();
     /** Viewers and recordings stream; the agent's own sessions never do. */
     const streamingOwners = new Set<string>();
@@ -615,10 +651,29 @@ export const make = Effect.gen(function* () {
           // Waits for focus emulation; insertText and other non-CDP input would not queue behind it.
           const forward = (current?: () => boolean) => {
             const change = tab.focusChange;
-            const run = () =>
-              tab.relay === relay && (current === undefined || current())
-                ? send(method, params, sessionId)
-                : Promise.reject(new Error("The page this screenshot was for has moved on."));
+            const run = async () => {
+              if (tab.relay !== relay || (current !== undefined && !current()))
+                throw new Error("The page this screenshot was for has moved on.");
+              const revision =
+                method === "Page.captureScreenshot" ? tab.debuggee.captureRevision?.() : undefined;
+              const release =
+                method === "Page.captureScreenshot"
+                  ? tab.debuggee.acquireCaptureHold?.()
+                  : undefined;
+              try {
+                const result = await send(method, params, sessionId);
+                if (
+                  method === "Page.captureScreenshot" &&
+                  (tab.relay !== relay ||
+                    (current !== undefined && !current()) ||
+                    revision !== tab.debuggee.captureRevision?.())
+                )
+                  throw new Error("The preview changed while its screenshot was being captured.");
+                return result;
+              } finally {
+                release?.();
+              }
+            };
             return change === null ? run() : change.then(run);
           };
           return method === "Page.captureScreenshot"
@@ -934,6 +989,7 @@ export const make = Effect.gen(function* () {
     detach,
     setPrivateEntry,
     isPrivateEntry: (source) => privateContents.has(source),
+    privateEntryChanges: Stream.fromPubSub(privateEntryChanges),
     canRequestPrivateEntry: (source) => {
       const tab = attachedFor(source);
       return !!tab && isCurrentAttachment(tab);

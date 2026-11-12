@@ -1,4 +1,8 @@
 // CDP input follows shared window focus; send directly to unfocused guests to avoid typing into the app.
+import type {
+  DesktopPreviewSurfaceInput,
+  DesktopPreviewSurfaceInputResult,
+} from "@t3tools/contracts";
 
 const FOCUS_ROUTED_INPUT = new Set([
   "Input.insertText",
@@ -22,6 +26,36 @@ const EDITING_COMMANDS = new Set(["selectAll", "undo", "redo"]);
 
 const CROSS_SITE_FOCUS_MESSAGE =
   "The page's focus is inside a cross-site frame, which takes typed input only while the preview has focus. Click the field first.";
+
+const EDITABLE_AT_POINT = `(x, y) => {
+  let doc = document;
+  for (;;) {
+    let element = doc.elementFromPoint(x, y);
+    while (element?.shadowRoot) {
+      const inner = element.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === element) break;
+      element = inner;
+    }
+    if (!element) return false;
+    if (element.tagName === "IFRAME" || element.tagName === "FRAME") {
+      const next = element.contentDocument;
+      if (!next) return false;
+      const rect = element.getBoundingClientRect();
+      if (!rect.width || !rect.height) return false;
+      x = (x - rect.left) * element.offsetWidth / rect.width - element.clientLeft;
+      y = (y - rect.top) * element.offsetHeight / rect.height - element.clientTop;
+      doc = next;
+      continue;
+    }
+    const label = element.closest("label");
+    if (label?.control) element = label.control;
+    if (element.isContentEditable) return true;
+    element = element.closest("input, textarea");
+    if (!element || element.disabled || element.readOnly) return false;
+    if (element.tagName === "TEXTAREA") return true;
+    return !["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"].includes(element.type);
+  }
+}`;
 
 const ARROW_KEYS: Record<string, string> = {
   ArrowUp: "Up",
@@ -82,6 +116,110 @@ export const toKeyboardInputEvents = (
     default:
       return [];
   }
+};
+
+/** Only the manager's current private-entry lease may call this local input path. */
+export const sendNativeSurfaceInput = async (
+  webContents: Electron.WebContents,
+  input: DesktopPreviewSurfaceInput,
+  currentCheck: () => void,
+): Promise<DesktopPreviewSurfaceInputResult> => {
+  currentCheck();
+  const readBoolean = async (script: string) => {
+    currentCheck();
+    const result: unknown = await webContents.executeJavaScript(script);
+    currentCheck();
+    return result === true;
+  };
+  if (input.type === "probe") {
+    if (!Number.isFinite(input.x) || !Number.isFinite(input.y))
+      throw new Error("The preview probe needs finite coordinates.");
+    const editable = await readBoolean(`(${EDITABLE_AT_POINT})(${input.x}, ${input.y})`);
+    currentCheck();
+    return { editable };
+  }
+  const modifiers =
+    "modifiers" in input
+      ? MODIFIER_BITS.flatMap(([bit, name]) => (input.modifiers & bit ? [name] : []))
+      : [];
+  if (input.type === "mouse" || input.type === "wheel") {
+    const zoom = webContents.getZoomFactor();
+    if (!Number.isFinite(zoom) || zoom <= 0)
+      throw new Error("The preview has no usable native zoom.");
+    const point = { x: Math.round(input.x * zoom), y: Math.round(input.y * zoom) };
+    currentCheck();
+    if (input.type === "wheel") {
+      webContents.sendInputEvent({
+        type: "mouseWheel",
+        ...point,
+        deltaX: -input.deltaX * zoom,
+        deltaY: -input.deltaY * zoom,
+        modifiers,
+      });
+    } else {
+      const buttons = [
+        [1, "leftbuttondown"],
+        [2, "rightbuttondown"],
+        [4, "middlebuttondown"],
+      ] as const;
+      webContents.sendInputEvent({
+        type:
+          input.action === "down" ? "mouseDown" : input.action === "up" ? "mouseUp" : "mouseMove",
+        ...point,
+        ...(input.button === "none" ? {} : { button: input.button }),
+        clickCount: input.clickCount,
+        modifiers: [
+          ...modifiers,
+          ...buttons.flatMap(([bit, name]) => (input.buttons & bit ? [name] : [])),
+        ],
+      });
+    }
+    return {};
+  }
+  const focusedDocument = await readBoolean(`${FOCUSED_DOCUMENT} !== null`);
+  currentCheck();
+  if (!focusedDocument) throw new Error(CROSS_SITE_FOCUS_MESSAGE);
+  if (input.type === "text") {
+    currentCheck();
+    await webContents.insertText(input.text.slice(0, 10_000));
+    currentCheck();
+    return {};
+  }
+  const modifier = input.modifiers & 0b0111;
+  if (input.action === "down" && (modifier === 2 || modifier === 4)) {
+    const key = input.key.toLowerCase();
+    const command =
+      key === "c"
+        ? "copy"
+        : key === "x"
+          ? "cut"
+          : key === "v"
+            ? "paste"
+            : key === "a"
+              ? "selectAll"
+              : key === "z"
+                ? input.modifiers & 8
+                  ? "redo"
+                  : "undo"
+                : key === "y" && modifier === 2
+                  ? "redo"
+                  : null;
+    if (command) {
+      currentCheck();
+      webContents[command]();
+      return {};
+    }
+  }
+  for (const event of toKeyboardInputEvents({
+    type: input.action === "up" ? "keyUp" : input.text ? "keyDown" : "rawKeyDown",
+    key: input.key,
+    text: input.text,
+    modifiers: input.modifiers,
+  })) {
+    currentCheck();
+    webContents.sendInputEvent(event);
+  }
+  return {};
 };
 
 const evaluate = async (debuggee: Electron.Debugger, expression: string) => {

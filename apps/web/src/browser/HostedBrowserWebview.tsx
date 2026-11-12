@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
   DesktopPreviewColorScheme,
+  DesktopPreviewSurfaceState,
   PreviewViewportSetting,
   ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -8,6 +9,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { previewBridge } from "~/components/preview/previewBridge";
+import { toastManager } from "~/components/ui/toast";
 import { usePreviewBridge } from "~/components/preview/usePreviewBridge";
 import { useClientSettingsHydrated } from "~/hooks/useSettings";
 import { cn, isMacPlatform } from "~/lib/utils";
@@ -23,6 +25,11 @@ import {
 import { BrowserDeviceToolbar } from "./BrowserDeviceToolbar";
 import { BrowserViewportResizeHandles } from "./BrowserViewportResizeHandles";
 import { acquireDesktopTab, type AcquiredDesktopTab, withDesktopTab } from "./desktopTabLifetime";
+import {
+  acquireDesktopBrowserHostState,
+  useDesktopBrowserHostRevision,
+  useDesktopBrowserHostState,
+} from "./desktopBrowserSurface";
 import { resolveHostedBrowserWebviewWrapperStyle } from "./hostedBrowserWebviewStyle";
 import { usePreviewWebviewConfig } from "./previewWebviewConfigState";
 import { useBrowserLayoutZoomFactor } from "./useBrowserLayoutZoomFactor";
@@ -84,6 +91,10 @@ export function HostedBrowserWebview(props: {
   const config = usePreviewWebviewConfig(threadRef.environmentId, profileId);
   const [initialSrc] = useState(() => initialUrl ?? "about:blank");
   const tabLeaseRef = useRef<AcquiredDesktopTab | null>(null);
+  const hostLeaseRef = useRef<ReturnType<typeof acquireDesktopBrowserHostState> | null>(null);
+  const hostState = useDesktopBrowserHostState(runtimeTabId);
+  const hostRevision = useDesktopBrowserHostRevision(runtimeTabId);
+  const hostKindRef = useRef<DesktopPreviewSurfaceState["kind"]>("pending");
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const webviewRef = useRef<ElectronWebview | null>(null);
   const crashRecoveryRef = useRef<WebviewCrashRecoveryState>(INITIAL_WEBVIEW_CRASH_RECOVERY_STATE);
@@ -117,20 +128,89 @@ export function HostedBrowserWebview(props: {
   const serverColorScheme = serverRendering?.colorScheme;
   const serverZoomFactor = serverRendering?.zoomFactor;
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- leases the desktop preview tab for this webview and releases it on cleanup
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tracks the native host identity for this mount independently of late server binding
+  useEffect(() => {
+    const hostLease = acquireDesktopBrowserHostState(runtimeTabId);
+    hostLeaseRef.current = hostLease;
+    const unsubscribe = previewBridge?.onStateChange?.((changedTabId, state) => {
+      if (changedTabId !== runtimeTabId) return;
+      const kind =
+        state.hostKind ?? (state.webContentsId === null ? hostKindRef.current : "webview");
+      hostKindRef.current = kind;
+      hostLease.update({
+        kind,
+        webContentsId: state.webContentsId,
+        privateEntry: false,
+      });
+    });
+    return () => {
+      unsubscribe?.();
+      if (hostLeaseRef.current === hostLease) hostLeaseRef.current = null;
+      hostLease.release();
+    };
+  }, [runtimeTabId]);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- leases the desktop preview tab and releases it on cleanup
   useEffect(() => {
     if (!clientSettingsHydrated) return;
     crashRecoveryRef.current = INITIAL_WEBVIEW_CRASH_RECOVERY_STATE;
     const lease = acquireDesktopTab(
       runtimeTabId,
       nativeHost ? { threadId: threadRef.threadId, tabId } : undefined,
+      nativeHost ? initialSrc : undefined,
     );
     tabLeaseRef.current = lease;
     return () => {
       if (tabLeaseRef.current === lease) tabLeaseRef.current = null;
       lease.release();
     };
-  }, [clientSettingsHydrated, runtimeTabId, nativeHost, tabId, threadRef.threadId]);
+  }, [clientSettingsHydrated, runtimeTabId, nativeHost, tabId, threadRef.threadId, initialSrc]);
+
+  const viewportKey = browserViewportSettingKey(viewport);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- creates one main-owned host after its tab lease and profile configuration are ready, then updates its viewport
+  useEffect(() => {
+    // Remote tabs retain their webview until their own environment can attach its control stream.
+    if (!nativeHost) return;
+    const bridge = previewBridge;
+    const lease = tabLeaseRef.current;
+    const hostLease = hostLeaseRef.current;
+    if (!clientSettingsHydrated || !config || !bridge || !lease || !hostLease) return;
+    if (hostKindRef.current === "webview" && webviewRef.current) return;
+    let disposed = false;
+    void (async () => {
+      try {
+        await lease.ready;
+        if (disposed) return;
+        const state = await bridge.ensureOffscreenHost({
+          tabId: runtimeTabId,
+          environmentId: threadRef.environmentId,
+          ...(profileId === undefined ? {} : { profileId }),
+          viewport,
+        });
+        if (!disposed) {
+          hostKindRef.current = state.kind;
+          hostLease.update(state);
+        }
+      } catch {
+        if (!disposed)
+          toastManager.add({ type: "error", title: "Could not connect the browser tab" });
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, [
+    clientSettingsHydrated,
+    config,
+    profileId,
+    runtimeTabId,
+    nativeHost,
+    threadRef.environmentId,
+    hostState?.webContentsId,
+    hostRevision,
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- the primitive key tracks logical viewport changes without re-creating the host for equal settings
+    viewportKey,
+  ]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- applies the server color scheme to the desktop preview tab through the desktop bridge
   useEffect(() => {
@@ -160,7 +240,14 @@ export function HostedBrowserWebview(props: {
   useEffect(() => {
     const webview = webviewRef.current;
     const bridge = previewBridge;
-    if (!clientSettingsHydrated || !webview || !config || !bridge) return;
+    if (
+      !clientSettingsHydrated ||
+      !webview ||
+      !config ||
+      !bridge ||
+      (nativeHost && hostState?.kind !== "webview")
+    )
+      return;
     let disposed = false;
     let recoveryTimeout: ReturnType<typeof setTimeout> | null = null;
     const register = () => {
@@ -210,6 +297,8 @@ export function HostedBrowserWebview(props: {
   }, [
     clientSettingsHydrated,
     config,
+    hostState?.kind,
+    nativeHost,
     runtimeTabId,
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A crash recovery remounts the webview under a new key, so the listeners attach to the new element.
     webviewGeneration,
@@ -301,7 +390,8 @@ export function HostedBrowserWebview(props: {
     viewportWidth,
   ]);
 
-  if (!clientSettingsHydrated || !config) return null;
+  if (!clientSettingsHydrated || !config || (nativeHost && hostState?.kind !== "webview"))
+    return null;
 
   // Offscreen/visibility:hidden guests stop producing animation frames and
   // accepting compositor input. Keep the agent's page paintable behind the app;

@@ -2,7 +2,7 @@ import * as NodeVM from "node:vm";
 
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { sendPageCommand, toKeyboardInputEvents } from "./GuestInput.ts";
+import { sendNativeSurfaceInput, sendPageCommand, toKeyboardInputEvents } from "./GuestInput.ts";
 
 const makeGuest = ({
   focused,
@@ -37,6 +37,176 @@ const makeGuest = ({
 };
 
 describe("preview guest input", () => {
+  it.each(["field", "same-origin-frame", "cross-site-frame"])(
+    "probes the tapped %s before focus changes without reading field values",
+    async (target) => {
+      const field = {
+        tagName: "INPUT",
+        type: "password",
+        disabled: false,
+        readOnly: false,
+        closest: (selector: string): object | null => (selector === "label" ? null : field),
+        get value() {
+          throw new Error("Private values must not be read");
+        },
+      };
+      const points: Array<[number, number]> = [];
+      const frameDocument = {
+        elementFromPoint: (x: number, y: number) => {
+          points.push([x, y]);
+          return field;
+        },
+      };
+      const frame = {
+        tagName: "IFRAME",
+        contentDocument: target === "same-origin-frame" ? frameDocument : null,
+        getBoundingClientRect: () => ({ left: 10, top: 20, width: 200, height: 100 }),
+        offsetWidth: 200,
+        offsetHeight: 100,
+        clientLeft: 1,
+        clientTop: 1,
+      };
+      const document = {
+        activeElement: { tagName: "BUTTON" },
+        elementFromPoint: (x: number, y: number) => {
+          points.push([x, y]);
+          return target === "field" ? field : frame;
+        },
+      };
+      const executeJavaScript = vi.fn(async (script: string) =>
+        NodeVM.runInNewContext(script, { document }),
+      );
+      const result = await sendNativeSurfaceInput(
+        { executeJavaScript } as unknown as Electron.WebContents,
+        { type: "probe", x: 30, y: 40 },
+        () => {},
+      );
+      expect(result).toEqual({ editable: target !== "cross-site-frame" });
+      expect(points).toEqual(
+        target === "same-origin-frame"
+          ? [
+              [30, 40],
+              [19, 19],
+            ]
+          : [[30, 40]],
+      );
+      expect(document.activeElement.tagName).toBe("BUTTON");
+      await expect(
+        sendNativeSurfaceInput(
+          { executeJavaScript } as unknown as Electron.WebContents,
+          { type: "probe", x: Number.NaN, y: 40 },
+          () => {},
+        ),
+      ).rejects.toThrow("finite coordinates");
+      expect(executeJavaScript).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["focus-read", "insert", "key"])(
+    "rejects a lease revoked during %s without sending later private mutations",
+    async (phase) => {
+      let valid = true;
+      const started = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<void>();
+      const executeJavaScript = vi.fn(async (script: string) => {
+        if (script.includes("private-value")) throw new Error("Private script payload");
+        if (phase === "focus-read") {
+          started.resolve();
+          await finish.promise;
+        }
+        return true;
+      });
+      const insertText = vi.fn(async () => {
+        started.resolve();
+        await finish.promise;
+      });
+      const sendInputEvent = vi.fn(() => {
+        valid = false;
+      });
+      const current = () => {
+        if (!valid) throw new Error("Lease revoked");
+      };
+      const pending = sendNativeSurfaceInput(
+        { executeJavaScript, insertText, sendInputEvent } as unknown as Electron.WebContents,
+        phase === "key"
+          ? { type: "key", action: "down", key: "a", code: "KeyA", text: "a", modifiers: 0 }
+          : { type: "text", text: "private-value" },
+        current,
+      );
+      if (phase !== "key") {
+        await started.promise;
+        valid = false;
+        finish.resolve();
+      }
+      await expect(pending).rejects.toThrow("Lease revoked");
+      expect(
+        executeJavaScript.mock.calls.every(([script]) => !script.includes("private-value")),
+      ).toBe(true);
+      expect(insertText).toHaveBeenCalledTimes(phase === "insert" ? 1 : 0);
+      expect(sendInputEvent).toHaveBeenCalledTimes(phase === "key" ? 1 : 0);
+    },
+  );
+
+  it("maps private pointer input through guest zoom and keeps clipboard operations native", async () => {
+    const guest = makeGuest({ focused: false });
+    const webContents = Object.assign(guest.webContents, {
+      executeJavaScript: vi.fn(async () => true),
+      getZoomFactor: () => 1.25,
+      copy: vi.fn(),
+      cut: vi.fn(),
+      paste: vi.fn(),
+      selectAll: vi.fn(),
+      focus: vi.fn(),
+    });
+    const send = (input: Parameters<typeof sendNativeSurfaceInput>[1]) =>
+      sendNativeSurfaceInput(webContents as unknown as Electron.WebContents, input, () => {});
+    await send({
+      type: "mouse",
+      action: "down",
+      x: 100,
+      y: 1200,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+      modifiers: 0,
+    });
+    await send({ type: "wheel", x: 100, y: 1200, deltaX: 4, deltaY: 20, modifiers: 0 });
+    expect(webContents.sendInputEvent).toHaveBeenNthCalledWith(1, {
+      type: "mouseDown",
+      x: 125,
+      y: 1500,
+      button: "left",
+      clickCount: 1,
+      modifiers: ["leftbuttondown"],
+    });
+    expect(webContents.sendInputEvent).toHaveBeenNthCalledWith(2, {
+      type: "mouseWheel",
+      x: 125,
+      y: 1500,
+      deltaX: -5,
+      deltaY: -25,
+      modifiers: [],
+    });
+    for (const key of ["c", "x", "v", "a"])
+      await send({
+        type: "key",
+        action: "down",
+        key,
+        code: `Key${key.toUpperCase()}`,
+        modifiers: 2,
+      });
+    expect(webContents.copy).toHaveBeenCalledOnce();
+    expect(webContents.cut).toHaveBeenCalledOnce();
+    expect(webContents.paste).toHaveBeenCalledOnce();
+    expect(webContents.selectAll).toHaveBeenCalledOnce();
+    expect(webContents.sendInputEvent).toHaveBeenCalledTimes(2);
+    expect(webContents.focus).not.toHaveBeenCalled();
+    expect(guest.sendCommand).not.toHaveBeenCalled();
+    webContents.executeJavaScript.mockResolvedValue(false);
+    await expect(send({ type: "text", text: "private-value" })).rejects.toThrow(/cross-site frame/);
+    expect(webContents.insertText).not.toHaveBeenCalled();
+  });
+
   it("types into an unfocused guest's own page, not the app's focused field", async () => {
     const guest = makeGuest({ focused: false });
     await guest.send("Input.insertText", { text: "pairing-code" });

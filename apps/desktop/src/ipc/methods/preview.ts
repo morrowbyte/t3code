@@ -16,6 +16,13 @@ import {
   DesktopPreviewClearDataInputSchema,
   DesktopPreviewImportCookiesInputSchema,
   DesktopPreviewCreateTabInputSchema,
+  DesktopPreviewOffscreenHostInputSchema,
+  DesktopPreviewSurfacePresentationSchema,
+  DesktopPreviewSurfaceStateSchema,
+  DesktopPreviewSurfaceAckSchema,
+  DesktopPreviewSurfaceFocusInputSchema,
+  DesktopPreviewSurfaceInputRequestSchema,
+  DesktopPreviewSurfaceInputResultSchema,
   DesktopPreviewTabInputSchema,
   DesktopPreviewWebviewConfigSchema,
   PreviewAnnotationSubmissionResultSchema,
@@ -74,12 +81,13 @@ const createTab = DesktopIpc.makeIpcMethod({
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.preview.createTab")(function* ({
     tabId,
+    initialUrl,
     zoomFactor,
     colorScheme,
     serverTab,
   }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.createTab(tabId, { zoomFactor, colorScheme, serverTab });
+    yield* manager.createTab(tabId, { initialUrl, zoomFactor, colorScheme, serverTab });
   }),
 });
 
@@ -100,6 +108,66 @@ const registerWebview = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.registerWebview")(function* ({ tabId, webContentsId }) {
     const manager = yield* PreviewManager.PreviewManager;
     yield* manager.registerWebview(tabId, webContentsId);
+  }),
+});
+
+const ensureOffscreenHost = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_ENSURE_OFFSCREEN_HOST_CHANNEL,
+  payload: DesktopPreviewOffscreenHostInputSchema,
+  result: DesktopPreviewSurfaceStateSchema,
+  handler: Effect.fn("desktop.ipc.preview.ensureOffscreenHost")(function* (
+    { tabId, environmentId, profileId, viewport },
+    event,
+  ) {
+    const manager = yield* PreviewManager.PreviewManager;
+    const { scope, persistent, namespace } = resolvePartitionScope(environmentId, profileId);
+    yield* manager.getBrowserSession(scope, persistent, namespace);
+    const partition = yield* manager.getBrowserPartition(scope, persistent, namespace);
+    return yield* manager.ensureOffscreenHost(
+      tabId,
+      { partition, preload: `${__dirname}/preview-pick-preload.cjs`, viewport },
+      event?.sender.id,
+    );
+  }),
+});
+
+const presentLocalSurface = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_LOCAL_SURFACE_PRESENT_CHANNEL,
+  payload: DesktopPreviewSurfacePresentationSchema,
+  result: DesktopPreviewSurfaceStateSchema,
+  handler: Effect.fn("desktop.ipc.preview.presentLocalSurface")(function* (input, event) {
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* manager.presentSurface(input, event?.sender.id);
+  }),
+});
+
+const ackLocalSurface = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_LOCAL_SURFACE_ACK_CHANNEL,
+  payload: DesktopPreviewSurfaceAckSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.ackLocalSurface")(function* (input, event) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.ackSurface(input, event?.sender.id);
+  }),
+});
+
+const inputLocalSurface = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_LOCAL_SURFACE_INPUT_CHANNEL,
+  payload: DesktopPreviewSurfaceInputRequestSchema,
+  result: DesktopPreviewSurfaceInputResultSchema,
+  handler: Effect.fn("desktop.ipc.preview.inputLocalSurface")(function* (input, event) {
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* manager.sendSurfaceInput(input, event?.sender.id);
+  }),
+});
+
+const focusLocalSurface = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_LOCAL_SURFACE_FOCUS_CHANNEL,
+  payload: DesktopPreviewSurfaceFocusInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.focusLocalSurface")(function* (input, event) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.focusSurface(input, event?.sender.id);
   }),
 });
 
@@ -421,6 +489,11 @@ export const methods = [
   createTab,
   closeTab,
   registerWebview,
+  ensureOffscreenHost,
+  presentLocalSurface,
+  ackLocalSurface,
+  focusLocalSurface,
+  inputLocalSurface,
   navigate,
   goBack,
   goForward,

@@ -1003,7 +1003,20 @@ const make = Effect.gen(function* () {
   const applySetting = async (tab: ServerTab, setting: PreviewViewportSetting) => {
     tab.setting = setting;
 
-    if (tab.desktop) return;
+    if (tab.desktop) {
+      const size = fixedViewportSize(setting);
+      if (size) {
+        await tab.cdp.send("Emulation.setDeviceMetricsOverride", {
+          ...size,
+          deviceScaleFactor: 0,
+          mobile: false,
+        });
+      } else {
+        await tab.cdp.send("Emulation.clearDeviceMetricsOverride");
+      }
+      await broadcastViewport(tab);
+      return;
+    }
     const size =
       fixedViewportSize(setting) ??
       [...tab.viewers]
@@ -1690,7 +1703,9 @@ const make = Effect.gen(function* () {
     const snapshot = sessions.find((session) => session.tabId === tabId);
     if (
       !snapshot ||
-      (snapshot.runtime !== "server" && !(yield* desktopChannel.isAttached({ threadId, tabId })))
+      (snapshot.runtime !== "server" &&
+        !(yield* desktopChannel.isAttached({ threadId, tabId })) &&
+        !(yield* Effect.promise(() => desktopRenders(snapshot))))
     )
       return yield* new ServerBrowserTabNotFoundError({ threadId, tabId });
     return yield* Effect.tryPromise({
@@ -2520,7 +2535,9 @@ const make = Effect.gen(function* () {
         return {
           tabId: tab.tabId,
           setting,
-          viewport: tab.page.viewportSize() ?? UNATTACHED_FILL_VIEWPORT,
+          viewport:
+            (tab.desktop ? await layoutSize(tab) : tab.page.viewportSize()) ??
+            UNATTACHED_FILL_VIEWPORT,
         };
       }
       case "setColorScheme": {

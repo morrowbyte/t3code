@@ -81,6 +81,14 @@ export const PREVIEW_SET_FORWARDED_SHORTCUTS_CHANNEL = "desktop:preview-set-forw
 export const PREVIEW_CREATE_TAB_CHANNEL = "desktop:preview-create-tab";
 export const PREVIEW_CLOSE_TAB_CHANNEL = "desktop:preview-close-tab";
 export const PREVIEW_REGISTER_WEBVIEW_CHANNEL = "desktop:preview-register-webview";
+export const PREVIEW_ENSURE_OFFSCREEN_HOST_CHANNEL = "desktop:preview-ensure-offscreen-host";
+export const PREVIEW_LOCAL_SURFACE_PRESENT_CHANNEL = "desktop:preview-local-surface-present";
+export const PREVIEW_LOCAL_SURFACE_ACK_CHANNEL = "desktop:preview-local-surface-ack";
+export const PREVIEW_LOCAL_SURFACE_INPUT_CHANNEL = "desktop:preview-local-surface-input";
+export const PREVIEW_LOCAL_SURFACE_FRAME_CHANNEL = "desktop:preview-local-surface-frame";
+export const PREVIEW_LOCAL_SURFACE_FOCUS_CHANNEL = "desktop:preview-local-surface-focus";
+export const PREVIEW_LOCAL_SURFACE_FOCUS_REQUEST_CHANNEL =
+  "desktop:preview-local-surface-focus-request";
 export const PREVIEW_NAVIGATE_CHANNEL = "desktop:preview-navigate";
 export const PREVIEW_GO_BACK_CHANNEL = "desktop:preview-go-back";
 export const PREVIEW_GO_FORWARD_CHANNEL = "desktop:preview-go-forward";

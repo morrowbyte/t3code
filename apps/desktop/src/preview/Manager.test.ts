@@ -2,10 +2,13 @@ import { it as effectIt } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import type {
   DesktopPreviewRecordingInputEvent,
+  DesktopPreviewSurfaceFrame,
+  DesktopPreviewSurfaceFocusRequest,
   PreviewAnnotationPayload,
   PreviewAnnotationRect,
 } from "@t3tools/contracts";
 import * as NodeVM from "node:vm";
+import * as NodeEvents from "node:events";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { parseKeybindingShortcut } from "@t3tools/shared/keybindings";
 import * as Cause from "effect/Cause";
@@ -27,9 +30,11 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import { PREVIEW_LOCAL_SURFACE_FOCUS_REQUEST_CHANNEL } from "../ipc/channels.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
 import * as PreviewManager from "./Manager.ts";
+import { createOffscreenHost } from "./OffscreenHost.ts";
 import * as PreviewPasskeys from "./Passkeys.ts";
 import { makeProtonPassProvider } from "./ProtonPassCli.ts";
 import { makeAutofill } from "./ProtonPassAutofill.ts";
@@ -184,6 +189,9 @@ vi.mock("electron", () => ({
   },
   nativeImage: {
     createFromPath,
+  },
+  screen: {
+    getDisplayMatching: vi.fn(() => ({ scaleFactor: 1 })),
   },
   shell: {
     showItemInFolder,
@@ -444,6 +452,137 @@ const makeTestPreviewWebContents = (
   } as unknown as TestPreviewWebContents;
 };
 
+const makeOffscreenFixture = (existingOwner?: Electron.BrowserWindow) => {
+  const events = new NodeEvents.EventEmitter();
+  const ownerEvents = new NodeEvents.EventEmitter();
+  const debuggerEvents = new NodeEvents.EventEmitter();
+  let destroyed = false;
+  let attached = false;
+  let zoomFactor = 1;
+  let currentUrl = "about:blank";
+  let contentSize = [1, 1];
+  const image = (content = "frame") => ({
+    getSize: () => ({ width: contentSize[0]!, height: contentSize[1]! }),
+    toBitmap: vi.fn(() => Buffer.from(content)),
+    toPNG: vi.fn(() => Buffer.from(content)),
+    toJPEG: () => Buffer.from(content),
+  });
+  const capturePage = vi.fn(async () => image());
+  const wc = Object.assign(makeTestPreviewWebContents(capturePage), {
+    mainFrame: {
+      origin: "https://example.com",
+      isDestroyed: () => false,
+    } as Electron.WebFrameMain,
+    session: { getStoragePath: () => "/synthetic/osr-profile" } as Electron.Session,
+    isFocused: vi.fn(() => false),
+    executeJavaScript: vi.fn<(_script: string) => Promise<unknown>>(async () => ({
+      width: 1280,
+      height: 720,
+    })),
+    executeJavaScriptInIsolatedWorld: vi.fn(async () => true),
+    hostWebContents: null,
+    getType: () => "offscreen",
+    getURL: () => currentUrl,
+    isDestroyed: () => destroyed,
+    isDevToolsOpened: () => false,
+    getZoomFactor: () => zoomFactor,
+    setZoomFactor: vi.fn((factor: number) => {
+      zoomFactor = factor;
+    }),
+    setFrameRate: vi.fn(),
+    startPainting: vi.fn(),
+    stopPainting: vi.fn(),
+    invalidate: vi.fn(),
+    loadURL: vi.fn(async (url: string) => {
+      currentUrl = url;
+    }),
+    insertText: vi.fn(async () => {}),
+    sendInputEvent: vi.fn(),
+    on: events.on.bind(events),
+    once: events.once.bind(events),
+    off: events.off.bind(events),
+    debugger: {
+      isAttached: () => attached,
+      attach: vi.fn(() => {
+        attached = true;
+      }),
+      detach: vi.fn(() => {
+        attached = false;
+      }),
+      sendCommand: vi.fn(async () => undefined),
+      on: debuggerEvents.on.bind(debuggerEvents),
+      off: debuggerEvents.off.bind(debuggerEvents),
+    },
+  });
+  const send = vi.fn<(channel: string, frame: DesktopPreviewSurfaceFrame) => void>();
+  const focusRequest = vi.fn<(request: DesktopPreviewSurfaceFocusRequest) => void>();
+  const ownerFocused = vi.fn(() => true);
+  const owner =
+    existingOwner ??
+    ({
+      isDestroyed: () => false,
+      isFocused: ownerFocused,
+      on: ownerEvents.on.bind(ownerEvents),
+      off: ownerEvents.off.bind(ownerEvents),
+      once: ownerEvents.once.bind(ownerEvents),
+      getBounds: () => ({ x: 0, y: 0, width: 1000, height: 700 }),
+      webContents: {
+        ...makeTestHostWebContents(),
+        on: ownerEvents.on.bind(ownerEvents),
+        off: ownerEvents.off.bind(ownerEvents),
+        send: (
+          channel: string,
+          payload: DesktopPreviewSurfaceFrame | DesktopPreviewSurfaceFocusRequest,
+        ) => {
+          if (channel === PREVIEW_LOCAL_SURFACE_FOCUS_REQUEST_CHANNEL && "requestId" in payload) {
+            focusRequest(payload);
+          } else if ("png" in payload) {
+            send(channel, payload);
+          }
+        },
+        setBackgroundThrottling: vi.fn(),
+      },
+    } as unknown as Electron.BrowserWindow);
+  const window = {
+    webContents: wc,
+    isDestroyed: () => destroyed,
+    setContentSize: vi.fn((width: number, height: number) => {
+      contentSize = [width, height];
+    }),
+    getContentSize: () => contentSize,
+    destroy: vi.fn(() => {
+      destroyed = true;
+      events.emit("destroyed");
+    }),
+  };
+  browserWindowConstructor.mockImplementation(function () {
+    return window;
+  });
+  fromId.mockImplementation((id) => (id === wc.id && !destroyed ? wc : null));
+  return {
+    wc,
+    owner,
+    window,
+    events,
+    ownerEvents,
+    ownerFocused,
+    focusRequest,
+    capturePage,
+    image,
+    send,
+    configuration: {
+      partition: "persist:t3code-preview-test",
+      preload: "/tmp/t3/desktop/preview-pick-preload.cjs",
+      viewport: { _tag: "freeform" as const, width: 1440, height: 1700 },
+    },
+    paint: (content = "frame") => {
+      const frame = image(content);
+      events.emit("paint", {}, { x: 0, y: 0, width: 1, height: 1 }, frame);
+      return frame;
+    },
+  };
+};
+
 const setupRecordingRaceTabs = (manager: PreviewManager.PreviewManager["Service"]) =>
   Effect.gen(function* () {
     const capturePage = vi.fn(async () => ({
@@ -669,6 +808,607 @@ describe("PreviewManager", () => {
     writeClipboard.mockClear();
     createFromPath.mockClear();
     webviewSend.mockClear();
+  });
+
+  effectIt.effect(
+    "creates one main-owned host for concurrent requests and preserves its page",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const fixture = makeOffscreenFixture();
+          const hosted: Electron.WebContents[] = [];
+          yield* manager.setMainWindow(fixture.owner);
+          yield* manager.subscribeHostedContents((owner, contents) =>
+            Effect.sync(() => {
+              expect(owner).toBe(fixture.owner);
+              hosted.push(contents);
+            }),
+          );
+          yield* manager.createTab("osr_tab", { zoomFactor: 1.25 });
+          const states = yield* Effect.all(
+            [
+              manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7),
+              manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7),
+            ],
+            { concurrency: 2 },
+          );
+          expect(states).toEqual([
+            { kind: "offscreen", webContentsId: 42, privateEntry: false },
+            { kind: "offscreen", webContentsId: 42, privateEntry: false },
+          ]);
+          expect(browserWindowConstructor).toHaveBeenCalledOnce();
+          expect(fixture.window.setContentSize).toHaveBeenCalledExactlyOnceWith(1800, 2125);
+          expect(hosted).toEqual([fixture.wc]);
+          expect(fixture.wc.loadURL).not.toHaveBeenCalled();
+          const mismatch = yield* Effect.exit(
+            manager.ensureOffscreenHost(
+              "osr_tab",
+              {
+                ...fixture.configuration,
+                partition: "persist:t3code-preview-other",
+              },
+              7,
+            ),
+          );
+          expect(Exit.isFailure(mismatch)).toBe(true);
+          expect(browserWindowConstructor).toHaveBeenCalledOnce();
+          expect(fixture.window.destroy).not.toHaveBeenCalled();
+        }),
+      ),
+  );
+
+  effectIt.effect(
+    "returns a healthy legacy webview without creating or navigating another guest",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const fixture = makeOffscreenFixture();
+          const legacy = Object.assign(makeTestPreviewWebContents(fixture.capturePage, 43), {
+            hostWebContents: fixture.owner.webContents,
+          });
+          fromId.mockReturnValue(legacy);
+          yield* manager.setMainWindow(fixture.owner);
+          yield* manager.createTab("legacy_tab");
+          yield* manager.registerWebview("legacy_tab", legacy.id);
+          const state = yield* manager.ensureOffscreenHost("legacy_tab", fixture.configuration, 7);
+          expect(state).toEqual({ kind: "webview", webContentsId: 43, privateEntry: false });
+          expect(browserWindowConstructor).not.toHaveBeenCalled();
+          expect(fixture.wc.loadURL).not.toHaveBeenCalled();
+          expect(yield* manager.restoreSurfaceFocus(legacy)).toBe(false);
+        }),
+      ),
+  );
+
+  effectIt.effect(
+    "navigates a newly created Idle tab from initialUrl once through pending navigation",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const fixture = makeOffscreenFixture();
+          const loaded = Promise.withResolvers<void>();
+          fixture.wc.loadURL.mockImplementation(async () => {
+            loaded.resolve();
+          });
+          yield* manager.setMainWindow(fixture.owner);
+          const tab = yield* manager.createTab("osr_tab", {
+            initialUrl: "https://example.com/initial",
+          });
+          expect(tab.navStatus).toMatchObject({
+            kind: "Loading",
+            url: "https://example.com/initial",
+          });
+          expect(fixture.wc.loadURL).not.toHaveBeenCalled();
+          yield* manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7);
+          yield* Effect.promise(() => loaded.promise);
+          yield* manager.createTab("osr_tab", { initialUrl: "https://example.com/stale-snapshot" });
+          yield* manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7);
+          expect(fixture.wc.loadURL).toHaveBeenCalledExactlyOnceWith("https://example.com/initial");
+          expect(browserWindowConstructor).toHaveBeenCalledOnce();
+        }),
+      ),
+  );
+
+  effectIt.effect(
+    "retires a crashed OSR host and restores its pending URL into one fresh host",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const fixture = makeOffscreenFixture();
+          yield* manager.setMainWindow(fixture.owner);
+          yield* manager.createTab("osr_tab", { initialUrl: "https://example.com/restore" });
+          yield* manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7);
+          const retired = Promise.withResolvers<void>();
+          fixture.events.once("destroyed", () => retired.resolve());
+          fixture.events.emit("render-process-gone");
+          yield* Effect.promise(() => retired.promise);
+          expect(fixture.window.destroy).toHaveBeenCalledOnce();
+          const recovery = makeOffscreenFixture(fixture.owner);
+          const loaded = Promise.withResolvers<void>();
+          recovery.wc.loadURL.mockImplementation(async () => {
+            loaded.resolve();
+          });
+          yield* manager.ensureOffscreenHost("osr_tab", recovery.configuration, 7);
+          yield* Effect.promise(() => loaded.promise);
+          expect(recovery.wc.loadURL).toHaveBeenCalledExactlyOnceWith(
+            "https://example.com/restore",
+          );
+          yield* manager.ensureOffscreenHost("osr_tab", recovery.configuration, 7);
+          expect(recovery.wc.loadURL).toHaveBeenCalledOnce();
+          expect(recovery.window.destroy).not.toHaveBeenCalled();
+        }),
+      ),
+  );
+
+  effectIt.effect(
+    "encodes one local frame until the matching ACK and repaints only dropped changes",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const fixture = makeOffscreenFixture();
+          yield* manager.setMainWindow(fixture.owner);
+          yield* manager.createTab("osr_tab");
+          yield* manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7);
+          const presentation = { tabId: "osr_tab", surfaceId: "surface_a", visible: true };
+          yield* manager.presentSurface(presentation, 7);
+          const first = fixture.paint("a");
+          const identity = fixture.send.mock.calls[0]![1];
+          yield* manager.ackSurface({ ...identity, generation: identity.generation + 1 }, 7);
+          const dropped = fixture.paint("b");
+          expect(first.toPNG).toHaveBeenCalledOnce();
+          expect(dropped.toPNG).not.toHaveBeenCalled();
+          expect(fixture.send).toHaveBeenCalledOnce();
+          const beforeDirtyAck = fixture.wc.invalidate.mock.calls.length;
+          yield* manager.ackSurface(identity, 7);
+          expect(fixture.wc.invalidate).toHaveBeenCalledTimes(beforeDirtyAck + 1);
+          fixture.paint("b");
+          const next = fixture.send.mock.calls[1]![1];
+          fixture.paint("b");
+          const beforeCleanAck = fixture.wc.invalidate.mock.calls.length;
+          yield* manager.ackSurface(next, 7);
+          expect(fixture.wc.invalidate).toHaveBeenCalledTimes(beforeCleanAck);
+          fixture.paint("b");
+          expect(fixture.send).toHaveBeenCalledTimes(2);
+          yield* manager.presentSurface(
+            { ...presentation, surfaceId: "surface_b", visible: false },
+            7,
+          );
+          fixture.paint("c");
+          expect(fixture.send).toHaveBeenCalledTimes(3);
+          yield* manager.presentSurface({ ...presentation, visible: false }, 7);
+          const hidden = fixture.paint("d");
+          expect(hidden.toBitmap).not.toHaveBeenCalled();
+          expect(hidden.toPNG).not.toHaveBeenCalled();
+          expect(fixture.send).toHaveBeenCalledTimes(3);
+        }),
+      ),
+  );
+
+  effectIt.effect(
+    "uses confirmed main-renderer focus for OSR private entry and explicit resume",
+    () =>
+      withAutofillManager((manager, authorityReady, peer) =>
+        Effect.gen(function* () {
+          const fixture = makeOffscreenFixture();
+          yield* manager.setMainWindow(fixture.owner);
+          yield* manager.createTab("osr_tab", {
+            serverTab: { threadId: "unit-thread", tabId: "unit-tab" },
+          });
+          yield* manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7);
+          yield* Deferred.await(authorityReady);
+          yield* manager.presentSurface(
+            { tabId: "osr_tab", surfaceId: "surface_a", visible: true },
+            7,
+          );
+          fixture.paint();
+          const identity = fixture.send.mock.calls.at(-1)![1];
+          yield* manager.ackSurface(identity, 7);
+          const target = yield* manager.getAutofillTarget(fixture.wc, fixture.wc.mainFrame);
+          expect(target).toBeDefined();
+          expect(target?.current()).toBe(false);
+          const requested = Promise.withResolvers<DesktopPreviewSurfaceFocusRequest>();
+          fixture.focusRequest.mockImplementation((request) => requested.resolve(request));
+          const restore = yield* manager.restoreSurfaceFocus(fixture.wc).pipe(Effect.forkScoped);
+          const request = yield* Effect.promise(() => requested.promise);
+          yield* manager.focusSurface({ ...request, requestId: "stale-request", focused: true }, 7);
+          expect(target?.current()).toBe(false);
+          yield* manager.focusSurface({ ...request, focused: true }, 7);
+          expect(yield* Fiber.join(restore)).toBe(true);
+          expect(fixture.wc.isFocused()).toBe(false);
+          expect(target?.current()).toBe(true);
+          fixture.paint("unchanged");
+          const decoding = fixture.send.mock.calls.at(-1)![1];
+          expect(decoding.sequence).toBeGreaterThan(identity.sequence);
+          expect(target?.current()).toBe(true);
+          yield* manager.ackSurface(decoding, 7);
+          expect(target?.current()).toBe(false);
+          yield* manager.focusSurface({ ...decoding, focused: true }, 7);
+          expect(target?.current()).toBe(true);
+          const privacyInvalidated = Promise.withResolvers<void>();
+          fixture.wc.invalidate.mockImplementationOnce(() => privacyInvalidated.resolve());
+          yield* Effect.promise(() => target!.enterPrivate());
+          expect(peer.host.isPrivateEntry(fixture.wc)).toBe(true);
+          yield* Effect.promise(() => privacyInvalidated.promise);
+          fixture.paint("unchanged");
+          const privateFrame = fixture.send.mock.calls.at(-1)![1];
+          expect(privateFrame.privateEntry).toBe(true);
+          expect(target?.current()).toBe(true);
+          yield* manager.ackSurface(privateFrame, 7);
+          expect(target?.current()).toBe(false);
+          yield* manager.focusSurface({ ...privateFrame, focused: true }, 7);
+          expect(target?.current()).toBe(true);
+          fixture.wc.executeJavaScript.mockResolvedValueOnce(true);
+          yield* manager.sendSurfaceInput(
+            { ...privateFrame, input: { type: "text", text: "unit-private-input" } },
+            7,
+          );
+          expect(fixture.wc.insertText).toHaveBeenCalledExactlyOnceWith("unit-private-input");
+          const resumeRequested = Promise.withResolvers<DesktopPreviewSurfaceFocusRequest>();
+          fixture.focusRequest.mockImplementation((next) => resumeRequested.resolve(next));
+          const restoreForResume = yield* manager
+            .restoreSurfaceFocus(fixture.wc)
+            .pipe(Effect.forkScoped);
+          const resumeRequest = yield* Effect.promise(() => resumeRequested.promise);
+          expect(resumeRequest.requestId).not.toBe(request.requestId);
+          yield* manager.focusSurface({ ...resumeRequest, focused: true }, 7);
+          expect(yield* Fiber.join(restoreForResume)).toBe(true);
+          const sharingInvalidated = Promise.withResolvers<void>();
+          fixture.wc.invalidate.mockImplementationOnce(() => sharingInvalidated.resolve());
+          yield* Effect.promise(() => target!.clearAndResume());
+          expect(peer.host.isPrivateEntry(fixture.wc)).toBe(false);
+          yield* Effect.promise(() => sharingInvalidated.promise);
+          fixture.paint("unchanged");
+          expect(fixture.send.mock.calls.at(-1)![1].privateEntry).toBe(false);
+          expect(fixture.wc.debugger.sendCommand).not.toHaveBeenCalledWith(
+            "Input.insertText",
+            expect.anything(),
+          );
+        }),
+      ),
+  );
+
+  for (const boundary of [
+    "no-confirmation",
+    "frame-ack-only",
+    "foreign-sender",
+    "wrong-surface",
+    "wrong-webcontents",
+    "stale-frame",
+    "stale-generation",
+    "false-proof",
+    "owner-blur",
+    "hidden",
+    "document-epoch",
+    "close",
+  ] as const) {
+    effectIt.effect(`refuses OSR autofill focus at the ${boundary} boundary`, () =>
+      withAutofillManager((manager, authorityReady) =>
+        Effect.gen(function* () {
+          const fixture = makeOffscreenFixture();
+          fixture.wc.isFocused.mockReturnValue(true);
+          yield* manager.setMainWindow(fixture.owner);
+          yield* manager.createTab("osr_tab", {
+            serverTab: { threadId: "unit-thread", tabId: "unit-tab" },
+          });
+          yield* manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7);
+          yield* Deferred.await(authorityReady);
+          const presentation = { tabId: "osr_tab", surfaceId: "surface_a", visible: true };
+          yield* manager.presentSurface(presentation, 7);
+          fixture.paint();
+          const identity = fixture.send.mock.calls.at(-1)![1];
+          if (boundary !== "no-confirmation") yield* manager.ackSurface(identity, 7);
+          const target = yield* manager.getAutofillTarget(fixture.wc, fixture.wc.mainFrame);
+          expect(target).toBeDefined();
+          const proof = { ...identity, focused: true };
+          if (boundary === "foreign-sender") {
+            expect(Exit.isFailure(yield* Effect.exit(manager.focusSurface(proof, 8)))).toBe(true);
+          } else if (boundary === "wrong-surface") {
+            yield* manager.focusSurface({ ...proof, surfaceId: "other-surface" }, 7);
+          } else if (boundary === "wrong-webcontents") {
+            yield* manager.focusSurface({ ...proof, webContentsId: 43 }, 7);
+          } else if (boundary === "stale-frame") {
+            yield* manager.ackSurface(identity, 7);
+            fixture.paint("new-frame");
+            yield* manager.ackSurface(fixture.send.mock.calls.at(-1)![1], 7);
+            yield* manager.focusSurface(proof, 7);
+          } else if (boundary === "stale-generation") {
+            yield* manager.ensureOffscreenHost(
+              "osr_tab",
+              {
+                ...fixture.configuration,
+                viewport: { _tag: "freeform", width: 900, height: 650 },
+              },
+              7,
+            );
+            yield* manager.focusSurface(proof, 7);
+          } else if (boundary !== "no-confirmation" && boundary !== "frame-ack-only") {
+            yield* manager.focusSurface(proof, 7);
+            expect(target?.current()).toBe(true);
+            if (boundary === "false-proof") {
+              yield* manager.focusSurface({ ...proof, focused: false }, 7);
+            } else if (boundary === "owner-blur") {
+              fixture.ownerFocused.mockReturnValue(false);
+              expect(target?.current()).toBe(false);
+              fixture.ownerEvents.emit("blur");
+              fixture.ownerFocused.mockReturnValue(true);
+            } else if (boundary === "hidden") {
+              yield* manager.presentSurface({ ...presentation, visible: false }, 7);
+              yield* manager.presentSurface(presentation, 7);
+              fixture.paint("shown-again");
+              yield* manager.focusSurface(proof, 7);
+            } else if (boundary === "document-epoch") {
+              fixture.events.emit("did-start-navigation", { isMainFrame: true });
+              yield* manager.ackSurface(identity, 7);
+              fixture.paint("new-document");
+              yield* manager.ackSurface(fixture.send.mock.calls.at(-1)![1], 7);
+              yield* manager.focusSurface(
+                { ...fixture.send.mock.calls.at(-1)![1], focused: true },
+                7,
+              );
+            } else if (boundary === "close") {
+              yield* manager.closeTab("osr_tab");
+              expect(
+                Exit.isFailure(yield* Effect.exit(manager.restoreSurfaceFocus(fixture.wc))),
+              ).toBe(true);
+            }
+          }
+          expect(target?.current()).toBe(false);
+          expect(
+            Exit.isFailure(yield* Effect.exit(Effect.tryPromise(() => target!.enterPrivate()))),
+          ).toBe(true);
+          expect(fixture.wc.executeJavaScriptInIsolatedWorld).not.toHaveBeenCalled();
+          expect(fixture.wc.insertText).not.toHaveBeenCalled();
+        }),
+      ),
+    );
+  }
+
+  for (const boundary of ["timeout", "blur", "hide", "navigate", "close"] as const) {
+    effectIt.effect(`cancels a pending OSR menu focus request on ${boundary}`, () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const fixture = makeOffscreenFixture();
+          yield* manager.setMainWindow(fixture.owner);
+          yield* manager.createTab("osr_tab");
+          yield* manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7);
+          const presentation = { tabId: "osr_tab", surfaceId: "surface_a", visible: true };
+          yield* manager.presentSurface(presentation, 7);
+          fixture.paint();
+          yield* manager.ackSurface(fixture.send.mock.calls.at(-1)![1], 7);
+          const requested = Promise.withResolvers<DesktopPreviewSurfaceFocusRequest>();
+          fixture.focusRequest.mockImplementation((request) => requested.resolve(request));
+          const restore = yield* manager.restoreSurfaceFocus(fixture.wc).pipe(Effect.forkScoped);
+          const request = yield* Effect.promise(() => requested.promise);
+          expect(Exit.isFailure(yield* Effect.exit(manager.restoreSurfaceFocus(fixture.wc)))).toBe(
+            true,
+          );
+          if (boundary === "timeout") yield* TestClock.adjust(1_000);
+          else if (boundary === "blur") fixture.ownerEvents.emit("blur");
+          else if (boundary === "hide") {
+            yield* manager.presentSurface({ ...presentation, visible: false }, 7);
+          } else if (boundary === "navigate") {
+            fixture.events.emit("did-start-navigation", { isMainFrame: true });
+          } else yield* manager.closeTab("osr_tab");
+          expect(Exit.isFailure(yield* Fiber.await(restore))).toBe(true);
+          yield* manager.focusSurface({ ...request, focused: true }, 7);
+          expect(fixture.wc.insertText).not.toHaveBeenCalled();
+        }),
+      ),
+    );
+  }
+
+  effectIt.effect("rechecks real main-window focus after awaited OSR private work", () =>
+    withAutofillManager((manager, authorityReady) =>
+      Effect.gen(function* () {
+        const fixture = makeOffscreenFixture();
+        yield* manager.setMainWindow(fixture.owner);
+        yield* manager.createTab("osr_tab", {
+          serverTab: { threadId: "unit-thread", tabId: "unit-tab" },
+        });
+        yield* manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7);
+        yield* Deferred.await(authorityReady);
+        yield* manager.presentSurface(
+          { tabId: "osr_tab", surfaceId: "surface_a", visible: true },
+          7,
+        );
+        fixture.paint();
+        yield* manager.ackSurface(fixture.send.mock.calls.at(-1)![1], 7);
+        yield* manager.focusSurface({ ...fixture.send.mock.calls.at(-1)![1], focused: true }, 7);
+        const target = yield* manager.getAutofillTarget(fixture.wc, fixture.wc.mainFrame);
+        yield* Effect.promise(() => target!.enterPrivate());
+        fixture.paint("private-frame");
+        yield* manager.ackSurface(fixture.send.mock.calls.at(-1)![1], 7);
+        yield* manager.focusSurface({ ...fixture.send.mock.calls.at(-1)![1], focused: true }, 7);
+        const entered = Promise.withResolvers<void>();
+        const settled = Promise.withResolvers<boolean>();
+        fixture.wc.executeJavaScriptInIsolatedWorld.mockImplementationOnce(() => {
+          entered.resolve();
+          return settled.promise;
+        });
+        const assertion = yield* Effect.tryPromise(async () => {
+          await target!.assertPrivate();
+        }).pipe(Effect.forkScoped);
+        yield* Effect.promise(() => entered.promise);
+        fixture.ownerFocused.mockReturnValue(false);
+        settled.resolve(true);
+        expect(Exit.isFailure(yield* Fiber.await(assertion))).toBe(true);
+        expect(target?.current()).toBe(false);
+      }),
+    ),
+  );
+
+  effectIt.effect(
+    "rejects foreign senders and private input without the existing live reservation",
+    () =>
+      withManager((manager, authority) =>
+        Effect.gen(function* () {
+          const fixture = makeOffscreenFixture();
+          yield* manager.setMainWindow(fixture.owner);
+          yield* manager.createTab("osr_tab");
+          expect(
+            Exit.isFailure(
+              yield* Effect.exit(manager.ensureOffscreenHost("osr_tab", fixture.configuration, 8)),
+            ),
+          ).toBe(true);
+          expect(browserWindowConstructor).not.toHaveBeenCalled();
+          yield* manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7);
+          const presentation = { tabId: "osr_tab", surfaceId: "surface_a", visible: true };
+          yield* manager.presentSurface(presentation, 7);
+          fixture.paint();
+          const identity = fixture.send.mock.calls[0]![1];
+          const input = {
+            ...identity,
+            input: { type: "text" as const, text: "unit-private-text" },
+          };
+          for (const operation of [
+            manager.presentSurface(presentation, 8).pipe(Effect.asVoid),
+            manager.ackSurface(identity, 8),
+            manager.sendSurfaceInput(input, 8).pipe(Effect.asVoid),
+            manager.sendSurfaceInput(input, 7).pipe(Effect.asVoid),
+          ]) {
+            expect(Exit.isFailure(yield* Effect.exit(operation))).toBe(true);
+          }
+          authority.setPrivateEntry(fixture.wc, true);
+          yield* manager.ackSurface(identity, 7);
+          fixture.paint("private-frame");
+          const privateFrame = fixture.send.mock.calls.at(-1)![1];
+          expect(privateFrame.privateEntry).toBe(true);
+          expect(
+            Exit.isFailure(
+              yield* Effect.exit(
+                manager.sendSurfaceInput(
+                  {
+                    ...privateFrame,
+                    input: input.input,
+                  },
+                  7,
+                ),
+              ),
+            ),
+          ).toBe(true);
+          expect(fixture.wc.insertText).not.toHaveBeenCalled();
+          expect(fixture.wc.sendInputEvent).not.toHaveBeenCalled();
+          expect(fixture.wc.debugger.sendCommand).not.toHaveBeenCalledWith(
+            "Input.insertText",
+            expect.anything(),
+          );
+          authority.setPrivateEntry(fixture.wc, false);
+        }),
+      ),
+  );
+
+  for (const boundary of ["navigation", "resize-return"] as const) {
+    effectIt.effect(`rejects an OSR screenshot crossing ${boundary}`, () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const fixture = makeOffscreenFixture();
+          const pending = Promise.withResolvers<ReturnType<typeof fixture.image>>();
+          const started = Promise.withResolvers<void>();
+          fixture.capturePage.mockImplementation(() => {
+            started.resolve();
+            return pending.promise;
+          });
+          yield* manager.setMainWindow(fixture.owner);
+          yield* manager.createTab("osr_tab");
+          yield* manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7);
+          const capture = yield* manager
+            .captureScreenshot("osr_tab")
+            .pipe(Effect.exit, Effect.forkScoped);
+          yield* Effect.promise(() => started.promise);
+          if (boundary === "navigation") {
+            fixture.events.emit("did-start-navigation", {
+              isMainFrame: true,
+              isSameDocument: false,
+            });
+          } else {
+            yield* manager.ensureOffscreenHost(
+              "osr_tab",
+              {
+                ...fixture.configuration,
+                viewport: { _tag: "freeform", width: 900, height: 650 },
+              },
+              7,
+            );
+            yield* manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7);
+          }
+          pending.resolve(fixture.image());
+          const result = yield* Fiber.join(capture);
+          expect(Exit.isFailure(result)).toBe(true);
+          if (Exit.isFailure(result)) {
+            expect(Option.getOrThrow(Cause.findErrorOption(result.cause))).toMatchObject({
+              _tag: "PreviewCaptureRaceError",
+              tabId: "osr_tab",
+              webContentsId: 42,
+            });
+          }
+          expect(writeFile).not.toHaveBeenCalled();
+        }),
+      ),
+    );
+  }
+
+  effectIt.effect(
+    "keeps a timed-out native capture held until its original promise settles after close",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const fixture = makeOffscreenFixture();
+          const pending = Promise.withResolvers<ReturnType<typeof fixture.image>>();
+          const started = Promise.withResolvers<void>();
+          fixture.capturePage.mockImplementation(() => {
+            started.resolve();
+            return pending.promise;
+          });
+          yield* manager.setMainWindow(fixture.owner);
+          yield* manager.createTab("osr_tab");
+          yield* manager.ensureOffscreenHost("osr_tab", fixture.configuration, 7);
+          const capture = yield* manager
+            .captureScreenshot("osr_tab")
+            .pipe(Effect.exit, Effect.forkScoped);
+          yield* Effect.promise(() => started.promise);
+          yield* TestClock.adjust(1_000);
+          expect(Exit.isFailure(yield* Fiber.join(capture))).toBe(true);
+          expect(Exit.isFailure(yield* Effect.exit(manager.captureScreenshot("osr_tab")))).toBe(
+            true,
+          );
+          expect(fixture.capturePage).toHaveBeenCalledOnce();
+          yield* manager.closeTab("osr_tab");
+          expect(fixture.window.destroy).not.toHaveBeenCalled();
+          const destroyed = Promise.withResolvers<void>();
+          fixture.events.once("destroyed", () => destroyed.resolve());
+          pending.resolve(fixture.image());
+          yield* Effect.promise(() => destroyed.promise);
+          expect(fixture.window.destroy).toHaveBeenCalledOnce();
+          expect(writeFile).not.toHaveBeenCalled();
+        }),
+      ),
+  );
+
+  it("drains native and CDP capture holds after disposal and releases each hold once", async () => {
+    const fixture = makeOffscreenFixture();
+    const pending = Promise.withResolvers<ReturnType<typeof fixture.image>>();
+    fixture.capturePage.mockImplementation(() => pending.promise);
+    const host = createOffscreenHost({
+      ...fixture.configuration,
+      tabId: "osr_tab",
+      zoomFactor: 1,
+      deviceScaleFactor: 1,
+      additionalArguments: [],
+      owner: fixture.owner,
+      isCurrent: () => true,
+      isPrivateEntry: () => false,
+      onGone: () => {},
+    });
+    const releaseCdp = host.acquireCaptureHold();
+    const native = host.capturePage();
+    host.dispose();
+    expect(() => host.acquireCaptureHold()).toThrow();
+    expect(fixture.window.destroy).not.toHaveBeenCalled();
+    releaseCdp();
+    releaseCdp();
+    expect(fixture.window.destroy).not.toHaveBeenCalled();
+    pending.resolve(fixture.image());
+    await native;
+    expect(fixture.window.destroy).toHaveBeenCalledOnce();
   });
 
   effectIt.effect("opens a target=_blank link as a new tab without navigating the opener", () =>

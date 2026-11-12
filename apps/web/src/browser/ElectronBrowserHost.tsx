@@ -29,7 +29,7 @@ import { useBrowserDefaults } from "./browserDefaults";
 import { useBrowserPointerStore } from "./browserPointerStore";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
 import { openUrlInPreview } from "./openFileInPreview";
-import { rendersServerTabNatively } from "./previewRuntime";
+import { hostsPreviewTabLocally } from "./previewRuntime";
 import { previewRuntimeTabId } from "./previewRuntimeTabId";
 
 /** Every session this window renders as a hosted webview, in a fixed (non-display) order. */
@@ -41,10 +41,8 @@ function hostedBrowserSessions(
     const threadRef = parseScopedThreadKey(threadKey);
     return threadRef
       ? Object.values(previewState.sessions)
-          .filter(
-            (snapshot) =>
-              snapshot.runtime !== "server" ||
-              rendersServerTabNatively(threadRef.environmentId, primaryEnvironmentId, snapshot),
+          .filter((snapshot) =>
+            hostsPreviewTabLocally(threadRef.environmentId, primaryEnvironmentId, snapshot),
           )
           .map((snapshot) => ({
             threadRef,

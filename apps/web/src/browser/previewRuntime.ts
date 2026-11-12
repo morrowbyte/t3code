@@ -47,11 +47,23 @@ export function rendersServerTabNatively(
   snapshot: Pick<PreviewSessionSnapshot, "runtime" | "headless"> | null | undefined,
 ): boolean {
   return (
-    isElectron &&
     snapshot?.runtime === "server" &&
-    !snapshot.headless &&
-    primaryEnvironmentId !== null &&
-    environmentId === primaryEnvironmentId
+    hostsPreviewTabLocally(environmentId, primaryEnvironmentId, snapshot)
+  );
+}
+
+export function hostsPreviewTabLocally(
+  environmentId: EnvironmentId,
+  primaryEnvironmentId: EnvironmentId | null,
+  snapshot: Pick<PreviewSessionSnapshot, "runtime" | "headless"> | null | undefined,
+): boolean {
+  return (
+    isElectron &&
+    snapshot != null &&
+    (snapshot.runtime !== "server" ||
+      (!snapshot.headless &&
+        primaryEnvironmentId !== null &&
+        environmentId === primaryEnvironmentId))
   );
 }
 

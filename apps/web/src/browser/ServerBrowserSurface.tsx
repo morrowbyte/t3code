@@ -14,12 +14,15 @@ import {
   type PreviewStreamViewport,
   previewStreamHostSetupMessage,
 } from "@t3tools/client-runtime/preview/server-browser-stream";
-import type {
-  EnvironmentId,
-  PreviewAnnotationPayload,
-  PreviewAnnotationScreenshot,
-  PreviewStreamHostSetup,
-  PreviewViewportSetting,
+import {
+  FILL_PREVIEW_VIEWPORT,
+  ThreadId,
+  type EnvironmentId,
+  type DesktopPreviewSurfaceInput,
+  type PreviewAnnotationPayload,
+  type PreviewAnnotationScreenshot,
+  type PreviewStreamHostSetup,
+  type PreviewViewportSetting,
 } from "@t3tools/contracts";
 import {
   type ClipboardEvent,
@@ -44,6 +47,20 @@ import { toastManager } from "~/components/ui/toast";
 import { randomUUID, cn } from "~/lib/utils";
 import { refreshPreviewStreamAccess, usePreviewStreamAccess } from "~/state/previewStream";
 import { observeResize } from "~/lib/observeResize";
+import { previewBridge } from "~/components/preview/previewBridge";
+import { useStableCallback } from "~/hooks/useStableCallback";
+
+import {
+  createLocalBrowserFrameReceiver,
+  createLocalBrowserFocusController,
+  reconnectDesktopBrowserHost,
+  type LocalBrowserFrame,
+  useDesktopBrowserHostState,
+} from "./desktopBrowserSurface";
+import { OffscreenBrowserViewport } from "./OffscreenBrowserViewport";
+import { useBrowserSurfaceStore } from "./browserSurfaceStore";
+import { resolveFittedBrowserViewport } from "./browserViewportLayout";
+import { useBrowserLayoutZoomFactor } from "./useBrowserLayoutZoomFactor";
 
 export interface ServerBrowserHandle {
   readonly navigate: (url: string) => void;
@@ -73,6 +90,15 @@ const WHEEL_LINE_PX = 16;
 
 type MouseInput = Extract<PreviewStreamInput, { type: "mouse" }>;
 type WheelInput = Extract<PreviewStreamInput, { type: "wheel" }>;
+
+const isLocalSurfaceInput = (
+  input: PreviewStreamInput,
+): input is PreviewStreamInput & DesktopPreviewSurfaceInput =>
+  input.type === "mouse" ||
+  input.type === "wheel" ||
+  input.type === "key" ||
+  input.type === "text" ||
+  input.type === "probe";
 
 interface PagePoint {
   readonly x: number;
@@ -147,6 +173,10 @@ export function ServerBrowserSurface(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: string;
   readonly tabId: string;
+  readonly runtimeTabId?: string;
+  readonly viewport?: PreviewViewportSetting;
+  readonly zoomFactor?: number;
+  readonly fitSourceContent?: boolean;
   readonly visible: boolean;
   readonly mode?: "stream" | "native";
   readonly children?: ReactNode | ((interactive: boolean) => ReactNode);
@@ -167,6 +197,7 @@ export function ServerBrowserSurface(props: {
     environmentId,
     threadId,
     tabId,
+    runtimeTabId,
     visible,
     mode = "stream",
     children,
@@ -181,6 +212,18 @@ export function ServerBrowserSurface(props: {
     ref,
   } = props;
   const native = mode === "native";
+  const localHost = useDesktopBrowserHostState(native ? runtimeTabId : undefined);
+  const offscreen = native && localHost?.kind === "offscreen";
+  const nativeChildren = native && !offscreen;
+  const layoutZoomFactor = useBrowserLayoutZoomFactor(props.zoomFactor ?? 1);
+  const [surfaceId] = useState(randomUUID);
+  const localFrameRef = useRef<LocalBrowserFrame | null>(null);
+  const localFocusRef = useRef<ReturnType<typeof createLocalBrowserFocusController> | null>(null);
+  const [localReady, setLocalReady] = useState(false);
+  const [localAttempt, setLocalAttempt] = useState(0);
+  const privateEntryRef = useRef(false);
+  const [privateEntry, setPrivateEntry] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
   const selectionRequestRef = useRef<{ id: string; scope: string | undefined } | null>(null);
   const selectionReceived = useEffectEvent(
     (requestId: string, annotation: PreviewAnnotationPayload | null, failed = false) => {
@@ -188,7 +231,8 @@ export function ServerBrowserSurface(props: {
         selectionRequestRef.current?.id !== requestId ||
         selectionRequestRef.current.scope !== props.selectionScope ||
         !props.picking ||
-        controlRef.current?.controller !== "you"
+        controlRef.current?.controller !== "you" ||
+        privateEntryRef.current
       )
         return;
       selectionRequestRef.current = null;
@@ -260,12 +304,87 @@ export function ServerBrowserSurface(props: {
   const popupOpened = useEffectEvent((popupTabId: string) => onPopup?.(popupTabId));
   const [cap, setCap] = useState<{ width: number; height: number } | null>(null);
 
-  // Keep clearInput stable: a new identity reconnects the stream.
+  const probeReceived = useStableCallback((result: { x: number; y: number; editable: boolean }) => {
+    if (!privateEntryRef.current && controlRef.current?.controller !== "you") return;
+    lastProbeRef.current = { ...result, at: performance.now() };
+    const probe = probeRef.current;
+    if (!probe || probe.x !== result.x || probe.y !== result.y) return;
+    probe.editable = result.editable;
+    probe.answered = true;
+    if (!probe.tapped) return;
+    probeRef.current = null;
+    if (result.editable) inputRef.current?.focus({ preventScroll: true });
+    else inputRef.current?.blur();
+  });
+  const inputAllowed = () => {
+    if (privateEntryRef.current) {
+      return visible && !controlPending && localReady && localFrameRef.current !== null;
+    }
+    const current = controlRef.current;
+    if (!native) return current?.controller === "you";
+    return (
+      visible &&
+      (!offscreen || localReady) &&
+      !controlPending &&
+      current?.canOperate === true &&
+      current.controller === "you" &&
+      current.ready === true
+    );
+  };
+
   const send = (input: PreviewStreamInput) => {
+    if (
+      privateEntryRef.current &&
+      input.type !== "takeControl" &&
+      input.type !== "releaseControl"
+    ) {
+      const frame = localFrameRef.current;
+      if (!inputAllowed() || !frame || !previewBridge || !isLocalSurfaceInput(input)) return false;
+      void previewBridge.surface
+        .input({
+          tabId: frame.tabId,
+          surfaceId: frame.surfaceId,
+          webContentsId: frame.webContentsId,
+          sequence: frame.sequence,
+          generation: frame.generation,
+          input,
+        })
+        .then((result) => {
+          const current = localFrameRef.current;
+          if (
+            !privateEntryRef.current ||
+            !current ||
+            current.surfaceId !== frame.surfaceId ||
+            current.webContentsId !== frame.webContentsId ||
+            current.generation !== frame.generation
+          )
+            return;
+          if (input.type === "probe" && result.editable !== undefined) {
+            probeReceived({ x: input.x, y: input.y, editable: result.editable });
+          }
+        })
+        .catch(() => {
+          const current = localFrameRef.current;
+          if (
+            !privateEntryRef.current ||
+            !current ||
+            current.surfaceId !== frame.surfaceId ||
+            current.webContentsId !== frame.webContentsId ||
+            current.generation !== frame.generation
+          )
+            return;
+          setLocalError("Private input was refused. Take control again.");
+          clearInput();
+        });
+      return true;
+    }
+    if (native && (isLocalSurfaceInput(input) || input.type === "inspect") && !inputAllowed())
+      return false;
     return clientRef.current?.send(input) ?? false;
   };
 
-  const clearInput = () => {
+  // Keep clearInput stable: a new identity reconnects the stream.
+  const clearInput = useStableCallback((blur = true) => {
     if (inputFrameRef.current !== null) cancelAnimationFrame(inputFrameRef.current);
     inputFrameRef.current = null;
     pendingMoveRef.current = pendingWheelRef.current = null;
@@ -275,8 +394,8 @@ export function ServerBrowserSurface(props: {
     touchRef.current = probeRef.current = lastProbeRef.current = null;
     keySentRef.current = false;
     if (inputRef.current) inputRef.current.value = INPUT_SENTINEL;
-    inputRef.current?.blur();
-  };
+    if (blur) inputRef.current?.blur();
+  });
 
   const flushInput = () => {
     if (inputFrameRef.current !== null) cancelAnimationFrame(inputFrameRef.current);
@@ -309,8 +428,7 @@ export function ServerBrowserSurface(props: {
   const pagePoint = (clientX: number, clientY: number, clamp: boolean): PagePoint | null => {
     const canvas = canvasRef.current;
     const viewport = viewportRef.current;
-    if (!canvas || !viewport || !hasFrameRef.current || controlRef.current?.controller !== "you")
-      return null;
+    if (!canvas || !viewport || !hasFrameRef.current || !inputAllowed()) return null;
     const rect = canvas.getBoundingClientRect();
     const fit = Math.min(rect.width / canvas.width, rect.height / canvas.height);
     const width = canvas.width * fit;
@@ -351,11 +469,13 @@ export function ServerBrowserSurface(props: {
       reload: (options) =>
         send({ type: "reload", ...(options?.ignoreCache ? { ignoreCache: true } : {}) }),
       viewport: (setting) => send({ type: "viewport", setting }),
-      canvas: () => (!pdfUrl && hasFrameRef.current ? canvasRef.current : null),
+      canvas: () =>
+        !privateEntryRef.current && !pdfUrl && hasFrameRef.current ? canvasRef.current : null,
       screenshot: () => {
         const canvas = canvasRef.current;
         const viewport = viewportRef.current;
-        if (pdfUrl || !canvas || !viewport || !hasFrameRef.current) return null;
+        if (privateEntryRef.current || pdfUrl || !canvas || !viewport || !hasFrameRef.current)
+          return null;
         return {
           dataUrl: canvas.toDataURL("image/png"),
           width: canvas.width,
@@ -366,6 +486,141 @@ export function ServerBrowserSurface(props: {
     }),
     [pdfUrl, send],
   );
+
+  const localPrivateEntryChanged = useEffectEvent((active: boolean) => {
+    if (privateEntryRef.current === active) return;
+    clearInput(!active);
+    privateEntryRef.current = active;
+    setPrivateEntry(active);
+    if (active) {
+      selectionRequestRef.current = null;
+      props.onSelection?.(null);
+      setFileChooser(null);
+      setAgentCursor(null);
+    }
+  });
+  const localFramePainted = useEffectEvent((frame: LocalBrowserFrame) => {
+    localFrameRef.current = frame;
+    localFocusRef.current?.report();
+    const previous = viewportRef.current;
+    viewportRef.current = { width: frame.width, height: frame.height };
+    if (previous?.width !== frame.width || previous.height !== frame.height) {
+      viewportChanged(viewportRef.current);
+    }
+    setLocalError(null);
+    if (!hasFrameRef.current) {
+      hasFrameRef.current = true;
+      setLocalReady(true);
+      firstFrame();
+    }
+  });
+  const localPresentationSize = useEffectEvent((size: { width: number; height: number }) => {
+    if (props.fitSourceContent && runtimeTabId) {
+      const presentation = useBrowserSurfaceStore.getState().byTabId[runtimeTabId];
+      const fitted = resolveFittedBrowserViewport(
+        props.viewport ?? FILL_PREVIEW_VIEWPORT,
+        presentation?.fittedSourceContent ?? presentation?.content ?? null,
+        layoutZoomFactor,
+      );
+      return { width: fitted.width, height: fitted.height };
+    }
+    return {
+      width: Math.max(1, Math.round(size.width / layoutZoomFactor)),
+      height: Math.max(1, Math.round(size.height / layoutZoomFactor)),
+    };
+  });
+  const localCanFocus = useEffectEvent(inputAllowed);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns one local presenter and acknowledges each PNG only after rendering or dropping it
+  useEffect(() => {
+    const bridge = previewBridge;
+    const canvas = canvasRef.current;
+    if (
+      !offscreen ||
+      !runtimeTabId ||
+      !bridge ||
+      !canvas ||
+      localHost?.webContentsId == null ||
+      !visible
+    )
+      return;
+    let disposed = false;
+    let presentVersion = 0;
+    const focus = createLocalBrowserFocusController({
+      canvas,
+      keyboardInput: () => inputRef.current,
+      frame: () => localFrameRef.current,
+      canFocus: localCanFocus,
+      bridge: bridge.surface,
+      tabId: runtimeTabId,
+      surfaceId,
+      webContentsId: localHost.webContentsId,
+    });
+    localFocusRef.current = focus;
+    const receiver = createLocalBrowserFrameReceiver({
+      canvas,
+      bridge: bridge.surface,
+      tabId: runtimeTabId,
+      surfaceId,
+      webContentsId: localHost.webContentsId,
+      onPrivateEntry: localPrivateEntryChanged,
+      onPainted: localFramePainted,
+      onError: () => setLocalError("Could not display the browser frame."),
+    });
+    const unsubscribe = bridge.surface.onFrame((frame) => {
+      void receiver.receive(frame);
+    });
+    const present = () => {
+      const size = canvas.parentElement?.getBoundingClientRect();
+      const version = ++presentVersion;
+      void bridge.surface
+        .present({
+          tabId: runtimeTabId,
+          surfaceId,
+          visible: true,
+          ...(size && size.width >= 1 && size.height >= 1 ? localPresentationSize(size) : {}),
+        })
+        .then((state) => {
+          if (disposed || version !== presentVersion) return;
+          if (state.privateEntry) localPrivateEntryChanged(true);
+        })
+        .catch(() => {
+          if (!disposed && version === presentVersion)
+            setLocalError("Could not connect the browser surface.");
+        });
+    };
+    present();
+    const stopObserving = observeResize(canvas.parentElement ?? canvas, present);
+    window.addEventListener("resize", present);
+    return () => {
+      disposed = true;
+      focus.stop();
+      if (localFocusRef.current === focus) localFocusRef.current = null;
+      receiver.stop();
+      unsubscribe();
+      stopObserving();
+      window.removeEventListener("resize", present);
+      void bridge.surface
+        .present({ tabId: runtimeTabId, surfaceId, visible: false })
+        .catch(() => undefined);
+      localFrameRef.current = null;
+      setLocalReady(false);
+      privateEntryRef.current = false;
+      setPrivateEntry(false);
+      hasFrameRef.current = false;
+      viewportRef.current = null;
+      canvas.width = canvas.height = 0;
+      selectionRequestRef.current = null;
+      clearInput();
+    };
+  }, [
+    offscreen,
+    runtimeTabId,
+    localHost?.webContentsId,
+    surfaceId,
+    visible,
+    clearInput,
+    localAttempt,
+  ]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- observes the canvas container's size, sends resizes to the stream and grows the frame cap
   useEffect(() => {
@@ -445,25 +700,22 @@ export function ServerBrowserSurface(props: {
         },
         onSelection: selectionReceived,
         onProbe: (result) => {
-          if (controlRef.current?.controller !== "you") return;
-          lastProbeRef.current = { ...result, at: performance.now() };
-          const probe = probeRef.current;
-          if (!probe || probe.x !== result.x || probe.y !== result.y) return;
-          probe.editable = result.editable;
-          probe.answered = true;
-          if (!probe.tapped) return;
-          probeRef.current = null;
-          if (result.editable) inputRef.current?.focus({ preventScroll: true });
-          else inputRef.current?.blur();
+          if (!privateEntryRef.current) probeReceived(result);
         },
         onPointer: (pointer) => {
           const placed = placeAgentCursor(pointer, canvasRef.current, viewportRef.current);
           if (placed) setAgentCursor(placed);
         },
-        onClipboard: (text) => void copyPageText(text),
-        onDownload: offerDownload,
+        onClipboard: (text) => {
+          if (!privateEntryRef.current) void copyPageText(text);
+        },
+        onDownload: (download) => {
+          if (!privateEntryRef.current) offerDownload(download);
+        },
         onPopup: popupOpened,
-        onFileChooser: setFileChooser,
+        onFileChooser: (chooser) => {
+          if (!privateEntryRef.current) setFileChooser(chooser);
+        },
         onViewport: (viewport) => {
           if (native) return;
           viewportRef.current = viewport;
@@ -537,6 +789,7 @@ export function ServerBrowserSurface(props: {
     gone,
     hostSetup,
     native,
+    probeReceived,
     tabId,
     threadId,
     visible,
@@ -572,11 +825,11 @@ export function ServerBrowserSurface(props: {
   );
 
   const handlePointer = (event: PointerEvent<HTMLCanvasElement>) => {
-    if (controlRef.current?.controller !== "you") return;
+    if (!inputAllowed()) return;
     // Thumb buttons drive this tab's history in handleMouseUp, never the page.
     if (historyDeltaOf(event.button) !== null) return;
     const { type, pointerId, clientX, clientY } = event;
-    if (props.picking) {
+    if (props.picking && !privateEntryRef.current) {
       event.preventDefault();
       event.stopPropagation();
       if (type === "pointerdown" && event.button === 0) {
@@ -752,12 +1005,12 @@ export function ServerBrowserSurface(props: {
   const handleClipboard = (key: typeof COPY | typeof CUT, event: ClipboardEvent) => {
     // Keep the sentinel off the clipboard.
     event.preventDefault();
-    if (controlRef.current?.controller !== "you") return;
+    if (!inputAllowed()) return;
     sendKeyPress(key, CTRL);
   };
 
   const handleKey = (action: "down" | "up", event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (controlRef.current?.controller !== "you") return;
+    if (!inputAllowed()) return;
     keySentRef.current = false;
     if (
       event.nativeEvent.isComposing ||
@@ -846,11 +1099,75 @@ export function ServerBrowserSurface(props: {
     else if (controlPending && control?.controller === "you") controlLabel = "Releasing control…";
   }
 
+  if (offscreen && privateEntry) controlLabel = "Private entry";
+  if (offscreen && localError) controlLabel = localError;
+
+  const page = (
+    <>
+      {pdfUrl ? (
+        <embed
+          src={pdfUrl}
+          type="application/pdf"
+          title="PDF document"
+          className="absolute inset-0 z-10 size-full border-0"
+        />
+      ) : null}
+      <canvas
+        ref={canvasRef}
+        className={cn(
+          "block size-full touch-none object-contain",
+          props.picking && !privateEntry && "cursor-crosshair",
+        )}
+        onPointerDown={handlePointer}
+        onPointerMove={handlePointer}
+        onPointerUp={handlePointer}
+        onPointerCancel={handlePointer}
+        onMouseDown={(event) => event.preventDefault()}
+        onContextMenu={(event) => event.preventDefault()}
+      />
+      {!privateEntry && !pdfUrl && agentCursor && control?.controller !== "you" ? (
+        <AgentCursorMark
+          {...agentCursor}
+          controller={control?.controller === "agent" ? "agent" : "none"}
+        />
+      ) : null}
+      {/* Pin top-left to avoid focus scrolling; 16px prevents iOS focus zoom. */}
+      <textarea
+        ref={inputRef}
+        aria-label="Browser page"
+        aria-description="Press Shift+Escape to leave the browser page."
+        autoCapitalize="off"
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
+        disabled={pdfUrl !== null || !inputAllowed()}
+        defaultValue={INPUT_SENTINEL}
+        onFocus={(event) => resetInput(event.currentTarget)}
+        className="sr-only top-0 left-0 text-base"
+        onKeyDown={(event) => handleKey("down", event)}
+        onKeyUp={(event) => handleKey("up", event)}
+        onInput={handleInput}
+        onCompositionEnd={(event) => {
+          const text = event.data.replace(/^\u200b/, "");
+          if (text) send({ type: "text", text });
+          resetInput(event.currentTarget);
+        }}
+        onCopy={(event) => handleClipboard(COPY, event)}
+        onCut={(event) => handleClipboard(CUT, event)}
+        onPaste={(event) => {
+          event.preventDefault();
+          const text = event.clipboardData.getData("text/plain");
+          if (text) send({ type: "text", text });
+        }}
+      />
+    </>
+  );
+
   return (
     <div
       className={cn("relative flex flex-col overflow-hidden", className)}
       data-server-browser-surface={tabId}
-      onMouseUp={native ? undefined : handleMouseUp}
+      onMouseUp={nativeChildren ? undefined : handleMouseUp}
     >
       <div
         className={cn(
@@ -861,7 +1178,7 @@ export function ServerBrowserSurface(props: {
         <span role="status" className="min-w-0 truncate text-xs text-muted-foreground">
           {controlLabel}
         </span>
-        {native && (accessDenied || hostSetup || gone) ? (
+        {native && (accessDenied || hostSetup || gone || (localError !== null && !privateEntry)) ? (
           <Button
             variant="outline"
             size="xs"
@@ -870,6 +1187,9 @@ export function ServerBrowserSurface(props: {
               setAccessDenied(false);
               setHostSetup(null);
               setGone(false);
+              setLocalError(null);
+              setLocalAttempt((attempt) => attempt + 1);
+              if (runtimeTabId) reconnectDesktopBrowserHost(runtimeTabId);
               refreshPreviewStreamAccess(environmentId);
             }}
           >
@@ -899,69 +1219,25 @@ export function ServerBrowserSurface(props: {
         ) : null}
       </div>
       <div className={cn("relative min-h-0 flex-1", native && "flex flex-col")}>
-        {native ? (
+        {nativeChildren ? (
           <div className="relative min-h-0 flex-1">
             {typeof children === "function" ? children(nativeControlReady) : children}
           </div>
+        ) : offscreen && runtimeTabId ? (
+          <OffscreenBrowserViewport
+            threadRef={{ environmentId, threadId: ThreadId.make(threadId) }}
+            tabId={tabId}
+            runtimeTabId={runtimeTabId}
+            viewport={props.viewport ?? FILL_PREVIEW_VIEWPORT}
+            zoomFactor={props.zoomFactor ?? 1}
+            visible={visible}
+            interactive={inputAllowed()}
+            fitSourceContent={props.fitSourceContent ?? false}
+          >
+            {page}
+          </OffscreenBrowserViewport>
         ) : (
-          <>
-            {pdfUrl ? (
-              <embed
-                src={pdfUrl}
-                type="application/pdf"
-                title="PDF document"
-                className="absolute inset-0 z-10 size-full border-0"
-              />
-            ) : null}
-            <canvas
-              ref={canvasRef}
-              className={cn(
-                "block size-full touch-none object-contain",
-                props.picking && "cursor-crosshair",
-              )}
-              onPointerDown={handlePointer}
-              onPointerMove={handlePointer}
-              onPointerUp={handlePointer}
-              onPointerCancel={handlePointer}
-              onMouseDown={(event) => event.preventDefault()}
-              onContextMenu={(event) => event.preventDefault()}
-            />
-            {!pdfUrl && agentCursor && control?.controller !== "you" ? (
-              <AgentCursorMark
-                {...agentCursor}
-                controller={control?.controller === "agent" ? "agent" : "none"}
-              />
-            ) : null}
-            {/* Pin top-left to avoid focus scrolling; 16px prevents iOS focus zoom. */}
-            <textarea
-              ref={inputRef}
-              aria-label="Browser page"
-              aria-description="Press Shift+Escape to leave the browser page."
-              autoCapitalize="off"
-              autoComplete="off"
-              autoCorrect="off"
-              spellCheck={false}
-              disabled={pdfUrl !== null || control?.controller !== "you"}
-              defaultValue={INPUT_SENTINEL}
-              onFocus={(event) => resetInput(event.currentTarget)}
-              className="sr-only top-0 left-0 text-base"
-              onKeyDown={(event) => handleKey("down", event)}
-              onKeyUp={(event) => handleKey("up", event)}
-              onInput={handleInput}
-              onCompositionEnd={(event) => {
-                const text = event.data.replace(/^\u200b/, "");
-                if (text) send({ type: "text", text });
-                resetInput(event.currentTarget);
-              }}
-              onCopy={(event) => handleClipboard(COPY, event)}
-              onCut={(event) => handleClipboard(CUT, event)}
-              onPaste={(event) => {
-                event.preventDefault();
-                const text = event.clipboardData.getData("text/plain");
-                if (text) send({ type: "text", text });
-              }}
-            />
-          </>
+          page
         )}
         {fileChooser && control?.controller === "you" ? (
           <div

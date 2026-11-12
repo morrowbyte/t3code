@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Scope from "effect/Scope";
 
 import * as Electron from "electron";
 
@@ -318,6 +319,7 @@ function bindFirstRevealTrigger(
 
 /** @public */
 export const make = Effect.gen(function* () {
+  const lifecycleScope = yield* Scope.Scope;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const desktopState = yield* DesktopState.DesktopState;
   const assets = yield* DesktopAssets.DesktopAssets;
@@ -651,12 +653,16 @@ export const make = Effect.gen(function* () {
                   ),
                 ),
               );
+              const nativeUi = makeNativeAutofillUi(ownerWindow, contents, Electron);
               const items = yield* Effect.tryPromise(() =>
-                makeAutofillMenu(
-                  target,
-                  protonAutofill!,
-                  makeNativeAutofillUi(ownerWindow, contents, Electron),
-                ),
+                makeAutofillMenu(target, protonAutofill!, {
+                  ...nativeUi,
+                  async restoreFocus() {
+                    if (!(await runPromise(previewManager.restoreSurfaceFocus(contents)))) {
+                      await nativeUi.restoreFocus();
+                    }
+                  },
+                }),
               ).pipe(
                 Effect.orElseSucceed(() => [{ label: "Proton Pass unavailable", enabled: false }]),
               );
@@ -675,6 +681,17 @@ export const make = Effect.gen(function* () {
       });
     };
     installContextMenu(window, window.webContents);
+    if (isMainWindow) {
+      yield* previewManager
+        .subscribeHostedContents((owner, contents) =>
+          Effect.sync(() => {
+            if (owner === window && !window.isDestroyed() && !contents.isDestroyed()) {
+              installContextMenu(window, contents);
+            }
+          }),
+        )
+        .pipe(Effect.provideService(Scope.Scope, lifecycleScope));
+    }
     window.webContents.on("did-attach-webview", (_event, contents) => {
       installContextMenu(window, contents);
       void runPromise(previewManager.prepareWebview(contents));

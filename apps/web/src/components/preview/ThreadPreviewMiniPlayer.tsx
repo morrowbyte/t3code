@@ -16,6 +16,7 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { useChatCanvas } from "../chat/ChatCanvasContext";
 import type { ChatCanvasPreview } from "../chat/chatCanvasLayout";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
+import { useDesktopBrowserHostState } from "~/browser/desktopBrowserSurface";
 import {
   findActiveBrowserRecordingRuntimeTabId,
   useActiveBrowserRecordingTabIds,
@@ -215,6 +216,7 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
   const { serverEpoch, snapshot, desktopOverlay, serverTab, sourceSize } =
     useBrowserMiniPlayerSource(threadRef, tabId);
   const runtimeTabId = previewRuntimeTabId(threadRef, serverEpoch, tabId);
+  const localHost = useDesktopBrowserHostState(runtimeTabId);
   const recordingTabIds = useActiveBrowserRecordingTabIds();
   const recording =
     recordingTabIds.has(runtimeTabId) ||
@@ -312,6 +314,7 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
               environmentId={threadRef.environmentId}
               threadId={threadRef.threadId}
               tabId={tabId}
+              runtimeTabId={runtimeTabId}
               pdfUrl={pdfUrl}
               visible
               followSize={false}
@@ -333,7 +336,7 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
           </div>
         ) : (
           <>
-            {snapshot.runtime === "server" ? (
+            {snapshot.runtime === "server" || localHost?.kind === "offscreen" ? (
               <div
                 className="pointer-events-auto absolute inset-0 overflow-hidden rounded-[inherit]"
                 style={{ zIndex: PREVIEW_MINI_PLAYER_WEBVIEW_Z_INDEX }}
@@ -344,6 +347,10 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
                   environmentId={threadRef.environmentId}
                   threadId={threadRef.threadId}
                   tabId={tabId}
+                  runtimeTabId={runtimeTabId}
+                  viewport={snapshot.viewport ?? FILL_PREVIEW_VIEWPORT}
+                  zoomFactor={desktopOverlay?.zoomFactor ?? 1}
+                  fitSourceContent
                   visible
                   controlPosition="bottom"
                   onPopup={(popupTabId) => showPreviewPopup(threadRef, popupTabId, "floating")}

@@ -234,13 +234,28 @@ describe("DesktopBrowserHost", () => {
     () =>
       Effect.gen(function* () {
         const host = yield* DesktopBrowserHost.make;
+        const changes = yield* Stream.toQueue(host.privateEntryChanges, { capacity: "unbounded" });
         const old = yield* connect(host);
         const debuggee = makeDebuggee();
         host.attach(key, debuggee.tab);
         yield* Queue.take(old.messages);
         const first = yield* grant(host, old, debuggee.tab.webContents);
         host.setPrivateEntry(debuggee.tab.webContents, true);
+        expect(yield* Queue.take(changes)).toEqual({
+          source: debuggee.tab.webContents,
+          active: true,
+        });
+        host.setPrivateEntry(debuggee.tab.webContents, true);
+        host.setPrivateEntry(debuggee.tab.webContents, false);
+        expect(yield* Queue.take(changes)).toEqual({
+          source: debuggee.tab.webContents,
+          active: false,
+        });
         yield* old.connection.closed;
+        expect(yield* Queue.take(changes)).toEqual({
+          source: debuggee.tab.webContents,
+          active: true,
+        });
         expect(first.lease.current()).toBe(false);
         expect(host.canRequestPrivateEntry(debuggee.tab.webContents)).toBe(false);
         expect(host.isPrivateEntry(debuggee.tab.webContents)).toBe(true);
@@ -457,23 +472,83 @@ describe("DesktopBrowserHost", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("sends a page one screenshot at a time", () =>
-    Effect.gen(function* () {
-      const host = yield* DesktopBrowserHost.make;
-      const debuggee = makeDebuggee();
-      host.attach(key, debuggee.tab);
-      const { connection, replies } = yield* watchReplies(host);
+  it.effect.each([false, true])(
+    "sends screenshots in order across a viewport change: %s",
+    (resize) =>
+      Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        const debuggee = makeDebuggee();
+        let revision = 0;
+        host.attach(key, { ...debuggee.tab, captureRevision: () => revision });
+        const { connection, messages } = yield* connect(host);
+        yield* Queue.take(messages);
 
-      yield* command(connection, 1, "Page.captureScreenshot");
-      yield* command(connection, 2, "Page.captureScreenshot");
-      yield* command(connection, 3, "DOM.enable");
-      yield* settle;
-      expect(debuggee.sent).toEqual([1, 3]);
+        yield* command(connection, 1, "Page.captureScreenshot");
+        yield* command(connection, 2, "Page.captureScreenshot");
+        yield* command(connection, 3, "DOM.enable");
+        yield* settle;
+        expect(debuggee.sent).toEqual([1, 3]);
 
-      debuggee.releaseFirst();
-      expect(yield* Queue.take(replies)).toBe(1);
-      expect(debuggee.sent).toEqual([1, 3, 2]);
-    }).pipe(Effect.scoped),
+        if (resize) revision += 2;
+        debuggee.releaseFirst();
+        const first = yield* Queue.take(messages);
+        expect(first.type).toBe("cdp");
+        if (first.type !== "cdp") throw new Error("Expected screenshot reply");
+        const reply: unknown = JSON.parse(first.message);
+        expect(reply).toMatchObject(
+          resize
+            ? {
+                id: 1,
+                error: { message: "The preview changed while its screenshot was being captured." },
+              }
+            : { id: 1, result: { method: "Page.captureScreenshot" } },
+        );
+        expect(debuggee.sent).toEqual([1, 3, 2]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([false, true])(
+    "waits for viewport changes on an offscreen host: %s",
+    (offscreen) =>
+      Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        const debuggee = makeDebuggee();
+        const started = Promise.withResolvers<void>();
+        const resized = Promise.withResolvers<void>();
+        const setViewport = vi.fn(async () => {
+          started.resolve();
+          await resized.promise;
+        });
+        yield* Effect.addFinalizer(() => Effect.sync(() => resized.resolve()));
+        host.attach(key, { ...debuggee.tab, ...(offscreen ? { setViewport } : {}) });
+        const { connection, messages } = yield* connect(host);
+        yield* Queue.take(messages);
+        yield* connection.handleCommandLine(
+          encodeJson({
+            type: "cdp",
+            ...key,
+            message: encodeJson({
+              id: 1,
+              method: "Emulation.setDeviceMetricsOverride",
+              params: { id: 1, width: 1440, height: 1700, deviceScaleFactor: 0, mobile: false },
+              sessionId: "t3-preview-page",
+            }),
+          }),
+        );
+        if (offscreen) {
+          yield* Effect.promise(() => started.promise);
+          expect(yield* Queue.size(messages)).toBe(0);
+          expect(debuggee.sentMethods).not.toContain("Emulation.setDeviceMetricsOverride");
+          resized.resolve();
+        } else {
+          yield* settle;
+          expect(setViewport).not.toHaveBeenCalled();
+          expect(debuggee.sentMethods).toContain("Emulation.setDeviceMetricsOverride");
+          debuggee.release();
+        }
+        const reply = yield* Queue.take(messages);
+        expect(reply.type === "cdp" && decodeCdpReply(reply.message).id).toBe(1);
+      }).pipe(Effect.scoped),
   );
 
   it.effect("stops waiting on a screenshot the page navigated away from", () =>
@@ -505,7 +580,9 @@ describe("DesktopBrowserHost", () => {
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
-      host.attach(key, debuggee.tab);
+      const releaseHold = vi.fn();
+      const acquireCaptureHold = vi.fn(() => releaseHold);
+      host.attach(key, { ...debuggee.tab, acquireCaptureHold });
 
       const { connection } = yield* watchReplies(host);
       yield* command(connection, 1, "Page.captureScreenshot");
@@ -514,11 +591,18 @@ describe("DesktopBrowserHost", () => {
       yield* connection.handleCommandLine(encodeJson({ type: "release", ...key }));
       yield* command(connection, 3, "Page.captureScreenshot");
       expect(debuggee.sent).toEqual([1]);
+      expect(acquireCaptureHold).toHaveBeenCalledTimes(1);
+      expect(releaseHold).not.toHaveBeenCalled();
 
       const sent = debuggee.nextSend();
       debuggee.release();
       yield* Effect.promise(() => sent);
       expect(debuggee.sent).toEqual([1, 3]);
+      expect(acquireCaptureHold).toHaveBeenCalledTimes(2);
+      expect(releaseHold).toHaveBeenCalledTimes(1);
+      debuggee.release();
+      yield* settle;
+      expect(releaseHold).toHaveBeenCalledTimes(2);
     }).pipe(Effect.scoped),
   );
 
