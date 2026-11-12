@@ -1,3 +1,4 @@
+import { parseApprovalReviewDetail } from "@t3tools/client-runtime/approvalReview";
 import { commandHighlightLanguage } from "@t3tools/client-runtime/work-log/command-label";
 import { workEntryExecutionStatus } from "@t3tools/client-runtime/work-log/presentation";
 import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
@@ -40,7 +41,6 @@ import {
   type ColorValue,
   Easing,
   Pressable,
-  ScrollView,
   StyleSheet,
   useAnimatedValue,
   View,
@@ -59,7 +59,7 @@ import { environmentThreadDetails, threadEnvironment } from "../../state/threads
 import { useAtomCommand } from "../../state/use-atom-command";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
 import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
-import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
+import { RecordedExecutionCode } from "./RecordedExecutionCode";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { CrewMark } from "../../components/CrewMark";
@@ -934,57 +934,6 @@ function WorkspacePreparationRetryButton(props: {
   );
 }
 
-function RecordedCodeText({
-  code,
-  language,
-  theme,
-}: {
-  readonly code: string;
-  readonly language: string;
-  readonly theme: "light" | "dark";
-}) {
-  const highlighted = useMarkdownCodeHighlight({
-    code,
-    language,
-    theme,
-    enabled: code.length <= 65_536,
-  });
-  if (code.length > 65_536)
-    return (
-      <Text selectable className="font-mono text-2xs leading-normal text-foreground">
-        {code}
-      </Text>
-    );
-  return (
-    <View className="min-w-0">
-      {code.split(/\r?\n/u).map((line, index) => (
-        // Source positions stay stable; soft wraps remain within the same numbered row.
-        // oxlint-disable-next-line react/no-array-index-key
-        <View key={index} className="min-w-0 flex-row gap-2">
-          <Text
-            accessible={false}
-            className="w-7 text-right font-mono text-2xs leading-normal text-foreground-subtle"
-          >
-            {index + 1}
-          </Text>
-          <Text
-            selectable
-            className="min-w-0 flex-1 font-mono text-2xs leading-normal text-foreground"
-          >
-            {highlighted?.[index]?.map((token, tokenIndex) => (
-              // Token positions remain stable within this recorded source line.
-              // oxlint-disable-next-line react/no-array-index-key
-              <Text key={tokenIndex} style={token.color ? { color: token.color } : undefined}>
-                {token.content}
-              </Text>
-            )) ?? line}
-          </Text>
-        </View>
-      ))}
-    </View>
-  );
-}
-
 const ThreadWorkLogRow = function ThreadWorkLogRow(
   props: Omit<
     ThreadWorkLogProps,
@@ -1094,16 +1043,25 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
   const isRead = toolGroupAction(row.workEntry) === "read";
   const shownItem = fetchedItem ?? row.projectedItem.item;
   const reasoning = shownItem.type === "reasoning" ? shownItem : null;
+  const approvalCommand =
+    shownItem.type === "approval_request" &&
+    shownItem.requestKind === "command" &&
+    !shownItem.privilegedCommand &&
+    parseApprovalReviewDetail(shownItem.prompt).kind === "none"
+      ? shownItem.prompt
+      : undefined;
   const call =
-    expanded && !isRead && shownItem.type === "command_execution"
-      ? toolCallLines({ command: shownItem.input })
-      : expanded && !isRead && shownItem.type === "dynamic_tool"
-        ? toolCallLines({ args: shownItem.input })
-        : expanded && shownItem.type === "file_search"
-          ? toolCallLines({ args: { pattern: shownItem.pattern } })
-          : expanded && shownItem.type === "web_search"
-            ? toolCallLines({ args: { query: shownItem.patterns?.join(", ") } })
-            : null;
+    expanded && approvalCommand
+      ? toolCallLines({ command: approvalCommand })
+      : expanded && !isRead && shownItem.type === "command_execution"
+        ? toolCallLines({ command: shownItem.input })
+        : expanded && !isRead && shownItem.type === "dynamic_tool"
+          ? toolCallLines({ args: shownItem.input })
+          : expanded && shownItem.type === "file_search"
+            ? toolCallLines({ args: { pattern: shownItem.pattern } })
+            : expanded && shownItem.type === "web_search"
+              ? toolCallLines({ args: { query: shownItem.patterns?.join(", ") } })
+              : null;
   const failedExitCode =
     call && shownItem.type === "command_execution" && shownItem.exitCode
       ? shownItem.exitCode
@@ -1236,7 +1194,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
               {displayText}
             </Text>
           </View>
-        ) : row.live && !expanded && !executionStatus ? (
+        ) : row.live && !expanded && !executionStatus && !(reasoning && !canExpand) ? (
           <ShimmeringWorkContent
             environmentId={props.environmentId}
             icon={icon}
@@ -1273,7 +1231,11 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
                 />
               )}
             </WorkLogIconSlot>
-            {executionStatus ? (
+            {reasoning && !canExpand ? (
+              <Text selectable className="min-w-0 flex-1 text-sm text-foreground-muted">
+                {displayText}
+              </Text>
+            ) : executionStatus ? (
               <Text numberOfLines={2} className="min-w-0 flex-1 text-sm text-foreground-muted">
                 {displayText}
               </Text>
@@ -1377,13 +1339,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
               </View>
             ))}
           </FilePreviewGallery>
-          <ScrollView
-            nestedScrollEnabled
-            directionalLockEnabled
-            showsVerticalScrollIndicator
-            className="max-h-60"
-            contentContainerStyle={{ paddingRight: 8 }}
-          >
+          <View className="pr-2">
             {reasoning ? (
               <ThreadReasoningContent
                 environmentId={props.environmentId}
@@ -1394,15 +1350,12 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
               [
                 call.command ? (
                   <View key="command">
-                    <Button
-                      label="Copy input"
-                      tone="secondary"
-                      onPress={() => props.onCopyRow(row.id, call.command!)}
-                    />
-                    <RecordedCodeText
+                    <RecordedExecutionCode
                       code={call.command}
                       language={commandHighlightLanguage(call.command)}
                       theme={props.themeAppearance}
+                      shell
+                      onCopy={(code) => props.onCopyRow(row.id, code)}
                     />
                   </View>
                 ) : null,
@@ -1413,12 +1366,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
                       <Text className="font-mono text-2xs leading-normal text-foreground-muted">
                         {key}
                       </Text>
-                      <Button
-                        label="Copy input"
-                        tone="secondary"
-                        onPress={() => props.onCopyRow(row.id, value)}
-                      />
-                      <RecordedCodeText
+                      <RecordedExecutionCode
                         code={value}
                         language={
                           key === "command" || key === "cmd"
@@ -1433,6 +1381,8 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
                                 : "text"
                         }
                         theme={props.themeAppearance}
+                        shell={key === "command" || key === "cmd"}
+                        onCopy={(code) => props.onCopyRow(row.id, code)}
                       />
                     </View>
                   ) : (
@@ -1441,12 +1391,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
                 ),
                 call.argsText ? (
                   <View key="input">
-                    <Button
-                      label="Copy input"
-                      tone="secondary"
-                      onPress={() => props.onCopyRow(row.id, call.argsText!)}
-                    />
-                    <RecordedCodeText
+                    <RecordedExecutionCode
                       code={call.argsText}
                       language={
                         shownItem.type === "dynamic_tool" &&
@@ -1457,6 +1402,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
                             : "json"
                       }
                       theme={props.themeAppearance}
+                      onCopy={(code) => props.onCopyRow(row.id, code)}
                     />
                   </View>
                 ) : null,
@@ -1494,7 +1440,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
               </Text>
             ) : null}
             {streamsOutput ? null : exitLine}
-          </ScrollView>
+          </View>
           {streamsOutput ? (
             <>
               <ThreadCommandOutput

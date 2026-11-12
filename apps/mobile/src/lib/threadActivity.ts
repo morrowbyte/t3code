@@ -272,8 +272,12 @@ function compactWorkEntryText(value: string): string {
 
 export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = false): string {
   if (entry.itemType === "fork") return entry.label;
-  if (expanded && entry.itemType === "reasoning")
-    return entry.toolLifecycleStatus === "inProgress" ? "Thinking" : "Thought";
+  if (entry.itemType === "reasoning") {
+    const summary = entry.structuredPayload?.title?.trim();
+    if (summary) return compactWorkEntryText(summary);
+    if (expanded) return entry.toolLifecycleStatus === "inProgress" ? "Thinking" : "Thought";
+    return compactWorkEntryText(entry.detail ?? "") || entry.label;
+  }
   const explicitIntent = workEntryExplicitIntentLabel(entry);
   if (explicitIntent) return compactWorkEntryText(explicitIntent);
   const presentation = resolveWorkEntryToolPresentation(entry);
@@ -842,6 +846,12 @@ function toFeedActivity(
           )
           .join("\n"),
   );
+  const completeShortReasoning =
+    item.type === "reasoning" &&
+    item.text.trim().length > 0 &&
+    item.text.trim().length <= 180 &&
+    !/[\r\n<[]/u.test(item.text.trim()) &&
+    (!item.title?.trim() || item.title.trim() === item.text.trim());
   return {
     id: `${row.visibility}:${row.sourceThreadId}:${row.sourceItemId}`,
     createdAt,
@@ -851,6 +861,7 @@ function toFeedActivity(
     detail,
     canExpand:
       !(item.type === "error" && item.status === "failed") &&
+      !completeShortReasoning &&
       (readPaths
         ? readPaths.length > 0 || turnItemNeedsDetailFetch(item)
         : turnItemHasDetail(item) || workEntry.questionAnswer !== undefined),
@@ -874,10 +885,13 @@ function toFeedActivity(
 }
 
 function singleToolCallLabel(activity: ThreadFeedActivity, expanded: boolean): string {
-  if (activity.workEntry.itemType === "reasoning")
+  if (activity.workEntry.itemType === "reasoning") {
+    const summary = activity.workEntry.structuredPayload?.title?.trim();
+    if (summary) return compactWorkEntryText(summary);
     return expanded
       ? "Thought"
       : compactWorkEntryText(activity.workEntry.detail ?? "") || "Thought";
+  }
   const explicitIntent = workEntryExplicitIntentLabel(activity.workEntry);
   if (explicitIntent) return compactWorkEntryText(explicitIntent);
   const presentation = resolveWorkEntryToolPresentation(activity.workEntry, "completed");
@@ -1813,8 +1827,12 @@ function appendToolGroupRows(
   const shimmer = activeTail && (active || latestActivity.status === "success");
   const singleActivity = activities.length === 1 ? latestActivity : null;
   const groupSummary = summarizeToolGroup(activities.map((activity) => activity.workEntry));
+  const reasoningSummary =
+    (live || singleActivity !== null) && latestActivity.workEntry.itemType === "reasoning"
+      ? latestActivity.workEntry.structuredPayload?.title?.trim()
+      : undefined;
   const latestThought =
-    live && !expanded
+    live && !expanded && !reasoningSummary
       ? activities.findLast(
           (activity) =>
             activity.workEntry.itemType === "reasoning" &&
@@ -1822,9 +1840,16 @@ function appendToolGroupRows(
         )?.workEntry.detail
       : undefined;
   const thought = latestThought ? compactWorkEntryText(liveThoughtLine(latestThought)) : "";
-  const groupIntent = live && activityIntent ? compactWorkEntryText(activityIntent) : undefined;
+  const groupIntent =
+    live &&
+    activityIntent &&
+    latestActivity.toolLike &&
+    latestActivity.workEntry.itemType !== "reasoning"
+      ? liveToolActivitySummary(latestActivity, live)
+      : undefined;
   const summary =
     groupIntent ??
+    (reasoningSummary ? compactWorkEntryText(reasoningSummary) : undefined) ??
     (live
       ? (expanded || thought) && latestActivity.workEntry.itemType === "reasoning"
         ? latestActivity.lifecycleStatus === "inProgress"
@@ -1839,18 +1864,30 @@ function appendToolGroupRows(
           ? singleActivity.workEntry.label
           : groupSummary.summary);
   const id = shimmer ? LIVE_ACTIVITY_ROW_ID : `${live ? "work-live" : "work-toggle"}:${groupId}`;
-  // Lone calls replace the header; group intent and lone thoughts still need it.
+  // Lone calls and complete thoughts do not need a second disclosure row.
   if (
     singleActivity !== null &&
     !groupIntent &&
-    singleActivity.workEntry.itemType !== "reasoning"
+    (singleActivity.workEntry.itemType !== "reasoning" || !singleActivity.canExpand)
   ) {
     result.push({
       type: "activity-group",
       id,
       createdAt: singleActivity.createdAt,
       runId: singleActivity.runId,
-      activities: [{ ...singleActivity, live: shimmer, groupStandIn: { groupId, label: summary } }],
+      activities: [
+        {
+          ...singleActivity,
+          live: shimmer,
+          groupStandIn: {
+            groupId,
+            label:
+              singleActivity.workEntry.itemType === "reasoning"
+                ? workEntryRowLabel(singleActivity.workEntry)
+                : summary,
+          },
+        },
+      ],
       // No trailing margin lets Thinking or a growing group replace the row without shifting the feed.
       continuesWorkLog: true,
     });

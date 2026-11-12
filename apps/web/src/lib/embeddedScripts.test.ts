@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { embeddedScripts } from "./embeddedScripts";
+import { embeddedScripts, executionEmbeddedScripts } from "./embeddedScripts";
 
 function scriptsOf(command: string) {
   return embeddedScripts(command).map((script) => {
@@ -26,6 +26,41 @@ for p in sorted(Path('.').glob('**/package.json')):
 `;
 
 describe("embeddedScripts", () => {
+  it("extracts explicit PowerShell invocations without parsing arbitrary PowerShell source as shell", () => {
+    const source = 'Write-Output "eins"; Write-Output "zwei"';
+    const command = `pwsh -NoProfile -Command '${source}'`;
+    expect(executionEmbeddedScripts(command, "powershell")).toMatchObject([
+      { language: "powershell", text: source },
+    ]);
+    expect(executionEmbeddedScripts('Write-Output "python3 -c print(1)"', "powershell")).toEqual(
+      [],
+    );
+  });
+
+  it.each([
+    [String.raw`python3 -c "print('$HOME')"`, true],
+    [
+      String.raw`python3 - <<PY
+print("a\\nb")
+PY`,
+      true,
+    ],
+    [
+      String.raw`python3 - <<'PY'
+print("a\\nb")
+PY`,
+      false,
+    ],
+    [String.raw`python3 -c 'print("$HOME")'`, false],
+    [String.raw`python3 -c "print('\$HOME')"`, false],
+    ["python3 - <<PY\nprint('$HOME')\nPY", true],
+    ["python3 - <<'PY'\nprint('$HOME')\nPY", false],
+    [String.raw`bash -c "python3 -c 'print(\"$HOME\")'"`, true],
+  ])("identifies unresolved shell expansion in %s", (command, expected) => {
+    const script = embeddedScripts(command).findLast((entry) => entry.language === "python");
+    expect(script?.shellTemplate).toBe(expected);
+  });
+
   it("finds the script inside a Codex login-shell wrapper and the script inside that", () => {
     const inner = `console.log('interrupt fixture tool started'); setTimeout(() => {}, 30000)`;
     const command = `/bin/bash -lc "node -e \\"${inner}\\""`;

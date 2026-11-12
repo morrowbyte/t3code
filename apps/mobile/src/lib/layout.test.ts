@@ -1,4 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
+import { RunId, ThreadId, TurnItemId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+
+import {
+  resolveThreadFeedFixedItemSize,
+  resolveThreadWorkRowFixedItemSize,
+} from "../features/threads/thread-feed-item-size";
 
 import {
   alignListPaneToHinge,
@@ -23,6 +30,45 @@ describe("thread arrangement text sizing", () => {
 });
 
 describe("thread work-log text sizing", () => {
+  it("measures work-group headers that can contain multiline tool titles", () => {
+    expect(resolveThreadFeedFixedItemSize("work-toggle")).toBeUndefined();
+  });
+
+  it.each(["command_execution", "dynamic_tool", "reasoning"] as const)(
+    "measures two-line %s titles even at the default text size",
+    (type) => {
+      const timestamp = DateTime.makeUnsafe("2026-11-11T00:00:00.000Z");
+      const item = {
+        id: TurnItemId.make("multiline-tool"),
+        threadId: ThreadId.make("thread"),
+        runId: RunId.make("run"),
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 0,
+        status: "completed" as const,
+        title: "A long tool title that wraps beside the execution status on mobile",
+        startedAt: timestamp,
+        completedAt: timestamp,
+        updatedAt: timestamp,
+      };
+      const sizing = deriveThreadWorkLogSizing({ baseFontSize: 16, fontScale: 1 });
+      expect(sizing.fixedRowHeight).toBe(28);
+      expect(
+        resolveThreadWorkRowFixedItemSize(
+          type === "command_execution"
+            ? { ...item, type, input: "echo done" }
+            : type === "dynamic_tool"
+              ? { ...item, type, toolName: "example", input: {} }
+              : { ...item, type, text: item.title, streaming: false },
+          sizing.fixedRowHeight,
+        ),
+      ).toBeUndefined();
+    },
+  );
+
   it.each([
     { baseFontSize: 16, fontScale: 1.25, estimatedRowHeight: 28 },
     { baseFontSize: 22, fontScale: 2, estimatedRowHeight: 52 },
