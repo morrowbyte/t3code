@@ -138,10 +138,7 @@ function useBrowserMiniPlayerSource(threadRef: ScopedThreadRef | null, tabId: st
     runtimeTabId === null ? null : (state.byTabId[runtimeTabId]?.fittedSourceContent ?? null),
   );
   const nativeControlsTab = useControlsNativePreviewTab(threadRef?.environmentId ?? null, snapshot);
-  const serverTab =
-    threadRef !== null &&
-    snapshot?.runtime === "server" &&
-    !nativeControlsTab;
+  const serverTab = threadRef !== null && snapshot?.runtime === "server" && !nativeControlsTab;
   const streamViewport = useStreamedSourceSize((state) =>
     threadRef &&
     tabId !== null &&

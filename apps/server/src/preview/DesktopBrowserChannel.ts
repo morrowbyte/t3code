@@ -213,10 +213,13 @@ interface DesktopAttachment {
   readonly key: DesktopTabKey;
   readonly connection: DesktopConnection;
   readonly privateEntry: DesktopBrowserPrivateEntryAttachment | undefined;
-  relay: {
-    readonly queue: Queue.Queue<string>;
-    readonly closed: Deferred.Deferred<void>;
-  } | undefined;
+  readonly waiting: Set<DesktopConnection>;
+  relay:
+    | {
+        readonly queue: Queue.Queue<string>;
+        readonly closed: Deferred.Deferred<void>;
+      }
+    | undefined;
 }
 
 const make = Effect.gen(function* () {
@@ -234,10 +237,7 @@ const make = Effect.gen(function* () {
   const attachmentLock = yield* Semaphore.make(1);
   const current = (attachment: DesktopAttachment) =>
     attachment.connection.live && attachedTabs.get(keyOf(attachment.key)) === attachment;
-  const matches = (
-    attachment: DesktopAttachment,
-    target: DesktopBrowserPrivateEntryAttachment,
-  ) =>
+  const matches = (attachment: DesktopAttachment, target: DesktopBrowserPrivateEntryAttachment) =>
     attachment.privateEntry?.channelEpoch === target.channelEpoch &&
     attachment.privateEntry?.attachmentId === target.attachmentId;
 
@@ -258,25 +258,30 @@ const make = Effect.gen(function* () {
   ) {
     if (attachedTabs.get(keyOf(attachment.key)) !== attachment) return;
     attachedTabs.delete(keyOf(attachment.key));
+    const waiting = [...attachment.waiting];
+    attachment.waiting.clear();
     if (attachment.relay) {
       yield* Deferred.succeed(attachment.relay.closed, undefined);
       yield* Queue.shutdown(attachment.relay.queue);
     }
     yield* privateEntries.detach(attachment.key, attachment.privateEntry);
+    for (const connection of waiting) {
+      yield* connection.send({ type: "reattach", ...attachment.key });
+    }
     yield* PubSub.publish(changes, { key: attachment.key, attached: false });
   });
 
-  const closeConnection = Effect.fn("DesktopBrowserChannel.closeConnection")(
-    function* (connection: DesktopConnection) {
-      connection.live = false;
-      connections.delete(connection);
-      for (const owners of activeTurns.values()) owners.delete(connection);
-      for (const attachment of attachedTabs.values()) {
-        if (attachment.connection === connection) yield* detach(attachment);
-      }
-    },
-    attachmentLock.withPermits(1),
-  );
+  const closeConnection = Effect.fn("DesktopBrowserChannel.closeConnection")(function* (
+    connection: DesktopConnection,
+  ) {
+    connection.live = false;
+    connections.delete(connection);
+    for (const owners of activeTurns.values()) owners.delete(connection);
+    for (const attachment of attachedTabs.values()) {
+      attachment.waiting.delete(connection);
+      if (attachment.connection === connection) yield* detach(attachment);
+    }
+  }, attachmentLock.withPermits(1));
 
   const makeConnection = Effect.fn("DesktopBrowserChannel.makeConnection")(function* (
     write: (line: string) => Effect.Effect<void, unknown>,
@@ -308,62 +313,65 @@ const make = Effect.gen(function* () {
   });
 
   // CDP frames share the transport span rather than creating one span per message.
-  const receive = Effect.fnUntraced(
-    function* (connection: DesktopConnection, event: typeof DesktopBrowserEvent.Type) {
-      if (!connection.live) return;
-      const key = { threadId: event.threadId, tabId: event.tabId };
-      const id = keyOf(key);
-      const attachment = attachedTabs.get(id);
-      if (attachment && attachment.connection !== connection) return;
-      switch (event.type) {
-        case "private-entry-acquire":
-        case "private-entry-cancel":
-        case "private-entry-release":
-          if (attachment && matches(attachment, event)) yield* privateEntries.receive(event);
-          return;
-        case "cdp": {
-          if (attachment?.relay) yield* Queue.offer(attachment.relay.queue, event.message);
-          return;
-        }
-        case "attached": {
-          if (
-            attachment &&
-            (event.privateEntry
-              ? matches(attachment, event.privateEntry)
-              : !attachment.privateEntry)
-          ) {
-            return;
-          }
-          if (attachment) yield* detach(attachment);
-          attachedTabs.set(id, {
-            key,
-            connection,
-            privateEntry: event.privateEntry,
-            relay: undefined,
-          });
-          yield* privateEntries.attach(key, event.privateEntry);
-          const turnOwners = activeTurns.get(key.threadId);
-          if (turnOwners && !turnOwners.has(connection)) {
-            turnOwners.add(connection);
-            yield* connection.send({ type: "turn", threadId: key.threadId, active: true });
-          }
-          yield* PubSub.publish(changes, { key, attached: true });
+  const receive = Effect.fnUntraced(function* (
+    connection: DesktopConnection,
+    event: typeof DesktopBrowserEvent.Type,
+  ) {
+    if (!connection.live) return;
+    const key = { threadId: event.threadId, tabId: event.tabId };
+    const id = keyOf(key);
+    const attachment = attachedTabs.get(id);
+    if (attachment && attachment.connection !== connection) {
+      if (event.type === "attached") attachment.waiting.add(connection);
+      else if (event.type === "detached") attachment.waiting.delete(connection);
+      return;
+    }
+    switch (event.type) {
+      case "private-entry-acquire":
+      case "private-entry-cancel":
+      case "private-entry-release":
+        if (attachment && matches(attachment, event)) yield* privateEntries.receive(event);
+        return;
+      case "cdp": {
+        if (attachment?.relay) yield* Queue.offer(attachment.relay.queue, event.message);
+        return;
+      }
+      case "attached": {
+        if (
+          attachment &&
+          (event.privateEntry ? matches(attachment, event.privateEntry) : !attachment.privateEntry)
+        ) {
           return;
         }
-        case "detached": {
-          if (
-            attachment &&
-            (attachment.privateEntry
-              ? event.privateEntry && matches(attachment, event.privateEntry)
-              : !event.privateEntry)
-          ) {
-            yield* detach(attachment);
-          }
+        if (attachment) yield* detach(attachment);
+        attachedTabs.set(id, {
+          key,
+          connection,
+          privateEntry: event.privateEntry,
+          waiting: new Set(),
+          relay: undefined,
+        });
+        yield* privateEntries.attach(key, event.privateEntry);
+        const turnOwners = activeTurns.get(key.threadId);
+        if (turnOwners && !turnOwners.has(connection)) {
+          turnOwners.add(connection);
+          yield* connection.send({ type: "turn", threadId: key.threadId, active: true });
+        }
+        yield* PubSub.publish(changes, { key, attached: true });
+        return;
+      }
+      case "detached": {
+        if (
+          attachment &&
+          (attachment.privateEntry
+            ? event.privateEntry && matches(attachment, event.privateEntry)
+            : !event.privateEntry)
+        ) {
+          yield* detach(attachment);
         }
       }
-    },
-    attachmentLock.withPermits(1),
-  );
+    }
+  }, attachmentLock.withPermits(1));
 
   const consume = Effect.fn("DesktopBrowserChannel.consume")(
     (connection: DesktopConnection, input: Stream.Stream<Uint8Array, unknown>) =>
@@ -394,7 +402,7 @@ const make = Effect.gen(function* () {
       NodeStream.fromReadable<Uint8Array, Error>({
         evaluate: () => readable,
         closeOnDone: true,
-        onError: (cause) => cause instanceof Error ? cause : new Error(String(cause)),
+        onError: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
       }),
     ).pipe(Effect.forkScoped);
   }
@@ -431,13 +439,15 @@ const make = Effect.gen(function* () {
       processId: process.pid,
     };
     const temporaryPath = path.join(config.stateDir, `.desktop-browser-${processEpoch}.json`);
-    yield* fs.writeFileString(temporaryPath, `${JSON.stringify(descriptor)}\n`, {
-      flag: "wx",
-      mode: 0o600,
-    }).pipe(
-      Effect.andThen(fs.rename(temporaryPath, descriptorPath)),
-      Effect.ensuring(fs.remove(temporaryPath, { force: true }).pipe(Effect.ignore)),
-    );
+    yield* fs
+      .writeFileString(temporaryPath, `${JSON.stringify(descriptor)}\n`, {
+        flag: "wx",
+        mode: 0o600,
+      })
+      .pipe(
+        Effect.andThen(fs.rename(temporaryPath, descriptorPath)),
+        Effect.ensuring(fs.remove(temporaryPath, { force: true }).pipe(Effect.ignore)),
+      );
     yield* Effect.addFinalizer(() =>
       fs.readFileString(descriptorPath).pipe(
         Effect.flatMap(decodeDescriptor),
@@ -454,10 +464,10 @@ const make = Effect.gen(function* () {
 
   const register = Effect.fn("DesktopBrowserChannel.register")(function* (socket: Socket.Socket) {
     const writer = yield* socket.writer;
-    const reader = yield* Socket.readerBytes(socket);
+    const bytePull = yield* Socket.readerBytes(socket);
     const connection = yield* makeConnection((line) => writer.write(line));
     let header = Buffer.alloc(0);
-    const input = Stream.fromPull(Effect.succeed(reader.pull)).pipe(
+    const input = Stream.fromPull(Effect.succeed(bytePull)).pipe(
       Stream.mapEffect((bytes) =>
         Effect.gen(function* () {
           if (connection.live) return bytes;
@@ -468,7 +478,9 @@ const make = Effect.gen(function* () {
           }
           header = Buffer.concat([header, part]);
           if (end < 0) return new Uint8Array();
-          const registration = yield* decodeRegistration(header.toString("utf8")).pipe(Effect.option);
+          const registration = yield* decodeRegistration(header.toString("utf8")).pipe(
+            Effect.option,
+          );
           header = Buffer.alloc(0);
           if (
             Option.isNone(registration) ||
@@ -489,9 +501,9 @@ const make = Effect.gen(function* () {
     );
     yield* consume(connection, input);
   });
-  yield* localServer.run((socket) => register(socket).pipe(Effect.scoped, Effect.ignore)).pipe(
-    Effect.forkScoped,
-  );
+  yield* localServer
+    .run((socket) => register(socket).pipe(Effect.scoped, Effect.ignore))
+    .pipe(Effect.forkScoped);
 
   const send = (attachment: DesktopAttachment, message: DesktopBrowserCommandType) =>
     attachment.connection.send(message, () => current(attachment));
@@ -514,10 +526,9 @@ const make = Effect.gen(function* () {
       }),
     );
     const command = (message: DesktopBrowserCommandType) =>
-      attachment.connection.send(
-        message,
-        () => current(attachment) && attachment.relay === relay,
-      ).pipe(Effect.asVoid);
+      attachment.connection
+        .send(message, () => current(attachment) && attachment.relay === relay)
+        .pipe(Effect.asVoid);
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
         if (attachment.relay === relay) {
@@ -535,30 +546,37 @@ const make = Effect.gen(function* () {
       path: `/${secret}`,
     }).pipe(Effect.orDie);
     let connected = false;
-    yield* server.run((socket) =>
-      Effect.gen(function* () {
-        const reader = yield* socket.reader;
-        if (connected || !current(attachment) || attachment.relay !== relay) return;
-        connected = true;
-        const writer = yield* socket.writer;
-        yield* Stream.fromQueue(relay.queue).pipe(
-          Stream.runForEach((message) => writer.write(message)),
-          Effect.forkScoped,
-        );
-        const decoder = new TextDecoder();
-        yield* reader.pull.pipe(
-          Effect.flatMap((frames) =>
-            Effect.forEach(frames, (frame) => command({
-              type: "cdp",
-              ...key,
-              message: typeof frame === "string" ? frame : decoder.decode(frame),
-            }), { discard: true }),
-          ),
-          Effect.forever,
-          Effect.raceFirst(Deferred.await(relay.closed)),
-        );
-      }).pipe(Effect.scoped, Effect.ignore),
-    ).pipe(Effect.forkScoped);
+    yield* server
+      .run((socket) =>
+        Effect.gen(function* () {
+          const reader = yield* socket.reader;
+          if (connected || !current(attachment) || attachment.relay !== relay) return;
+          connected = true;
+          const writer = yield* socket.writer;
+          yield* Stream.fromQueue(relay.queue).pipe(
+            Stream.runForEach((message) => writer.write(message)),
+            Effect.forkScoped,
+          );
+          const decoder = new TextDecoder();
+          yield* reader.pull.pipe(
+            Effect.flatMap((frames) =>
+              Effect.forEach(
+                frames,
+                (frame) =>
+                  command({
+                    type: "cdp",
+                    ...key,
+                    message: typeof frame === "string" ? frame : decoder.decode(frame),
+                  }),
+                { discard: true },
+              ),
+            ),
+            Effect.forever,
+            Effect.raceFirst(Deferred.await(relay.closed)),
+          );
+        }).pipe(Effect.scoped, Effect.ignore),
+      )
+      .pipe(Effect.forkScoped);
     const address = server.address;
     if (address._tag !== "InetAddressV4") return yield* Effect.die("Unexpected relay address.");
     return `ws://127.0.0.1:${address.port}/${secret}`;
@@ -598,20 +616,17 @@ const make = Effect.gen(function* () {
       return Effect.sync(() => attachedTabs.has(keyOf(key)));
     }),
     endpoint,
-    turn: Effect.fn("DesktopBrowserChannel.turn")(
-      function* (threadId, active) {
-        const owners = activeTurns.get(threadId) ?? new Set<DesktopConnection>();
-        for (const attachment of attachedTabs.values()) {
-          if (attachment.key.threadId === threadId) owners.add(attachment.connection);
-        }
-        if (active) activeTurns.set(threadId, owners);
-        else activeTurns.delete(threadId);
-        yield* Effect.forEach(owners, (owner) => owner.send({ type: "turn", threadId, active }), {
-          discard: true,
-        });
-      },
-      attachmentLock.withPermits(1),
-    ),
+    turn: Effect.fn("DesktopBrowserChannel.turn")(function* (threadId, active) {
+      const owners = activeTurns.get(threadId) ?? new Set<DesktopConnection>();
+      for (const attachment of attachedTabs.values()) {
+        if (attachment.key.threadId === threadId) owners.add(attachment.connection);
+      }
+      if (active) activeTurns.set(threadId, owners);
+      else activeTurns.delete(threadId);
+      yield* Effect.forEach(owners, (owner) => owner.send({ type: "turn", threadId, active }), {
+        discard: true,
+      });
+    }, attachmentLock.withPermits(1)),
     pointer: Effect.fn("DesktopBrowserChannel.pointer")(function (key, pointer) {
       const attachment = attachedTabs.get(keyOf(key));
       return attachment

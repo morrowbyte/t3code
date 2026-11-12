@@ -131,6 +131,7 @@ interface SshAuthAttemptInput<T> extends SshAuthOperationInput<T> {
 }
 
 export interface SshDesktopBrowserTransport {
+  readonly proxyUrl: string;
   /** Single consumer, no replay; includes the helper's ready receipt before commands. */
   readonly commands: Stream.Stream<Uint8Array, SshCommandError>;
   readonly closed: Effect.Effect<void, SshCommandError>;
@@ -1796,11 +1797,13 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
           const stateKey = yield* remoteStateKey(entry.target);
           const sshCommand = yield* resolveSshCommand;
           const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+          const proxyPort = yield* reserveLocalTunnelPort();
           const child = yield* runWithSshAuth({
             key,
             target: entry.target,
-            operation: (authOptions) =>
-              Effect.gen(function* () {
+            operation: Effect.fn("ssh/tunnel.openDesktopBrowser.authenticate")(function* (
+              authOptions: SshAuth.SshAuthOptions,
+            ) {
                 const env = yield* SshAuth.buildSshChildEnvironment({
                   ...(authOptions.authSecret === undefined
                     ? {}
@@ -1819,6 +1822,8 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
                         ...baseSshArgs(entry.target, { batchMode: authOptions.batchMode ?? "no" }),
                         "-T",
                         "-o",
+                        "ExitOnForwardFailure=yes",
+                        "-o",
                         "ControlMaster=no",
                         "-o",
                         "ControlPath=none",
@@ -1828,6 +1833,8 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
                         "ServerAliveInterval=15",
                         "-o",
                         "ServerAliveCountMax=3",
+                        "-D",
+                        `127.0.0.1:${proxyPort}`,
                         "--",
                         hostSpec,
                         `exec "$HOME"/${shellSingleQuote(`.t3/ssh-launch/${stateKey}/run-t3.sh`)} __ssh-helper desktop-browser ${shellSingleQuote(environmentId)}`,
@@ -1839,21 +1846,20 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
                     Effect.provideService(Scope.Scope, browserScope),
                     Effect.mapError(() => failure("Failed to spawn SSH desktop browser helper.")),
                   );
-              }),
+            }),
           });
           let stopping = false;
-          const failTransport = Effect.fn("ssh/tunnel.openDesktopBrowser.fail")(
-            function* (error: SshCommandError) {
-              if (stopping) return;
-              stopping = true;
-              yield* Deferred.fail(completed, error);
-              yield* Deferred.fail(aborted, error);
-              yield* child
-                .kill({ killSignal: "SIGTERM", forceKillAfter: TUNNEL_SHUTDOWN_TIMEOUT_MS })
-                .pipe(Effect.ignore);
-            },
-            Effect.uninterruptible,
-          );
+          const failTransport = Effect.fn("ssh/tunnel.openDesktopBrowser.fail")(function* (
+            error: SshCommandError,
+          ) {
+            if (stopping) return;
+            stopping = true;
+            yield* Deferred.fail(completed, error);
+            yield* Deferred.fail(aborted, error);
+            yield* child
+              .kill({ killSignal: "SIGTERM", forceKillAfter: TUNNEL_SHUTDOWN_TIMEOUT_MS })
+              .pipe(Effect.ignore);
+          }, Effect.uninterruptible);
           yield* Scope.addFinalizer(
             browserScope,
             failTransport(failure("SSH desktop browser scope closed.")),
@@ -1861,6 +1867,7 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
           yield* events.pipe(
             Stream.interruptWhen(Deferred.await(aborted)),
             Stream.run(child.stdin),
+            Effect.andThen(() => failTransport(failure("SSH desktop browser input closed."))),
             Effect.catchCause(() => failTransport(failure("SSH desktop browser stdin failed."))),
             Effect.forkIn(browserScope),
           );
@@ -1905,7 +1912,7 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
               Stream.interruptWhen(Deferred.await(aborted)),
             );
           });
-          return { commands, closed };
+          return { proxyUrl: `socks5://127.0.0.1:${proxyPort}`, commands, closed };
         }).pipe(
           Effect.onExit((exit) =>
             Exit.isSuccess(exit) ? Effect.void : Scope.close(browserScope, Exit.void),

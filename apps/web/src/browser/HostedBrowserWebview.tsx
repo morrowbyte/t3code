@@ -442,8 +442,7 @@ export function HostedBrowserWebview(props: {
     viewportWidth,
   ]);
 
-  if (!clientSettingsHydrated || !config || nativeSurface)
-    return hostConnection;
+  if (!clientSettingsHydrated || !config || nativeSurface) return hostConnection;
 
   // Offscreen/visibility:hidden guests stop producing animation frames and
   // accepting compositor input. Keep the agent's page paintable behind the app;

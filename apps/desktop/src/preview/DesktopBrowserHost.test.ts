@@ -599,14 +599,14 @@ describe("DesktopBrowserHost", () => {
       expect(session.closeAllConnections).toHaveBeenCalledTimes(1);
       expect(session.setProxy).toHaveBeenCalledTimes(1);
       yield* connection.closed;
-      const replacement = host.createConnection(targetKey.environmentId, "socks5://127.0.0.1:39002");
+      const replacement = host.createConnection(targetKey.environmentId, "socks5://127.0.0.1:39001");
       yield* replacement.events.pipe(
         Stream.runForEach((line) => Queue.offer(messages, decodeEvent(new TextDecoder().decode(line)))),
         Effect.forkScoped,
       );
       expect(yield* Queue.take(messages)).toMatchObject({ type: "attached", ...key });
       expect(session.setProxy).toHaveBeenLastCalledWith({
-        mode: "fixed_servers", proxyRules: "socks5://127.0.0.1:39002", proxyBypassRules: "<-loopback>",
+        mode: "fixed_servers", proxyRules: "socks5://127.0.0.1:39001", proxyBypassRules: "<-loopback>",
       });
       expect(session.closeAllConnections).toHaveBeenCalledTimes(2);
       expect(host.canRequestPrivateEntry(debuggee.tab.webContents)).toBe(true);

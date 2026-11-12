@@ -995,11 +995,13 @@ export interface DesktopPreviewTabDefaults {
   readonly initialUrl?: string | undefined;
   readonly zoomFactor?: number | undefined;
   readonly colorScheme?: DesktopPreviewColorScheme | undefined;
-  readonly serverTab?: {
-    readonly environmentId?: string | undefined;
-    readonly threadId: string;
-    readonly tabId: string;
-  } | undefined;
+  readonly serverTab?:
+    | {
+        readonly environmentId?: string | undefined;
+        readonly threadId: string;
+        readonly tabId: string;
+      }
+    | undefined;
 }
 
 export const DesktopPreviewRegisterWebviewInputSchema = Schema.Struct({

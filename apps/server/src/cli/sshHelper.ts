@@ -154,7 +154,11 @@ const connectDesktopBrowser = Effect.fn("sshHelper.connectDesktopBrowser")(
   (baseDir: string, environmentId: string) =>
     Effect.tryPromise({
       try: (signal) => {
-        const descriptorPath = NodePath.join(baseDir, "userdata", DESKTOP_BROWSER_REGISTRATION_FILE);
+        const descriptorPath = NodePath.join(
+          baseDir,
+          "userdata",
+          DESKTOP_BROWSER_REGISTRATION_FILE,
+        );
         const fd = NodeFS.openSync(
           descriptorPath,
           NodeFS.constants.O_RDONLY |
@@ -279,7 +283,11 @@ const connectDesktopBrowser = Effect.fn("sshHelper.connectDesktopBrowser")(
           };
           socket.on("data", onHeader);
           if (signal.aborted) abort();
-          else if (process.stdin.readableEnded || process.stdin.destroyed || process.stdout.destroyed)
+          else if (
+            process.stdin.readableEnded ||
+            process.stdin.destroyed ||
+            process.stdout.destroyed
+          )
             callerEnded();
           else process.stdin.read(0);
         });

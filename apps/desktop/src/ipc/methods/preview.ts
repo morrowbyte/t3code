@@ -82,11 +82,16 @@ export const installPreviewEventForwarding = Effect.fn(
 
 const getHostedEnvironmentIds = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_HOSTED_ENVIRONMENTS_GET_CHANNEL,
+  payload: Schema.Void,
   result: Schema.Array(Schema.String),
   handler: Effect.fn("desktop.ipc.preview.getHostedEnvironmentIds")(function* (_input, event) {
     const electronWindow = yield* ElectronWindow.ElectronWindow;
     const main = yield* electronWindow.main;
-    if (Option.isNone(main) || main.value.isDestroyed() || main.value.webContents.id !== event?.sender.id)
+    if (
+      Option.isNone(main) ||
+      main.value.isDestroyed() ||
+      main.value.webContents.id !== event?.sender.id
+    )
       return [];
     const browserHost = yield* DesktopBrowserHost.DesktopBrowserHost;
     return browserHost.hostedEnvironmentIds();
@@ -149,7 +154,7 @@ const ensureOffscreenHost = DesktopIpc.makeIpcMethod({
   ) {
     const manager = yield* PreviewManager.PreviewManager;
     const { scope, persistent, namespace } = resolvePartitionScope(environmentId, profileId);
-    yield* manager.getBrowserSession(scope, persistent, namespace);
+    yield* manager.getBrowserSession(scope, persistent, namespace, environmentId);
     const partition = yield* manager.getBrowserPartition(scope, persistent, namespace);
     return yield* manager.ensureOffscreenHost(
       tabId,
@@ -384,7 +389,7 @@ const resolveClearPartitions = Effect.fn("desktop.ipc.preview.resolveClearPartit
   if (profileId === undefined) return undefined;
   const { scope, persistent, namespace } = resolvePartitionScope(environmentId, profileId);
   // getBrowserSession registers the partition; deriving its name alone leaves unopened profiles uncleared.
-  yield* manager.getBrowserSession(scope, persistent, namespace);
+  yield* manager.getBrowserSession(scope, persistent, namespace, environmentId);
   return [yield* manager.getBrowserPartition(scope, persistent, namespace)];
 });
 
@@ -396,7 +401,7 @@ const getPreviewConfig = DesktopIpc.makeIpcMethod({
     const manager = yield* PreviewManager.PreviewManager;
     const { scope, persistent, namespace } = resolvePartitionScope(environmentId, profileId);
     // Session creation installs UA and permission handlers before a guest can attach.
-    yield* manager.getBrowserSession(scope, persistent, namespace);
+    yield* manager.getBrowserSession(scope, persistent, namespace, environmentId);
     return {
       partition: yield* manager.getBrowserPartition(scope, persistent, namespace),
       webPreferences: PREVIEW_WEBVIEW_PREFERENCES,

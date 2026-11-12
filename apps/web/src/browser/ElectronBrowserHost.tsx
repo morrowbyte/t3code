@@ -3,7 +3,7 @@ import {
   AuthPreviewOperateScope,
   type DesktopPreviewBridge,
   type DesktopPreviewOpenLinkEvent,
-  type EnvironmentId,
+  EnvironmentId,
   FILL_PREVIEW_VIEWPORT,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
@@ -179,8 +179,21 @@ export function ElectronBrowserHost() {
           />
         );
       })}
+      {hostedEnvironmentIds
+        .filter((environmentId) => environmentId !== primaryEnvironmentId)
+        .map((environmentId) => (
+          <DesktopHostedPreviewDiscovery
+            key={environmentId}
+            environmentId={EnvironmentId.make(environmentId)}
+          />
+        ))}
     </div>
   );
+}
+
+function DesktopHostedPreviewDiscovery({ environmentId }: { environmentId: EnvironmentId }) {
+  useDesktopHostedPreviewSessions(environmentId);
+  return null;
 }
 
 function AuthorizedBrowserWebview(props: ComponentProps<typeof HostedBrowserWebview>) {

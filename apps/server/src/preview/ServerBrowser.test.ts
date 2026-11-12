@@ -362,7 +362,9 @@ const dependencies = Layer.mergeAll(
     installed: Effect.die("mock Chromium does not need an executable"),
   }),
   Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
-    get available() { return desktopChannelAvailable; },
+    get available() {
+      return desktopChannelAvailable;
+    },
     registerPrivateEntryHandler: (handler) =>
       Effect.acquireRelease(
         Effect.sync(() => {
@@ -853,27 +855,29 @@ it.live.each(["desktop" as const, undefined])(
     ).pipe(Effect.provide(layer)),
 );
 
-it.effect.each([false, true])("a tab the desktop does not draw is marked headless before a late attachment: %s", (available) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      desktopChannelAvailable = available;
-      const { broker, tabId } = yield* ready;
-      const manager = yield* Manager.PreviewManager;
-      desktopChannelAvailable = true;
-      desktopRendersNext = true;
-      const desktopTab = yield* broker.invoke<PreviewAutomationStatus>({
-        scope,
-        operation: "open",
-        input: { reuseExistingTab: false, show: false },
-      });
-      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
-      const headlessOf = (id: string | null) =>
-        sessions.find((session) => session.tabId === id)?.headless;
+it.effect.each([false, true])(
+  "a tab the desktop does not draw is marked headless before a late attachment: %s",
+  (available) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        desktopChannelAvailable = available;
+        const { broker, tabId } = yield* ready;
+        const manager = yield* Manager.PreviewManager;
+        desktopChannelAvailable = true;
+        desktopRendersNext = true;
+        const desktopTab = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+        const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+        const headlessOf = (id: string | null) =>
+          sessions.find((session) => session.tabId === id)?.headless;
 
-      expect(headlessOf(tabId)).toBe(true);
-      expect(headlessOf(desktopTab.tabId)).toBeUndefined();
-    }),
-  ).pipe(Effect.provide(layer)),
+        expect(headlessOf(tabId)).toBe(true);
+        expect(headlessOf(desktopTab.tabId)).toBeUndefined();
+      }),
+    ).pipe(Effect.provide(layer)),
 );
 
 it.effect("a desktop page that loaded before the server attached reports its loaded title", () =>

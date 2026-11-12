@@ -118,7 +118,11 @@ export interface PreviewTabState {
   controller: "human" | "agent" | "none";
   capturing: boolean;
   favicon?: DesktopPreviewFavicon;
-  serverTab?: { readonly environmentId?: string | undefined; readonly threadId: string; readonly tabId: string };
+  serverTab?: {
+    readonly environmentId?: string | undefined;
+    readonly threadId: string;
+    readonly tabId: string;
+  };
   updatedAt: string;
 }
 
@@ -2895,6 +2899,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         return;
       }
       if (afterAttach.serverTab) {
+        yield* attemptPromise({ operation: "restoreControlSession.targetNetwork", tabId }, () =>
+          browserHost.configureTargetSession(afterAttach.serverTab?.environmentId, wc.session),
+        );
         yield* listenToBrowserHost;
         const host = hostedContents.get(tabId);
         browserHost.attach(afterAttach.serverTab, {
@@ -3809,7 +3816,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   let pointerSequence = 0;
   const emitAgentPointer = Effect.fn("PreviewManager.emitAgentPointer")(function* (pointer: {
-    readonly key: { readonly environmentId?: string | undefined; readonly threadId: string; readonly tabId: string };
+    readonly key: {
+      readonly environmentId?: string | undefined;
+      readonly threadId: string;
+      readonly tabId: string;
+    };
     readonly phase: "move" | "click";
     readonly x: number;
     readonly y: number;
@@ -3846,7 +3857,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   });
   const updateServerTabCapturing = Effect.fn("PreviewManager.updateServerTabCapturing")(
     function* (painting: {
-      readonly key: { readonly environmentId?: string | undefined; readonly threadId: string; readonly tabId: string };
+      readonly key: {
+        readonly environmentId?: string | undefined;
+        readonly threadId: string;
+        readonly tabId: string;
+      };
       readonly active: boolean;
     }) {
       const tab = [...(yield* SynchronizedRef.get(tabsRef)).values()].find(
@@ -4377,6 +4392,7 @@ export class PreviewManager extends Context.Service<
       scope?: string,
       persistent?: boolean,
       namespace?: BrowserSession.BrowserSessionPartitionNamespace,
+      targetEnvironmentId?: string,
     ) => Effect.Effect<Session, PreviewManagerError>;
     readonly isBrowserPartition: (partition: string) => boolean;
     readonly createTab: (
@@ -4530,7 +4546,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     setMainWindow: operations.setMainWindow,
     setForwardedShortcuts: operations.setForwardedShortcuts,
     getBrowserSession: Effect.fn("PreviewManager.getBrowserSession")(
-      function* (scope, persistent, namespace) {
+      function* (scope, persistent, namespace, targetEnvironmentId) {
         const session = yield* browserSession
           .getSession(scope, persistent, namespace)
           .pipe(
@@ -4538,6 +4554,9 @@ export const make = Effect.gen(function* PreviewManagerMake() {
               (cause) => new PreviewOperationError({ operation: "getBrowserSession", cause }),
             ),
           );
+        yield* attemptPromise({ operation: "getBrowserSession.targetNetwork" }, () =>
+          browserHost.configureTargetSession(targetEnvironmentId, session),
+        );
         placeServerDownloads(session);
         passkeys.installSessionHandlers(session);
         return session;

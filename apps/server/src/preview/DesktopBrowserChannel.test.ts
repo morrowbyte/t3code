@@ -283,7 +283,9 @@ effectIt.live(
         const endpointScope = yield* Scope.make();
         yield* Effect.addFinalizer(() => Scope.close(endpointScope, Exit.void));
         const endpoint = yield* channel.endpoint(privateTarget).pipe(Scope.provide(endpointScope));
-        const relay = yield* NodeSocket.makeWebSocket(endpoint);
+        const relay = yield* Socket.makeWebSocket(endpoint).pipe(
+          Effect.provide(Socket.layerWebSocketConstructorGlobal),
+        );
         const relayWriter = yield* relay.writer;
         const relayReader = yield* relay.reader;
         yield* relayWriter.write("old-cdp-request");

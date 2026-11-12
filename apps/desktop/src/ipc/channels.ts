@@ -79,7 +79,8 @@ export const SET_WSL_ONLY_CHANNEL = "desktop:set-wsl-only";
 export const SSH_PASSWORD_PROMPT_CANCELLED_RESULT = "ssh-password-prompt-cancelled";
 export const PREVIEW_SET_FORWARDED_SHORTCUTS_CHANNEL = "desktop:preview-set-forwarded-shortcuts";
 export const PREVIEW_HOSTED_ENVIRONMENTS_GET_CHANNEL = "desktop:preview-hosted-environments-get";
-export const PREVIEW_HOSTED_ENVIRONMENTS_CHANGE_CHANNEL = "desktop:preview-hosted-environments-change";
+export const PREVIEW_HOSTED_ENVIRONMENTS_CHANGE_CHANNEL =
+  "desktop:preview-hosted-environments-change";
 export const PREVIEW_CREATE_TAB_CHANNEL = "desktop:preview-create-tab";
 export const PREVIEW_CLOSE_TAB_CHANNEL = "desktop:preview-close-tab";
 export const PREVIEW_REGISTER_WEBVIEW_CHANNEL = "desktop:preview-register-webview";

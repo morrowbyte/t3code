@@ -167,13 +167,14 @@ export const make = Effect.gen(function* () {
           if (
             previous?.environmentId === descriptor.environmentId &&
             !(yield* Deferred.isDone(previous.stopped))
-          ) return;
+          )
+            return;
           if (previous) yield* Scope.close(previous.scope, Exit.void);
           const scope = yield* Scope.fork(serviceScope, "sequential");
           const ready = yield* Deferred.make<void, Error>();
           const stopped = yield* Deferred.make<void>();
           const binding = { environmentId: descriptor.environmentId, scope, stopped };
-          const connection = browserHost.createConnection(descriptor.environmentId);
+          let connection: ReturnType<typeof browserHost.createConnection> | undefined;
           const outgoing = yield* Queue.bounded<Uint8Array>(32);
           const events = Stream.fromQueue(outgoing);
           const start = Effect.gen(function* () {
@@ -181,8 +182,10 @@ export const make = Effect.gen(function* () {
               Effect.sync(() => {
                 if (browserConnections.get(key) === binding) browserConnections.delete(key);
               }).pipe(
-                Effect.andThen(connection.closed),
-                Effect.andThen(Deferred.fail(ready, new Error("The browser target connection closed."))),
+                Effect.andThen(Effect.suspend(() => connection?.closed ?? Effect.void)),
+                Effect.andThen(
+                  Deferred.fail(ready, new Error("The browser target connection closed.")),
+                ),
                 Effect.andThen(Deferred.succeed(stopped, undefined)),
               ),
             );
@@ -191,21 +194,29 @@ export const make = Effect.gen(function* () {
               descriptor.environmentId,
               events,
             );
+            const activeConnection = browserHost.createConnection(descriptor.environmentId, transport.proxyUrl);
+            connection = activeConnection;
             let registered = false;
             yield* transport.commands.pipe(
               Stream.decodeText(),
               Stream.splitLines,
               Stream.runForEach((line) => {
-                if (registered) return connection.handleCommandLine(line);
-                if (new TextEncoder().encode(line).byteLength > DESKTOP_BROWSER_REGISTRATION_MAX_BYTES)
-                  return Effect.fail(new Error("The browser registration header exceeded its bound."));
+                if (registered) return activeConnection.handleCommandLine(line);
+                if (
+                  new TextEncoder().encode(line).byteLength > DESKTOP_BROWSER_REGISTRATION_MAX_BYTES
+                )
+                  return Effect.fail(
+                    new SshCommandError({ command: ["desktop-browser"], exitCode: null, stderr: "", message: "The browser registration header exceeded its bound." }),
+                  );
                 return decodeBrowserReady(line).pipe(
                   Effect.flatMap((receipt) =>
                     Effect.gen(function* () {
                       if (receipt.environmentId !== descriptor.environmentId)
-                        return yield* Effect.fail(new Error("The browser target environment changed."));
+                        return yield* Effect.fail(
+                          new SshCommandError({ command: ["desktop-browser"], exitCode: null, stderr: "", message: "The browser target environment changed." }),
+                        );
                       // Subscribe before consuming commands coalesced with Ready in the same chunk.
-                      yield* connection.events.pipe(
+                      yield* activeConnection.events.pipe(
                         Stream.runForEach((event) => Queue.offer(outgoing, event)),
                         Effect.onExit(() => Deferred.succeed(stopped, undefined)),
                         Effect.forkIn(scope, { startImmediately: true }),

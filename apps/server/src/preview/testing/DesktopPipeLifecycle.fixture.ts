@@ -77,42 +77,50 @@ Effect.gen(function* () {
     return yield* Effect.die("The browser attach message was not received.");
   }
   yield* Fiber.join(healthy);
-  yield* Effect.scoped(Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const descriptor = yield* fs
-      .readFileString(path.join(base.stateDir, DESKTOP_BROWSER_REGISTRATION_FILE))
-      .pipe(
-        Effect.flatMap(
-          Schema.decodeUnknownEffect(Schema.fromJsonString(DesktopBrowserRegistrationDescriptor)),
-        ),
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const descriptor = yield* fs
+        .readFileString(path.join(base.stateDir, DESKTOP_BROWSER_REGISTRATION_FILE))
+        .pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(Schema.fromJsonString(DesktopBrowserRegistrationDescriptor)),
+          ),
+        );
+      const socket = yield* NodeSocket.makeNet({ path: descriptor.endpoint });
+      const writer = yield* socket.writer;
+      const bytePull = yield* Socket.readerBytes(socket);
+      const incoming = yield* Stream.fromPull(Effect.succeed(bytePull)).pipe(
+        Stream.pipeThroughChannel(Ndjson.decode()),
+        Stream.rechunk(1),
+        Stream.toPull,
       );
-    const socket = yield* NodeSocket.makeNet({ path: descriptor.endpoint });
-    const writer = yield* socket.writer;
-    const reader = yield* Socket.readerBytes(socket);
-    const incoming = yield* Stream.fromPull(Effect.succeed(reader.pull)).pipe(
-      Stream.pipeThroughChannel(Ndjson.decode()),
-      Stream.rechunk(1),
-      Stream.toPull,
-    );
-    yield* writer.write(
-      `${JSON.stringify({
-        type: "desktop-browser-register",
-        environmentId: descriptor.environmentId,
-        processEpoch: descriptor.processEpoch,
-        token: descriptor.token,
-      })}\n`,
-    );
-    const [ready] = yield* incoming;
-    if (!Schema.is(DesktopBrowserReady)(ready) || ready.environmentId !== descriptor.environmentId ||
-      ready.processEpoch !== descriptor.processEpoch) {
-      return yield* Effect.die("OS registration did not acknowledge the target.");
-    }
-    yield* writer.write(`${JSON.stringify({ type: "attached", ...remote })}\n`);
-    if (!(yield* browser.awaitAttached(remote, "5 seconds")) || !(yield* browser.isAttached(key))) {
-      return yield* Effect.die("OS registration displaced the inherited FD attachment.");
-    }
-  }));
+      yield* writer.write(
+        `${JSON.stringify({
+          type: "desktop-browser-register",
+          environmentId: descriptor.environmentId,
+          processEpoch: descriptor.processEpoch,
+          token: descriptor.token,
+        })}\n`,
+      );
+      const [ready] = yield* incoming;
+      if (
+        !Schema.is(DesktopBrowserReady)(ready) ||
+        ready.environmentId !== descriptor.environmentId ||
+        ready.processEpoch !== descriptor.processEpoch
+      ) {
+        return yield* Effect.die("OS registration did not acknowledge the target.");
+      }
+      yield* writer.write(`${JSON.stringify({ type: "attached", ...remote })}\n`);
+      if (
+        !(yield* browser.awaitAttached(remote, "5 seconds")) ||
+        !(yield* browser.isAttached(key))
+      ) {
+        return yield* Effect.die("OS registration displaced the inherited FD attachment.");
+      }
+    }),
+  );
   yield* remoteDetached;
   if (!(yield* browser.isAttached(key)) || !browser.available) {
     return yield* Effect.die("The OS channel close displaced the inherited FD connection.");

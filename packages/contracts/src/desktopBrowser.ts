@@ -93,6 +93,7 @@ export const DesktopBrowserCommand = Schema.Union([
   /** One CDP message for the tab's relay. */
   Schema.Struct({ type: Schema.Literal("cdp"), ...TabKey, message: Schema.String }),
   Schema.Struct({ type: Schema.Literal("release"), ...TabKey }),
+  Schema.Struct({ type: Schema.Literal("reattach"), ...TabKey }),
   Schema.Struct({
     type: Schema.Literal("pointer"),
     ...TabKey,
