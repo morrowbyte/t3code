@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   ProviderThreadId,
+  ProviderInstanceId,
   ProviderTurnId,
   NodeId,
   TurnItemId,
@@ -51,6 +52,19 @@ describe("answer cost binding", () => {
     expect(answerCostPresentation(restored, TurnItemId.make("intermediate-answer"))).toBeNull();
     expect(answerCostPresentation({ ...turn, status: "running" }, itemId)).toBeNull();
     expect(answerCostPresentation(turn, itemId)?.detail).toContain("Subagent costs are excluded.");
+    const execution = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "executed-model",
+      options: [
+        { id: "reasoningEffort", value: "xhigh" },
+        { id: "serviceTier", value: "default" },
+      ],
+    };
+    const configured = answerCostPresentation(turn, itemId, undefined, execution);
+    expect(configured?.detail).toContain("Provider: codex");
+    expect(configured?.detail).toContain("Reasoning: xhigh");
+    expect(configured?.detail).toContain("Service tier: default");
+    expect(answerCostPresentation(turn, itemId)?.detail).toContain("Reasoning: unknown");
   });
 
   it("keeps partial, unavailable and tiny costs honest", () => {

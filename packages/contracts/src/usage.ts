@@ -1,6 +1,64 @@
 import * as Schema from "effect/Schema";
 
 import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ProjectId, RunId, ThreadId } from "./baseSchemas.ts";
+import { ModelSelection } from "./modelSelection.ts";
+import { TurnCostSnapshot } from "./providerRuntime.ts";
+
+export const ExecutionUsageInput = Schema.Struct({
+  projectId: Schema.optional(ProjectId),
+  threadId: Schema.optional(ThreadId),
+});
+export type ExecutionUsageInput = typeof ExecutionUsageInput.Type;
+
+export const ExecutionUsageEntry = Schema.Struct({
+  runId: RunId,
+  threadId: ThreadId,
+  projectId: ProjectId,
+  threadTitle: Schema.String,
+  parentThreadId: Schema.NullOr(ThreadId),
+  modelSelection: ModelSelection,
+  origin: Schema.String,
+  status: Schema.String,
+  requestedAt: Schema.String,
+  durationMs: Schema.NullOr(NonNegativeInt),
+  taskKey: Schema.String,
+  prompt: Schema.String,
+  result: Schema.String,
+  estimatedCostUsd: Schema.NullOr(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+  inputTokens: Schema.NullOr(NonNegativeInt),
+  outputTokens: Schema.NullOr(NonNegativeInt),
+  contextUsedTokens: Schema.NullOr(NonNegativeInt),
+  contextMaxTokens: Schema.NullOr(NonNegativeInt),
+  missingCostTurns: NonNegativeInt,
+  partial: Schema.Boolean,
+  unmeasuredSubagents: Schema.Boolean,
+  nativeChildren: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      title: Schema.String,
+      model: Schema.NullOr(Schema.String),
+      modelSelection: Schema.NullOr(ModelSelection),
+      status: Schema.String,
+    }),
+  ),
+  nativeChildrenOmitted: NonNegativeInt,
+  pricing: Schema.Array(
+    Schema.Struct({
+      source: TurnCostSnapshot.fields.source,
+      pricedAt: Schema.String,
+      model: Schema.NullOr(Schema.String),
+      serviceTier: TurnCostSnapshot.fields.serviceTier,
+    }),
+  ),
+});
+export type ExecutionUsageEntry = typeof ExecutionUsageEntry.Type;
+
+export const ExecutionUsageSummary = Schema.Struct({
+  entries: Schema.Array(ExecutionUsageEntry),
+  truncated: Schema.Boolean,
+});
+export type ExecutionUsageSummary = typeof ExecutionUsageSummary.Type;
 
 /** Bump for incompatible UsageSummary changes; skipped unknown array variants need no bump. */
 export const USAGE_CONTRACT_VERSION = 6 as const;

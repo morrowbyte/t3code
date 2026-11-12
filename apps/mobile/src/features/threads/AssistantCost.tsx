@@ -25,6 +25,7 @@ export function AssistantCost({
     support.providerTurn,
     projectedItem.sourceItemId,
     projectedItem.answerCost,
+    support.run?.modelSelection,
   );
   if (!cost) return null;
   return (
