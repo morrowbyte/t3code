@@ -10,7 +10,7 @@ import * as NodeSqlite from "node:sqlite";
 import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
 export const SERVER_RESTORE_MANIFEST = "restore-manifest.json";
-export const SERVER_RESTORE_QUALIFIED = ".restore-qualified.json";
+const SERVER_RESTORE_QUALIFIED = ".restore-qualified.json";
 export const SERVER_RESTORE_PROFILE_CONTRACT = "t3-userdata-v1";
 export const SERVER_RESTORE_DEFAULT_MAX_BYTES = 1024 ** 3;
 
