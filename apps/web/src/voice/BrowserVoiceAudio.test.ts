@@ -3,10 +3,12 @@ import { BrowserVoiceAudio } from "./BrowserVoiceAudio";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((yes) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((yes, no) => {
     resolve = yes;
+    reject = no;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 function capture() {
   const track = Object.assign(new EventTarget(), {
@@ -43,7 +45,11 @@ function harness() {
     context.state = "running";
     context.onstatechange?.();
   });
-  const sink = { volume: 1, setSinkId: vi.fn().mockResolvedValue(undefined) };
+  const sink = {
+    volume: 1,
+    setSinkId: vi.fn().mockResolvedValue(undefined),
+    play: vi.fn().mockResolvedValue(undefined),
+  };
   const devices = {
     getUserMedia,
     selectAudioOutput: vi.fn(),
@@ -187,3 +193,50 @@ it("reports system-controlled volume without confirming an ineffective slider va
   expect(h.audio.getSnapshot()).toMatchObject({ outputVolume: 1, outputVolumeSupported: false });
   expect(h.sink.volume).toBe(1);
 });
+
+it("blocks playback until the chosen speaker routes and keeps routing failure blocked until reselection", async () => {
+  const h = harness();
+  await h.audio.selectSpeaker("headset");
+  const routing = deferred<void>();
+  h.sink.setSinkId.mockReturnValue(routing.promise);
+  const nativePlay = h.sink.play;
+  const sink = h.audio.createAudioSink();
+  sink.autoplay = true;
+  expect(h.sink).toMatchObject({ autoplay: false });
+  const playback = sink.play();
+  const result = playback.then(
+    () => null,
+    (error: unknown) => error,
+  );
+  expect(nativePlay).not.toHaveBeenCalled();
+  routing.reject(new DOMException("speaker removed", "NotFoundError"));
+  expect(await result).toMatchObject({ name: "NotFoundError" });
+  await expect(sink.play()).rejects.toThrow("speaker removed");
+  expect(nativePlay).not.toHaveBeenCalled();
+  expect(h.audio.getSnapshot().error).toContain("speaker");
+  h.sink.setSinkId.mockResolvedValue(undefined);
+  await h.audio.selectSpeaker("");
+  await sink.play();
+  expect(nativePlay).toHaveBeenCalledOnce();
+  expect(h.audio.getSnapshot()).toMatchObject({ speaker: "", error: null });
+  const lateRouting = deferred<void>();
+  h.sink.setSinkId.mockReturnValue(lateRouting.promise);
+  const changing = h.audio.selectSpeaker("replacement");
+  const latePlayback = expect(sink.play()).rejects.toThrow("Call ended.");
+  h.audio.release();
+  lateRouting.resolve();
+  await Promise.all([changing, latePlayback]);
+  expect(nativePlay).toHaveBeenCalledOnce();
+  expect(h.audio.getSnapshot()).toMatchObject({ speaker: "", error: null });
+});
+
+it.each(["NotAllowedError", "NotFoundError"])(
+  "names the speaker when output selection fails with %s",
+  async (name) => {
+    const h = harness();
+    h.sink.setSinkId.mockRejectedValue(new DOMException("speaker unavailable", name));
+    await h.audio.selectSpeaker("headset");
+    expect(h.audio.getSnapshot().error).toContain("speaker");
+    expect(h.audio.getSnapshot().error).not.toContain("microphone");
+  },
+);

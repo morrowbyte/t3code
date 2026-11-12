@@ -32,11 +32,15 @@ const supportsVolume = (audio: HTMLAudioElement) => {
 };
 
 const stop = (stream: MediaStream | null) => stream?.getTracks().forEach((track) => track.stop());
-const audioError = (error: unknown) =>
+const audioError = (error: unknown, device: "microphone" | "speaker" = "microphone") =>
   error instanceof Error && error.name === "NotAllowedError"
-    ? "Allow microphone access in your browser’s site settings, then try again."
+    ? device === "speaker"
+      ? "Allow speaker access in your browser, then choose a speaker again or select System default."
+      : "Allow microphone access in your browser’s site settings, then try again."
     : error instanceof Error && error.name === "NotFoundError"
-      ? "This microphone is unavailable. Connect it in system settings or choose another device."
+      ? device === "speaker"
+        ? "This speaker is unavailable. Choose another speaker or select System default."
+        : "This microphone is unavailable. Connect it in system settings or choose another device."
       : "Could not use this audio device. Check system audio settings, then try again.";
 
 export class BrowserVoiceAudio {
@@ -64,6 +68,7 @@ export class BrowserVoiceAudio {
   private outputMeter: AnalyserNode | null = null;
   private outputSource: MediaStreamAudioSourceNode | null = null;
   private audio: HTMLAudioElement | null = null;
+  private routeOutput: ((speaker: string) => Promise<void>) | null = null;
   private operation = 0;
   private selection = 0;
   private outputSelection = 0;
@@ -242,19 +247,54 @@ export class BrowserVoiceAudio {
   };
   createAudioSink = () => {
     const audio = this.dependencies.sink();
-    audio.autoplay = true;
+    audio.autoplay = false;
     audio.volume = this.state.outputVolume;
     this.audio = audio;
+    let routing = Promise.resolve();
+    const route = (speaker: string) => {
+      routing = routing
+        .catch(() => {})
+        .then(() => {
+          if (audio.setSinkId) return audio.setSinkId(speaker);
+          if (speaker) throw new Error("Speaker selection is unavailable in this browser.");
+        });
+      return routing;
+    };
+    this.routeOutput = route;
+    const play = audio.play.bind(audio);
+    const playWhenRouted = async (): Promise<void> => {
+      const pending = routing;
+      await pending;
+      if (this.audio !== audio) throw new Error("Call ended.");
+      if (pending !== routing) return playWhenRouted();
+      await play();
+    };
     this.update({
       outputSelectionSupported: typeof audio.setSinkId === "function",
       outputVolumeSupported: supportsVolume(audio),
       outputVolume: audio.volume,
     });
-    if (this.state.speaker && audio.setSinkId)
-      void audio
-        .setSinkId(this.state.speaker)
-        .catch((error: unknown) => this.update({ error: audioError(error) }));
-    return audio;
+    if (this.state.speaker)
+      void route(this.state.speaker).catch((error: unknown) => {
+        if (this.audio === audio) this.update({ error: audioError(error, "speaker") });
+      });
+    return {
+      autoplay: false,
+      get srcObject() {
+        return audio.srcObject;
+      },
+      set srcObject(stream: HTMLMediaElement["srcObject"]) {
+        audio.srcObject = stream;
+      },
+      get muted() {
+        return audio.muted;
+      },
+      set muted(muted: boolean) {
+        audio.muted = muted;
+      },
+      play: playWhenRouted,
+      pause: () => audio.pause(),
+    };
   };
   selectSpeaker = async (speaker: string) => {
     const audio = this.audio ?? this.dependencies.sink();
@@ -262,12 +302,13 @@ export class BrowserVoiceAudio {
     const selection = ++this.outputSelection;
     const operation = this.operation;
     try {
-      await audio.setSinkId(speaker);
+      if (this.audio && this.routeOutput) await this.routeOutput(speaker);
+      else await audio.setSinkId(speaker);
       if (selection === this.outputSelection && operation === this.operation)
         this.update({ speaker, error: null });
     } catch (error) {
       if (selection === this.outputSelection && operation === this.operation)
-        this.update({ error: audioError(error) });
+        this.update({ error: audioError(error, "speaker") });
     }
   };
   requestSpeakerPermission = async () => {
@@ -350,6 +391,7 @@ export class BrowserVoiceAudio {
     this.outputMeter = null;
     this.outputSource = null;
     this.audio = null;
+    this.routeOutput = null;
     this.update({ inputIssue: null });
   };
 }
