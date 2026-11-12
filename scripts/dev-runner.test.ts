@@ -26,7 +26,11 @@ import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/process";
 
-import { stopDevRunners } from "@t3tools/shared/node/devRunnerControl";
+import {
+  createDevRunnerOutput,
+  reconcileDevRunnerOutputs,
+  stopDevRunners,
+} from "@t3tools/shared/node/devRunnerControl";
 import {
   checkPortAvailabilityOnHosts,
   createDevRunnerEnv,
@@ -386,115 +390,175 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
   });
 
   describe("runDevRunnerWithInput", () => {
-    live.each([false, true])(
-      "retains bounded native worker stderr after failure, detached=%s",
-      (detached) =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            const fs = yield* FileSystem.FileSystem;
-            const path = yield* Path.Path;
-            const platform = yield* HostProcess.Platform;
-            const root = yield* fs.makeTempDirectoryScoped();
-            const workspace = path.join(root, "workspace");
-            yield* fs.makeDirectory(path.join(workspace, ".git"), { recursive: true });
-            const directory = path.join(workspace, ".t3", "dev-runner-output");
-            yield* fs.makeDirectory(directory, { recursive: true });
-            const db = new NodeSqlite.DatabaseSync(path.join(directory, "failures.sqlite"));
-            try {
-              db.exec(
-                "CREATE TABLE failures (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL)",
-              );
-              for (let index = 0; index < 8; index++) {
-                const name = `runner-retained${index}.log`;
-                NodeFS.writeFileSync(path.join(directory, name), "old failure", { mode: 0o600 });
-                db.prepare("INSERT INTO failures (name) VALUES (?)").run(name);
-              }
-            } finally {
-              db.close();
-            }
-            const connected = yield* Deferred.make<NodeNet.Socket>();
-            const sockets = new Set<NodeNet.Socket>();
-            const server = NodeNet.createServer((socket) => {
-              sockets.add(socket);
-              socket.once("close", () => sockets.delete(socket));
-              socket.on("error", () => socket.destroy());
-              socket.once("data", () => Deferred.doneUnsafe(connected, Effect.succeed(socket)));
-            });
-            yield* Effect.acquireRelease(
-              Effect.callback<void>((resume) =>
-                server.listen(0, "127.0.0.1", () => resume(Effect.void)),
-              ),
-              () =>
-                Effect.promise(
-                  () =>
-                    new Promise<void>((resolve) => {
-                      for (const socket of sockets) socket.destroy();
-                      server.close(() => resolve());
-                    }),
-                ),
+    live.each([
+      { detached: false, crashed: false },
+      { detached: true, crashed: false },
+      { detached: true, crashed: true },
+    ])("retains bounded native worker stderr after failure: %j", ({ detached, crashed }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const platform = yield* HostProcess.Platform;
+          const root = yield* fs.makeTempDirectoryScoped();
+          const workspace = path.join(root, "workspace");
+          yield* fs.makeDirectory(path.join(workspace, ".git"), { recursive: true });
+          const directory = path.join(workspace, ".t3", "dev-runner-output");
+          yield* fs.makeDirectory(directory, { recursive: true });
+          const db = new NodeSqlite.DatabaseSync(path.join(directory, "failures.sqlite"));
+          try {
+            db.exec(
+              "CREATE TABLE failures (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL)",
             );
-            const executable = path.join(root, platform === "win32" ? "runner-fixture.cjs" : "vp");
-            yield* fs.writeFileString(
-              executable,
-              `#!${process.execPath}
+            for (let index = 0; index < 8; index++) {
+              const name = `runner-retained${index}.log`;
+              NodeFS.writeFileSync(path.join(directory, name), "old failure", { mode: 0o600 });
+              db.prepare("INSERT INTO failures (name) VALUES (?)").run(name);
+            }
+          } finally {
+            db.close();
+          }
+          const active = yield* createDevRunnerOutput({
+            workspacePath: workspace,
+            threadId: "other-active-owner",
+          });
+          NodeFS.writeFileSync(active.path, "other active output");
+          yield* Effect.addFinalizer(() => active.remove);
+          const sameOwnerActive = yield* createDevRunnerOutput({
+            workspacePath: workspace,
+            threadId: "failed-worker-owner",
+          });
+          NodeFS.writeFileSync(sameOwnerActive.path, "same thread active output");
+          yield* Effect.addFinalizer(() => sameOwnerActive.remove);
+          const connected = yield* Deferred.make<NodeNet.Socket>();
+          const sockets = new Set<NodeNet.Socket>();
+          const server = NodeNet.createServer((socket) => {
+            sockets.add(socket);
+            socket.once("close", () => sockets.delete(socket));
+            socket.on("error", () => socket.destroy());
+            socket.once("data", () => Deferred.doneUnsafe(connected, Effect.succeed(socket)));
+          });
+          yield* Effect.acquireRelease(
+            Effect.callback<void>((resume) =>
+              server.listen(0, "127.0.0.1", () => resume(Effect.void)),
+            ),
+            () =>
+              Effect.promise(
+                () =>
+                  new Promise<void>((resolve) => {
+                    for (const socket of sockets) socket.destroy();
+                    server.close(() => resolve());
+                  }),
+              ),
+          );
+          const executable = path.join(root, platform === "win32" ? "runner-fixture.cjs" : "vp");
+          yield* fs.writeFileString(
+            executable,
+            `#!${process.execPath}
 const net = require("node:net");
 const socket = net.createConnection({ host: "127.0.0.1", port: Number(process.env.RUNNER_FIXTURE_PORT) }, () => socket.write("ready\\n"));
-socket.once("data", () => process.stdout.write(Buffer.alloc(3 * 1024 * 1024, "x"), () => process.stderr.write("late-stderr-marker\\n", () => process.exit(7))));
+socket.once("data", () => process.stdout.write(process.env.RUNNER_FIXTURE_CRASH ? "crash-output\\n" : Buffer.alloc(3 * 1024 * 1024, "x"), () => process.stderr.write("late-stderr-marker\\n", () => { if (!process.env.RUNNER_FIXTURE_CRASH) process.exit(7); })));
+socket.on("end", () => process.exit(0));
 `,
+          );
+          yield* fs.chmod(executable, 0o700);
+          if (platform === "win32")
+            yield* fs.writeFileString(
+              path.join(root, "vp.cmd"),
+              `@"${process.execPath}" "%~dp0runner-fixture.cjs" %*\r\n`,
             );
-            yield* fs.chmod(executable, 0o700);
-            if (platform === "win32")
-              yield* fs.writeFileString(
-                path.join(root, "vp.cmd"),
-                `@"${process.execPath}" "%~dp0runner-fixture.cjs" %*\r\n`,
-              );
-            const worker = yield* Effect.acquireRelease(
+          const worker = yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              NodeChildProcess.fork(path.join(import.meta.dirname, "dev-runner-worker.ts"), [], {
+                cwd: workspace,
+                execArgv: [],
+                stdio: ["ignore", "ignore", "ignore", "ipc"],
+                env: {
+                  ...process.env,
+                  PATH: `${root}${NodePath.delimiter}${process.env.PATH ?? ""}`,
+                  T3CODE_THREAD_ID: "failed-worker-owner",
+                  ...(crashed ? { RUNNER_FIXTURE_CRASH: "1" } : {}),
+                  RUNNER_FIXTURE_PORT: String((server.address() as NodeNet.AddressInfo).port),
+                },
+              }),
+            ),
+            (worker) =>
+              Effect.sync(() => {
+                if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGTERM");
+              }),
+          );
+          const exit = NodeEvents.once(worker, "exit");
+          yield* Effect.promise(() => NodeEvents.once(worker, "message"));
+          worker.send({ ...devServerInput, t3Home: path.join(root, "state"), seed: false });
+          const [raw] = yield* Effect.promise(() => NodeEvents.once(worker, "message"));
+          const ready = decodeReady(raw);
+          const socket = yield* Deferred.await(connected);
+          yield* Effect.addFinalizer(() => Effect.sync(() => socket.destroy()));
+          if (detached) worker.disconnect();
+          const failure = detached ? undefined : NodeEvents.once(worker, "message");
+          if (crashed) {
+            const logged = yield* Deferred.make<void>();
+            yield* Effect.acquireRelease(
               Effect.sync(() =>
-                NodeChildProcess.fork(path.join(import.meta.dirname, "dev-runner-worker.ts"), [], {
-                  cwd: workspace,
-                  execArgv: [],
-                  stdio: ["ignore", "ignore", "ignore", "ipc"],
-                  env: {
-                    ...process.env,
-                    PATH: `${root}${NodePath.delimiter}${process.env.PATH ?? ""}`,
-                    T3CODE_THREAD_ID: "failed-worker-owner",
-                    RUNNER_FIXTURE_PORT: String((server.address() as NodeNet.AddressInfo).port),
-                  },
+                NodeFS.watch(ready.outputPath, () => {
+                  if (NodeFS.readFileSync(ready.outputPath, "utf8").includes("late-stderr-marker"))
+                    Deferred.doneUnsafe(logged, Effect.void);
                 }),
               ),
-              (worker) =>
-                Effect.sync(() => {
-                  if (worker.exitCode === null && worker.signalCode === null)
-                    worker.kill("SIGTERM");
-                }),
+              (watcher) => Effect.sync(() => watcher.close()),
             );
-            const exit = NodeEvents.once(worker, "exit");
-            yield* Effect.promise(() => NodeEvents.once(worker, "message"));
-            worker.send({ ...devServerInput, t3Home: path.join(root, "state"), seed: false });
-            const [raw] = yield* Effect.promise(() => NodeEvents.once(worker, "message"));
-            const ready = decodeReady(raw);
-            const socket = yield* Deferred.await(connected);
-            yield* Effect.addFinalizer(() => Effect.sync(() => socket.destroy()));
-            if (detached) worker.disconnect();
-            const failure = detached ? undefined : NodeEvents.once(worker, "message");
             socket.write("fail\n");
-            if (failure !== undefined) {
-              const [rawFailure] = yield* Effect.promise(() => failure);
-              const value = decodeFailure(rawFailure);
-              assert.strictEqual(value.outputPath, ready.outputPath);
-              assert.notInclude(value.error, "late-stderr-marker");
-            }
-            const [code] = yield* Effect.promise(() => exit);
-            assert.notStrictEqual(code, 0);
-            assert.include(yield* fs.readFileString(ready.outputPath), "late-stderr-marker");
-            assert.isAtMost(Number((yield* fs.stat(ready.outputPath)).size), 2 * 1024 * 1024);
+            yield* Deferred.await(logged);
+            worker.kill("SIGKILL");
+          } else socket.write("fail\n");
+          if (failure !== undefined) {
+            const [rawFailure] = yield* Effect.promise(() => failure);
+            const value = decodeFailure(rawFailure);
+            assert.strictEqual(value.outputPath, ready.outputPath);
+            assert.notInclude(value.error, "late-stderr-marker");
+          }
+          const [code] = yield* Effect.promise(() => exit);
+          assert.notStrictEqual(code, 0);
+          if (crashed) {
+            yield* reconcileDevRunnerOutputs({
+              workspacePath: workspace,
+              threadId: "failed-worker-owner",
+            }).pipe(
+              Effect.provideService(HostProcess.Platform, "linux"),
+              Effect.provideService(
+                FileSystem.FileSystem,
+                FileSystem.FileSystem.of({
+                  ...fs,
+                  readFileString: (file, encoding) =>
+                    file === "/proc/sys/kernel/random/boot_id"
+                      ? Effect.succeed("unavailable")
+                      : fs.readFileString(file, encoding),
+                }),
+              ),
+            );
             assert.lengthOf(
               (yield* fs.readDirectory(directory)).filter((name) => name.endsWith(".log")),
-              8,
+              11,
             );
-            assert.isFalse(yield* fs.exists(path.join(directory, "runner-retained0.log")));
-          }),
-        ).pipe(Effect.provide(NodeServices.layer)),
+            yield* reconcileDevRunnerOutputs({
+              workspacePath: workspace,
+              threadId: "failed-worker-owner",
+            });
+          }
+          assert.include(yield* fs.readFileString(ready.outputPath), "late-stderr-marker");
+          assert.strictEqual(yield* fs.readFileString(active.path), "other active output");
+          assert.strictEqual(
+            yield* fs.readFileString(sameOwnerActive.path),
+            "same thread active output",
+          );
+          assert.isAtMost(Number((yield* fs.stat(ready.outputPath)).size), 2 * 1024 * 1024);
+          assert.lengthOf(
+            (yield* fs.readDirectory(directory)).filter((name) => name.endsWith(".log")),
+            10,
+          );
+          assert.isFalse(yield* fs.exists(path.join(directory, "runner-retained0.log")));
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
     );
 
     it.effect.each(["root", "linked"] as const)(

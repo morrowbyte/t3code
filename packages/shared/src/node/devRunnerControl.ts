@@ -310,6 +310,126 @@ type RecoverShare = (
   canRecover: Effect.Effect<boolean>,
 ) => Effect.Effect<boolean>;
 
+const decodeOutputOwner = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.NullOr(ProcessIdentity)),
+);
+const encodeOutputOwner = Schema.encodeSync(Schema.fromJsonString(Schema.NullOr(ProcessIdentity)));
+const validOutputName = (name: string) => /^runner-[a-zA-Z0-9_-]+\.log$/u.test(name);
+const outputFileExists = (directory: string, name: string) => {
+  if (!validOutputName(name)) return false;
+  const path = NodePath.join(directory, name);
+  if (!NodeFS.existsSync(path)) return false;
+  const info = NodeFS.lstatSync(path);
+  return info.isFile() && info.nlink === 1;
+};
+
+const rotateOutputs = (db: NodeSqlite.DatabaseSync, directory: string) => {
+  for (const row of db
+    .prepare("SELECT name FROM failures ORDER BY id DESC LIMIT -1 OFFSET 8")
+    .all()) {
+    const name = String(row.name);
+    if (outputFileExists(directory, name)) NodeFS.unlinkSync(NodePath.join(directory, name));
+    db.prepare("DELETE FROM failures WHERE name = ?").run(name);
+  }
+};
+
+const withOutputDatabase = Effect.fn("devRunnerControl.withOutputDatabase")(function* <A>(
+  workspacePath: string,
+  use: (db: NodeSqlite.DatabaseSync, directory: string) => A,
+) {
+  return yield* Effect.try({
+    try: () => {
+      const directory = NodePath.join(workspacePath, ".t3", "dev-runner-output");
+      NodeFS.mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const path = NodePath.join(directory, "failures.sqlite");
+      const fd = NodeFS.openSync(path, "a", 0o600);
+      NodeFS.closeSync(fd);
+      const db = new NodeSqlite.DatabaseSync(path);
+      try {
+        db.exec(
+          "PRAGMA busy_timeout = 5000; BEGIN EXCLUSIVE; CREATE TABLE IF NOT EXISTS failures (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL); CREATE TABLE IF NOT EXISTS active_outputs (name TEXT PRIMARY KEY NOT NULL, thread_id TEXT NOT NULL, owner TEXT NOT NULL);",
+        );
+        const result = use(db, directory);
+        db.exec("COMMIT;");
+        return result;
+      } finally {
+        db.close();
+      }
+    },
+    catch: (cause) => new DevRunnerControlError({ operation: "stop", cause }),
+  });
+});
+
+export const reconcileDevRunnerOutputs = Effect.fn("devRunnerControl.reconcileOutputs")(
+  function* (input: { readonly workspacePath: string; readonly threadId: string }) {
+    if (
+      !NodeFS.existsSync(
+        NodePath.join(input.workspacePath, ".t3", "dev-runner-output", "failures.sqlite"),
+      )
+    )
+      return;
+    const rows = yield* withOutputDatabase(input.workspacePath, (db) =>
+      db.prepare("SELECT name, owner FROM active_outputs WHERE thread_id = ?").all(input.threadId),
+    );
+    const dead: Array<{ name: string; owner: string }> = [];
+    for (const row of rows) {
+      const owner = String(row.owner);
+      const parsed = decodeOutputOwner(owner);
+      if (Option.isSome(parsed) && parsed.value !== null && (yield* isProvenDead(parsed.value)))
+        dead.push({ name: String(row.name), owner });
+    }
+    yield* withOutputDatabase(input.workspacePath, (db, directory) => {
+      for (const row of dead) {
+        const removed = db
+          .prepare("DELETE FROM active_outputs WHERE name = ? AND owner = ? AND thread_id = ?")
+          .run(row.name, row.owner, input.threadId);
+        if (Number(removed.changes) !== 0 && outputFileExists(directory, row.name))
+          db.prepare("INSERT OR REPLACE INTO failures (name) VALUES (?)").run(row.name);
+      }
+      rotateOutputs(db, directory);
+    });
+  },
+);
+
+export const createDevRunnerOutput = Effect.fn("devRunnerControl.createOutput")(function* (input: {
+  readonly workspacePath: string;
+  readonly threadId: string;
+}) {
+  yield* reconcileDevRunnerOutputs(input);
+  const owner = encodeOutputOwner((yield* captureIdentity(process.pid)) ?? null);
+  const name = `runner-${NodeCrypto.randomBytes(16).toString("hex")}.log`;
+  const path = NodePath.join(input.workspacePath, ".t3", "dev-runner-output", name);
+  yield* withOutputDatabase(input.workspacePath, (db) => {
+    db.prepare("INSERT INTO active_outputs (name, thread_id, owner) VALUES (?, ?, ?)").run(
+      name,
+      input.threadId,
+      owner,
+    );
+  });
+  // Commit ownership before creating the file so abrupt exit cannot leave an unregistered log.
+  yield* Effect.try({
+    try: () => NodeFS.writeFileSync(path, new Uint8Array(), { flag: "wx", mode: 0o600 }),
+    catch: (cause) => new DevRunnerControlError({ operation: "register", cause }),
+  });
+  const finish = (failed: boolean) =>
+    withOutputDatabase(input.workspacePath, (db, directory) => {
+      const row = db
+        .prepare("SELECT owner, thread_id FROM active_outputs WHERE name = ?")
+        .get(name);
+      if (row?.owner !== owner || row.thread_id !== input.threadId) return;
+      if (failed && outputFileExists(directory, name)) {
+        db.prepare("INSERT OR REPLACE INTO failures (name) VALUES (?)").run(name);
+        rotateOutputs(db, directory);
+      } else if (!failed && outputFileExists(directory, name)) NodeFS.unlinkSync(path);
+      db.prepare("DELETE FROM active_outputs WHERE name = ? AND owner = ? AND thread_id = ?").run(
+        name,
+        owner,
+        input.threadId,
+      );
+    });
+  return { path, fail: finish(true), remove: finish(false) };
+});
+
 const recoverStoppedReceipt = Effect.fn("devRunnerControl.recoverStoppedReceipt")(
   function* (input: {
     readonly receiptPath: string;
@@ -796,7 +916,11 @@ export const stopDevRunners = Effect.fn("devRunnerControl.stop")(function* (inpu
     }
     stoppedNames.add(name);
   }
-  if (names.length === 0) return true;
-  const remaining = yield* fs.readDirectory(directory);
-  return remaining.every((name) => names.includes(name) && !stoppedNames.has(name));
+  if (names.length !== 0) {
+    const remaining = yield* fs.readDirectory(directory);
+    if (!remaining.every((name) => names.includes(name) && !stoppedNames.has(name))) return false;
+  }
+  if (!(yield* input.canStop)) return false;
+  yield* reconcileDevRunnerOutputs({ workspacePath, threadId: input.threadId });
+  return true;
 });

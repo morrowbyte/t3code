@@ -191,17 +191,21 @@ export const create = Effect.fn("devShareOwnership.create")(function* <A, E, R>(
       const { port, generation } = input.ownership;
       const previous = readEntry(db, port);
       const route = yield* readRoute(port);
+      const owner = yield* captureIdentity(process.pid);
       if (
         route === undefined ||
         (previous !== undefined &&
           (Option.isNone(previous) ||
             (!(previous.value.cleared && route === null) &&
               (!(yield* isProvenDead(previous.value.owner)) ||
-                !(yield* shareRuntimeStopped(
-                  previous.value.runtime,
-                  port,
-                  previous.value.generation,
-                ))))))
+                !(previous.value.runtime === undefined
+                  ? route === null ||
+                    (owner !== undefined && previous.value.owner?.bootId !== owner.bootId)
+                  : yield* shareRuntimeStopped(
+                      previous.value.runtime,
+                      port,
+                      previous.value.generation,
+                    ))))))
       )
         return yield* new OwnershipError({ cause: "Route owner is active or unverified" });
       if (
@@ -211,7 +215,6 @@ export const create = Effect.fn("devShareOwnership.create")(function* <A, E, R>(
           !previous.value.routes.includes(route))
       )
         return yield* new OwnershipError({ cause: "Existing route generation is unverified" });
-      const owner = yield* captureIdentity(process.pid);
       // Persist both exact possible outcomes before I/O; a lost status response cannot strand this generation.
       const pending = {
         generation,
@@ -241,7 +244,9 @@ export const clear = Effect.fn("devShareOwnership.clear")(function* <R>(input: {
   return yield* withOwnership({ port: input.port, generation: input.generation }, (db) =>
     Effect.gen(function* () {
       const entry = readEntry(db, input.port);
-      if (entry === undefined || Option.isNone(entry)) return false;
+      if (entry === undefined)
+        return (yield* readRoute(input.port)) === null && (yield* input.canClear);
+      if (Option.isNone(entry)) return false;
       // A newer generation owns the route. Only the caller's obsolete workspace receipt may go.
       if (entry.value.generation !== input.generation) return yield* input.canClear;
       const route = yield* readRoute(input.port);

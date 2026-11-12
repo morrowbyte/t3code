@@ -1,11 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Private task-owned dev-runner controller.
 import * as NodeFS from "node:fs";
-import * as NodeCrypto from "node:crypto";
-import * as NodePath from "node:path";
-import * as NodeSqlite from "node:sqlite";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@t3tools/shared/Net";
+import { createDevRunnerOutput } from "@t3tools/shared/node/devRunnerControl";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -38,20 +36,12 @@ const program = Effect.gen(function* () {
   if (!workspace || !process.env.T3CODE_THREAD_ID)
     return yield* Effect.fail(new Error("Missing task owner"));
   const fs = yield* FileSystem.FileSystem;
-  const directory = NodePath.join(workspace, ".t3", "dev-runner-output");
-  yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
   let retained = false;
-  const logPath = yield* Effect.acquireRelease(
-    Effect.sync(() => {
-      const path = NodePath.join(
-        directory,
-        `runner-${NodeCrypto.randomBytes(16).toString("hex")}.log`,
-      );
-      NodeFS.writeFileSync(path, new Uint8Array(), { flag: "wx", mode: 0o600 });
-      return path;
-    }),
-    (path) => (retained ? Effect.void : fs.remove(path).pipe(Effect.orDie)),
+  const log = yield* Effect.acquireRelease(
+    createDevRunnerOutput({ workspacePath: workspace, threadId: process.env.T3CODE_THREAD_ID }),
+    (log) => (retained ? Effect.void : log.remove),
   );
+  const logPath = log.path;
   yield* fs.chmod(logPath, 0o600);
   let written = 0;
   let stderrTail = new Uint8Array(0);
@@ -105,37 +95,9 @@ const program = Effect.gen(function* () {
           output(stderrTail);
         }
         output(new TextEncoder().encode(`\n[dev-runner] ${Cause.pretty(cause).slice(0, 4096)}\n`));
-        const lockPath = NodePath.join(directory, "failures.sqlite");
-        const fd = NodeFS.openSync(lockPath, "a", 0o600);
-        NodeFS.closeSync(fd);
-        const db = new NodeSqlite.DatabaseSync(lockPath);
-        try {
-          db.exec(
-            "PRAGMA busy_timeout = 5000; BEGIN EXCLUSIVE; CREATE TABLE IF NOT EXISTS failures (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL);",
-          );
-          const name = NodePath.basename(logPath);
-          db.prepare("INSERT OR REPLACE INTO failures (name) VALUES (?)").run(name);
-          const expired = db
-            .prepare("SELECT name FROM failures ORDER BY id DESC LIMIT -1 OFFSET 8")
-            .all();
-          for (const row of expired) {
-            const name = String(row.name);
-            if (/^runner-[a-zA-Z0-9_-]+\.log$/u.test(name)) {
-              const path = NodePath.join(directory, name);
-              if (NodeFS.existsSync(path)) {
-                const stat = NodeFS.lstatSync(path);
-                if (stat.isFile() && stat.nlink === 1) NodeFS.unlinkSync(path);
-              }
-            }
-            db.prepare("DELETE FROM failures WHERE name = ?").run(name);
-          }
-          db.exec("COMMIT;");
-          retained = true;
-          failureOutputPath = logPath;
-        } finally {
-          db.close();
-        }
-      }),
+        retained = true;
+        failureOutputPath = logPath;
+      }).pipe(Effect.andThen(log.fail)),
     ),
     Effect.provide(
       Logger.layer([

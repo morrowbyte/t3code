@@ -66,6 +66,16 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("task dev-runner con
     "foreign route",
     "reactivated",
     "changed receipt",
+    "manual reboot",
+    "manual route cleared",
+    "manual owner exit",
+    "manual live owner",
+    "manual unknown boot",
+    "missing entry stop",
+    "missing entry start",
+    "missing entry foreign",
+    "missing entry unknown",
+    "missing entry reactivated",
   ] as const)("protects the host route generation across workspaces: %s", (kind) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -145,6 +155,82 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("task dev-runner con
           },
         });
         const run = Effect.gen(function* () {
+          if (kind.startsWith("missing entry")) {
+            yield* Effect.scoped(
+              Effect.gen(function* () {
+                const runner = yield* registerDevRunner({
+                  threadId: "a",
+                  workspacePath: workspaceA,
+                  reuseKey: "web",
+                });
+                yield* runner.prepareShare(5733, ownershipA.generation);
+              }),
+            );
+            bootId = "22222222-2222-2222-2222-222222222222";
+            if (kind === "missing entry foreign") route = target;
+            if (kind === "missing entry unknown") failNextRead = true;
+            if (kind === "missing entry reactivated")
+              onRead = Effect.sync(() => {
+                canStop = false;
+              });
+            const recoverySpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+            const input = {
+              threadId: "a",
+              workspacePath: workspaceA,
+              canStop: Effect.sync(() => canStop),
+              recoverShare: (
+                port: number,
+                generation: string | undefined,
+                canRecover: Effect.Effect<boolean>,
+              ) =>
+                DevShareOwnership.clear({ port, generation, canClear: canRecover, remove }).pipe(
+                  Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, recoverySpawner),
+                ),
+            };
+            const stopped =
+              kind === "missing entry start"
+                ? yield* Effect.scoped(
+                    registerDevRunner({ ...input, reuseKey: "web" }).pipe(Effect.as(true)),
+                  )
+                : yield* stopDevRunners(input);
+            assert.strictEqual(
+              stopped,
+              kind === "missing entry stop" || kind === "missing entry start",
+            );
+            assert.strictEqual(removals, 0);
+            assert.strictEqual(route, kind === "missing entry foreign" ? target : null);
+            return;
+          }
+          if (kind.startsWith("manual")) {
+            yield* DevShareOwnership.create({ ownership: ownershipA, expectedRoute, serve });
+            if (kind === "manual reboot") bootId = "22222222-2222-2222-2222-222222222222";
+            else if (kind !== "manual live owner") processStart = "30";
+            if (kind === "manual route cleared" || kind === "manual live owner") route = null;
+            if (kind === "manual unknown boot") bootId = "unavailable";
+            const previousRoute = route;
+            const takeover = yield* DevShareOwnership.create({
+              ownership: ownershipB,
+              expectedRoute,
+              serve,
+            }).pipe(Effect.exit);
+            const recovered = kind === "manual reboot" || kind === "manual route cleared";
+            assert.strictEqual(Exit.isSuccess(takeover), recovered);
+            assert.strictEqual(route, recovered ? target : previousRoute);
+            assert.strictEqual(removals, 0);
+            if (recovered) {
+              assert.isTrue(
+                yield* DevShareOwnership.clear({
+                  port: 5733,
+                  generation: ownershipA.generation,
+                  canClear: Effect.succeed(true),
+                  remove,
+                }),
+              );
+              assert.strictEqual(route, target);
+              assert.strictEqual(removals, 0);
+            }
+            return;
+          }
           const creation = yield* Effect.scoped(
             Effect.gen(function* () {
               const runner = yield* registerDevRunner({
