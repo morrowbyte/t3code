@@ -73,6 +73,8 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
   let zoomFactor = options.zoomFactor;
   let capturing: Promise<Electron.NativeImage> | undefined;
   let captureHolds = 0;
+  let inputFrameHolds = 0;
+  let inputFrameReleased: ReturnType<typeof Promise.withResolvers<void>> | undefined;
   let privateEntry = options.isPrivateEntry(wc);
   let focusProof: DesktopPreviewSurfaceAck | undefined;
   let focusRequest:
@@ -133,6 +135,21 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
     };
   };
   const visible = () => alive() && surfaceId !== undefined && options.isCurrent();
+  const holdInputFrame = () => {
+    if (!visible()) throw new Error("The local browser surface is unavailable.");
+    inputFrameReleased ??= Promise.withResolvers<void>();
+    inputFrameHolds += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      inputFrameHolds -= 1;
+      if (inputFrameHolds !== 0) return;
+      const waiting = inputFrameReleased;
+      inputFrameReleased = undefined;
+      waiting?.resolve();
+    };
+  };
   const invalidate = () => {
     if (visible()) wc.invalidate();
   };
@@ -279,6 +296,29 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
     throw error;
   }
 
+  const acknowledge = (input: DesktopPreviewSurfaceAck): void | Promise<void> => {
+    if (inputFrameReleased) {
+      return inputFrameReleased.promise.then(() => acknowledge(input));
+    }
+    if (!matches(input, pending)) return;
+    const acknowledged = pending;
+    pending = undefined;
+    if (
+      acknowledged &&
+      acknowledged.generation === generation &&
+      acknowledged.surfaceId === surfaceId &&
+      visible()
+    ) {
+      clearFocus();
+      presented = acknowledged;
+      if (input.focused === true && ownerFocused()) focusProof = acknowledged;
+    }
+    refreshPrivacy();
+    if (!dirtyWhilePending) return;
+    dirtyWhilePending = false;
+    invalidate();
+  };
+
   return {
     window,
     webContents: wc,
@@ -413,25 +453,8 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
       wc.startPainting();
       invalidate();
     },
-    ack: (input: DesktopPreviewSurfaceAck) => {
-      if (!matches(input, pending)) return;
-      const acknowledged = pending;
-      pending = undefined;
-      if (
-        acknowledged &&
-        acknowledged.generation === generation &&
-        acknowledged.surfaceId === surfaceId &&
-        visible()
-      ) {
-        clearFocus();
-        presented = acknowledged;
-        if (input.focused === true && ownerFocused()) focusProof = acknowledged;
-      }
-      refreshPrivacy();
-      if (!dirtyWhilePending) return;
-      dirtyWhilePending = false;
-      invalidate();
-    },
+    ack: acknowledge,
+    holdInputFrame,
     matchesPresented,
     capturePage: () => {
       if (!alive() || capturing) throw new Error("The offscreen browser capture is unavailable.");
@@ -456,6 +479,9 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      const waitingInput = inputFrameReleased;
+      inputFrameReleased = undefined;
+      waitingInput?.resolve();
       clearSurfaceState();
       generation += 1;
       surfaceId = undefined;

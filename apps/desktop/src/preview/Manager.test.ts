@@ -1079,18 +1079,30 @@ describe("PreviewManager", () => {
           expect(target?.current()).toBe(false);
           yield* manager.focusSurface({ ...privateFrame, focused: true }, 7);
           expect(target?.current()).toBe(true);
-          const inputAcks: Array<Promise<void>> = [];
-          fixture.wc.executeJavaScript.mockImplementationOnce(async () => {
-            fixture.paint("input-caret-repaint");
-            const repaint = fixture.send.mock.calls.at(-1)![1];
-            inputAcks.push(Effect.runPromise(manager.ackSurface({ ...repaint, focused: true }, 7)));
-            return true;
+          const inputProbeStarted = Promise.withResolvers<void>();
+          const inputProbe = Promise.withResolvers<boolean>();
+          fixture.wc.executeJavaScript.mockImplementationOnce(() => {
+            inputProbeStarted.resolve();
+            return inputProbe.promise;
           });
-          yield* manager.sendSurfaceInput(
-            { ...privateFrame, input: { type: "text", text: "unit-private-input" } },
-            7,
-          );
-          yield* Effect.promise(() => Promise.all(inputAcks));
+          const typing = yield* manager
+            .sendSurfaceInput(
+              { ...privateFrame, input: { type: "text", text: "unit-private-input" } },
+              7,
+            )
+            .pipe(Effect.forkScoped);
+          yield* Effect.promise(() => inputProbeStarted.promise);
+          fixture.paint("input-caret-repaint");
+          const repaint = fixture.send.mock.calls.at(-1)![1];
+          const acknowledgementStarted = yield* Deferred.make<void>();
+          const acknowledgement = yield* Effect.gen(function* () {
+            yield* Deferred.succeed(acknowledgementStarted, undefined);
+            yield* manager.ackSurface({ ...repaint, focused: true }, 7);
+          }).pipe(Effect.forkScoped);
+          yield* Deferred.await(acknowledgementStarted);
+          inputProbe.resolve(true);
+          yield* Fiber.join(typing);
+          yield* Fiber.join(acknowledgement);
           expect(fixture.wc.insertText).toHaveBeenCalledExactlyOnceWith("unit-private-input");
           const resumeRequested = Promise.withResolvers<DesktopPreviewSurfaceFocusRequest>();
           fixture.focusRequest.mockImplementation((next) => resumeRequested.resolve(next));

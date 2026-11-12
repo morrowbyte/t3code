@@ -1006,7 +1006,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const owner = yield* requireMainSender(senderId);
     const host = hostedContents.get(input.tabId);
     if (!host || host.owner !== owner || host.webContents.id !== input.webContentsId) return;
-    yield* attempt({ operation: "surface.ack", tabId: input.tabId }, () => host.ack(input));
+    yield* attemptPromise({ operation: "surface.ack", tabId: input.tabId }, async () => {
+      await host.ack(input);
+    });
   });
   const documentHasFocus = (tabId: string, wc: Electron.WebContents) => {
     if (!ownedOffscreenContents.has(wc)) return wc.isFocused();
@@ -1157,9 +1159,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     };
     return yield* attemptPromise({ operation: "surface.input", tabId: input.tabId }, async () => {
       current();
-      const result = await sendNativeSurfaceInput(wc!, input.input, current);
-      current();
-      return result;
+      const releaseFrame = host!.holdInputFrame();
+      try {
+        const result = await sendNativeSurfaceInput(wc!, input.input, current);
+        current();
+        return result;
+      } finally {
+        releaseFrame();
+      }
     });
   });
   const setWindowBackgroundThrottling = Effect.fnUntraced(function* (
