@@ -16,6 +16,9 @@ import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(DesktopBrowserEvent));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodePrivateCdpReply = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeBrowserAttachment = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ result: Schema.Struct({ sessionId: Schema.String }) })),
+);
 const decodeCdpReply = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Struct({ id: Schema.Number })),
 );
@@ -369,9 +372,7 @@ describe("DesktopBrowserHost", () => {
         yield* Effect.promise(() => browserAttach!.settled);
         const browserEvent = yield* Queue.take(messages);
         if (browserEvent.type !== "cdp") throw new Error("Expected browser attachment");
-        const browser = Schema.decodeUnknownSync(
-          Schema.fromJsonString(Schema.Struct({ result: Schema.Struct({ sessionId: Schema.String }) })),
-        )(browserEvent.message);
+        const browser = yield* decodeBrowserAttachment(browserEvent.message);
         const command = (id: number, method: string) =>
           connection.dispatchCommandLine!(
             encodeJson({

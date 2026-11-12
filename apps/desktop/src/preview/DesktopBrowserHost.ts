@@ -20,7 +20,11 @@ import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import { createCdpRelayConnection, type CdpRelayConnection } from "./CdpRelay.ts";
+import {
+  createCdpRelayConnection,
+  createCdpRelaySessionState,
+  type CdpRelayConnection,
+} from "./CdpRelay.ts";
 import { sendPageCommand } from "./GuestInput.ts";
 
 const encodeEvent = Schema.encodeSync(Schema.fromJsonString(DesktopBrowserEvent));
@@ -101,6 +105,10 @@ interface AttachedTab {
   readonly key: DesktopBrowserTabKey;
   readonly debuggee: DesktopBrowserTabDebugger;
   relay: CdpRelayConnection | null;
+  relaySessions: {
+    readonly connection: symbol | null;
+    readonly state: ReturnType<typeof createCdpRelaySessionState>;
+  } | null;
   attachment: DesktopBrowserPrivateEntryAttachment | null;
   lease: LeaseState | null;
   releasedLease: LeaseState | null;
@@ -608,6 +616,10 @@ export const make = Effect.gen(function* () {
     const { webContents, debugger: debuggee } = tab.debuggee;
     const connection = activeConnection;
     const closeConnection = closeActiveConnection;
+    if (tab.relaySessions?.connection !== connection) {
+      tab.relaySessions = { connection, state: createCdpRelaySessionState() };
+    }
+    const sessionState = tab.relaySessions.state;
     const send = (method: string, params: Record<string, unknown>, sessionId?: string) => {
       const current = () => {
         if (privateContents.has(webContents) || tab.relay !== relay)
@@ -758,6 +770,7 @@ export const make = Effect.gen(function* () {
         setFocusEmulation(tab, false);
         detach(tab.key);
       },
+      sessionState,
     );
     tab.relay = relay;
     return relay;
@@ -798,6 +811,7 @@ export const make = Effect.gen(function* () {
       key,
       debuggee,
       relay: null,
+      relaySessions: null,
       attachment: channelEpoch ? { channelEpoch, attachmentId: NodeCrypto.randomUUID() } : null,
       pending: null,
       lease: null,
@@ -880,6 +894,7 @@ export const make = Effect.gen(function* () {
       }
       if (command.value.type === "release") {
         dropRelay(tab);
+        tab.relaySessions = null;
         return;
       }
       if (command.value.type !== "cdp") return;
