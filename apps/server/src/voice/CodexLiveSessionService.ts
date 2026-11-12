@@ -535,14 +535,59 @@ export const layer: Layer.Layer<
       };
     };
 
+    const isDeliveryFailure = (item: ReadbackProjection["turnItems"][number]) =>
+      item.type === "error" &&
+      item.status === "failed" &&
+      item.failure.class === "transport_error" &&
+      (item.id.startsWith("turn-item:steering-delivery-failure:") ||
+        item.id.startsWith("turn-item:runtime-request-delivery-failure:"));
+
     const publicReadbackResults = (projection: ReadbackProjection, runId: string) => {
       const run = projection.runs.find((candidate) => candidate.id === runId);
+      if (!run) return [];
+      const attempt = projection.attempts.find(
+        (candidate) =>
+          candidate.id === run.activeAttemptId &&
+          candidate.rootNodeId === run.rootNodeId &&
+          candidate.runId === runId,
+      );
+      const deliveryFailures = attempt
+        ? projection.turnItems.flatMap((item) => {
+            if (
+              item.type !== "error" ||
+              !isDeliveryFailure(item) ||
+              run.rootNodeId === null ||
+              item.threadId !== projection.thread.id ||
+              item.runId !== runId ||
+              !projection.nodes.some(
+                (node) =>
+                  node.id === item.nodeId &&
+                  (node.id === run.rootNodeId || node.rootNodeId === run.rootNodeId),
+              )
+            )
+              return [];
+            return [
+              {
+                attemptId: attempt.id,
+                messageId: run.userMessageId,
+                deliveryId: `delivery-failure:${item.id}`,
+                text: encodeReceipt({
+                  type: "background_task_delivery_failed",
+                  runId,
+                  status: run.status,
+                  message: item.failure.message,
+                  resultReady: false,
+                }),
+              },
+            ];
+          })
+        : [];
       if (
-        run &&
         ["failed", "interrupted", "cancelled"].includes(run.status) &&
         run.activeAttemptId !== null
       ) {
         return [
+          ...deliveryFailures,
           {
             attemptId: run.activeAttemptId,
             messageId: run.userMessageId,
@@ -556,17 +601,10 @@ export const layer: Layer.Layer<
           },
         ];
       }
-      if (!run || !["running", "waiting"].includes(run.status) || run.rootNodeId === null)
-        return [];
-      const attempt = projection.attempts.find(
-        (candidate) =>
-          candidate.id === run.activeAttemptId &&
-          candidate.rootNodeId === run.rootNodeId &&
-          candidate.runId === runId,
-      );
-      if (!attempt) return [];
+      if (!["running", "waiting"].includes(run.status) || run.rootNodeId === null || !attempt)
+        return deliveryFailures;
       const latestTurn = latestProviderTurnForAttempt(projection.providerTurns, attempt.id);
-      if (!latestTurn) return [];
+      if (!latestTurn) return deliveryFailures;
       const turns = new Map(
         projection.providerTurns
           .filter(
@@ -609,37 +647,6 @@ export const layer: Layer.Layer<
             Math.max(lastOrdinals.get(item.providerTurnId!) ?? -1, item.ordinal),
           );
       }
-      const deliveryFailures = projection.turnItems.flatMap((item) => {
-        if (
-          item.type !== "error" ||
-          item.status !== "failed" ||
-          item.failure.class !== "transport_error" ||
-          item.threadId !== projection.thread.id ||
-          item.runId !== runId ||
-          (!item.id.startsWith("turn-item:steering-delivery-failure:") &&
-            !item.id.startsWith("turn-item:runtime-request-delivery-failure:")) ||
-          !projection.nodes.some(
-            (node) =>
-              node.id === item.nodeId &&
-              (node.id === run.rootNodeId || node.rootNodeId === run.rootNodeId),
-          )
-        )
-          return [];
-        return [
-          {
-            attemptId: attempt.id,
-            messageId: run.userMessageId,
-            deliveryId: `delivery-failure:${item.id}`,
-            text: encodeReceipt({
-              type: "background_task_delivery_failed",
-              runId,
-              status: run.status,
-              message: item.failure.message,
-              resultReady: false,
-            }),
-          },
-        ];
-      });
       const updates = items.flatMap((item) => {
         const turn = turns.get(item.providerTurnId!)!;
         if (
@@ -807,7 +814,7 @@ export const layer: Layer.Layer<
               { projectId: input.projectId, threadId: input.threadId },
               readbackFields,
             );
-          yield* Effect.forever(
+          const quietWorker = yield* Effect.forever(
             Effect.sleep("45 seconds").pipe(
               Effect.andThen(
                 Effect.gen(function* () {
@@ -829,20 +836,26 @@ export const layer: Layer.Layer<
               (update) => appendDurableOutput({ ...input, ...update, kind: "context" }),
               { discard: true },
             );
-          const initial = yield* readProjection();
-          yield* appendPublic(initial);
-          const first = inspectReadback(initial, input.runId);
-          if (first.type === "ready") {
-            yield* appendDurableOutput({
-              ...input,
-              kind: "final",
-              attemptId: first.attemptId,
-              messageId: first.finalMessageId,
-              text: first.text,
-            });
-            return;
-          }
-          if (first.type === "blocked") return;
+          let settled = false;
+          const appendProjection = Effect.fn("CodexLiveSessionService.appendReadbackProjection")(
+            function* (projection: ReadbackProjection) {
+              yield* appendPublic(projection);
+              if (settled) return;
+              const result = inspectReadback(projection, input.runId);
+              if (result.type === "pending") return;
+              settled = true;
+              yield* Fiber.interrupt(quietWorker);
+              if (result.type === "ready")
+                yield* appendDurableOutput({
+                  ...input,
+                  kind: "final",
+                  attemptId: result.attemptId,
+                  messageId: result.finalMessageId,
+                  text: result.text,
+                });
+            },
+          );
+          yield* appendProjection(yield* readProjection());
           const eventTypes = [
             "run.updated",
             "subagent.updated",
@@ -850,7 +863,7 @@ export const layer: Layer.Layer<
             "message.updated",
             "turn-item.updated",
           ] as const;
-          const result = yield* Stream.mergeAll(
+          yield* Stream.mergeAll(
             eventTypes.map((eventType) =>
               threads.streamStoredEventsFrom({
                 threadId: input.threadId,
@@ -862,6 +875,13 @@ export const layer: Layer.Layer<
           ).pipe(
             Stream.filter((stored) => {
               const event = stored.event;
+              // Late delivery failures remain relevant until this Voice lease ends.
+              if (settled)
+                return (
+                  event.type === "turn-item.updated" &&
+                  event.payload.runId === input.runId &&
+                  isDeliveryFailure(event.payload)
+                );
               switch (event.type) {
                 case "run.updated":
                   return event.payload.id === input.runId;
@@ -878,23 +898,8 @@ export const layer: Layer.Layer<
               const wake = intakeWakes.get(leaseKey(input.leaseId, input.generation));
               return wake ? Queue.offer(wake, undefined) : Effect.void;
             }),
-            Stream.mapEffect(() =>
-              readProjection().pipe(
-                Effect.tap(appendPublic),
-                Effect.map((projection) => inspectReadback(projection, input.runId)),
-              ),
-            ),
-            Stream.filter((gate) => gate.type !== "pending"),
-            Stream.runHead,
+            Stream.runForEach(() => readProjection().pipe(Effect.flatMap(appendProjection))),
           );
-          if (Option.isNone(result) || result.value.type !== "ready") return;
-          yield* appendDurableOutput({
-            ...input,
-            kind: "final",
-            attemptId: result.value.attemptId,
-            messageId: result.value.finalMessageId,
-            text: result.value.text,
-          });
         }).pipe(
           Effect.scoped,
           Effect.withSpan("CodexLiveSessionService.readbackWorker"),
@@ -3363,12 +3368,19 @@ export const layer: Layer.Layer<
                     !actual.runs.some((run) => run.id === intent.runId)
                   )
                     return yield* liveError("dispatch_conflict");
+                  const deliveryFailed = actual.turnItems.some(
+                    (item) =>
+                      item.type === "user_message" &&
+                      item.messageId === record.message_id &&
+                      item.runId === intent.runId &&
+                      item.status === "failed",
+                  );
                   const stored = decodeReceipt(record.receipt_json) as Record<string, unknown>;
                   yield* sql`UPDATE codex_live_voice_intents SET dispatch_state = 'admitted', receipt_json = ${encodeReceipt(
                     {
                       ...stored,
-                      accepted: true,
-                      delivery: "accepted",
+                      accepted: !deliveryFailed,
+                      delivery: deliveryFailed ? "failed" : "accepted",
                       requestId: intent.id,
                       threadId: intent.threadId,
                       runId: intent.runId,

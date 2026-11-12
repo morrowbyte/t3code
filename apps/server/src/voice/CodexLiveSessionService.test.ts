@@ -242,6 +242,10 @@ it.effect.each([false, true])(
         string,
         Map<string, Queue.Queue<OrchestrationV2StoredEvent>>
       >();
+      const independentStreams = new Map<
+        string,
+        Map<string, Stream.Stream<OrchestrationV2StoredEvent>>
+      >();
       let admitIndependent:
         | ((
             command: Extract<
@@ -288,6 +292,17 @@ it.effect.each([false, true])(
         ["message.updated", yield* Queue.unbounded<OrchestrationV2StoredEvent>()],
         ["turn-item.updated", yield* Queue.unbounded<OrchestrationV2StoredEvent>()],
       ]);
+      const t3EventStreams = new Map<string, Stream.Stream<OrchestrationV2StoredEvent>>();
+      // Stored event subscriptions broadcast; settled runs must not steal a later run's events.
+      for (const [type, queue] of t3EventQueues)
+        t3EventStreams.set(
+          type,
+          yield* Stream.broadcast(Stream.fromQueue(queue), {
+            capacity: "unbounded",
+            replay: 1,
+          }),
+        );
+      const readbackSubscriptions = new Map<string, number>();
       let plannerCalls = 0;
       let plannerAttempts = 0;
       let plannerFailure: "managed_account_required" | "planner_restriction_failed" | undefined;
@@ -667,9 +682,26 @@ it.effect.each([false, true])(
             }),
           getThreadEventSequence: () => Effect.succeed(0),
           streamStoredEventsFrom: (input: { threadId: string; eventType?: string }) =>
-            Stream.fromQueue(
-              (independentQueues.get(input.threadId) ?? t3EventQueues).get(input.eventType ?? "")!,
-            ),
+            (independentStreams.get(input.threadId) ?? t3EventStreams)
+              .get(input.eventType ?? "")!
+              .pipe(
+                Stream.onStart(
+                  Effect.sync(() => {
+                    readbackSubscriptions.set(
+                      input.threadId,
+                      (readbackSubscriptions.get(input.threadId) ?? 0) + 1,
+                    );
+                  }),
+                ),
+                Stream.ensuring(
+                  Effect.sync(() => {
+                    readbackSubscriptions.set(
+                      input.threadId,
+                      readbackSubscriptions.get(input.threadId)! - 1,
+                    );
+                  }),
+                ),
+              ),
           sendToThread: (
             input: Parameters<
               ThreadManagementService.ThreadManagementServiceShape["sendToThread"]
@@ -2035,9 +2067,14 @@ it.effect.each([false, true])(
           [{ runId: "durable-run-1", status: "completed", resultReady: false, commentary: null }],
         );
 
+        const terminalCorrection = {
+          ...deliveryFailureItems[0]!,
+          id: TurnItemId.make("turn-item:steering-delivery-failure:terminal-correction"),
+        };
         durableProjection = {
           ...durableProjection,
           subagents: [{ ...durableProjection.subagents[0]!, status: "completed" }],
+          turnItems: [...durableProjection.turnItems, terminalCorrection],
           checkpoints: [
             { id: "checkpoint-durable-run-1", runId: "durable-run-1", status: "missing" },
           ],
@@ -2087,6 +2124,48 @@ it.effect.each([false, true])(
             AND planner_turn_id = ${"planner-turn-1"}
         `;
         assert.equal(readbackState(sentReceipt[0]!.receipt_json), "sent");
+        const terminalFailureText = (item: typeof terminalCorrection) =>
+          JSON.stringify({
+            type: "background_task_delivery_failed",
+            runId: "durable-run-1",
+            status: "completed",
+            message: item.failure.message,
+            resultReady: false,
+          });
+        assert.equal(
+          contexts.filter((message) => message.text === terminalFailureText(terminalCorrection))
+            .length,
+          1,
+          "a delivery failure is forwarded before a coalesced terminal result",
+        );
+        for (const [index, template] of deliveryFailureItems.entries()) {
+          const item = { ...template, id: TurnItemId.make(`${template.id}:after-final`) };
+          const received = yield* Deferred.make<void>();
+          // Use distinct messages so each canonical error has its own completion signal.
+          item.failure = { ...item.failure, message: `Late terminal delivery failure ${index}` };
+          contextSignals.set(terminalFailureText(item), received);
+          durableProjection = {
+            ...durableProjection,
+            turnItems: [...durableProjection.turnItems, item],
+          };
+          const lateEvent = eventFor({
+            type: "turn-item.updated",
+            id: `late-terminal-${index}`,
+            threadId,
+            runId: "durable-run-1",
+            occurredAt: "2026-10-14T00:00:05.000Z",
+            payload: item,
+          } as never);
+          yield* Queue.offer(t3EventQueues.get("turn-item.updated")!, lateEvent);
+          yield* Queue.offer(t3EventQueues.get("turn-item.updated")!, lateEvent);
+          yield* Deferred.await(received);
+          assert.equal(
+            contexts.filter((message) => message.text === terminalFailureText(item)).length,
+            1,
+          );
+          assert.equal(durableProjection.runs[0]!.status, "completed");
+          assert.equal(completedWork, 1);
+        }
         appendOutputFails = true;
         yield* invoke("call-next", "Queue follow-up work", "planner-turn-2");
         assert.equal(sends, 2);
@@ -3166,6 +3245,16 @@ it.effect.each([false, true])(
             for (const eventType of t3EventQueues.keys())
               queues.set(eventType, yield* Queue.unbounded<OrchestrationV2StoredEvent>());
             independentQueues.set(childId, queues);
+            const streams = new Map<string, Stream.Stream<OrchestrationV2StoredEvent>>();
+            for (const [type, queue] of queues)
+              streams.set(
+                type,
+                yield* Stream.broadcast(Stream.fromQueue(queue), {
+                  capacity: "unbounded",
+                  replay: 1,
+                }),
+              );
+            independentStreams.set(childId, streams);
             const task = {
               ...seed.subagents[0]!,
               id: taskId,
@@ -3580,12 +3669,70 @@ it.effect.each([false, true])(
           failureArrived,
         );
         const third = independentJobs.get(failedChild)!;
+        const failedDelivery = {
+          ...third.turnItems[0]!,
+          id: TurnItemId.make("turn-item:steering-delivery-failure:failed-child"),
+          type: "error" as const,
+          status: "failed" as const,
+          failure: {
+            class: "transport_error" as const,
+            message: "Correction not delivered before task failure",
+            code: null,
+            retryable: null,
+          },
+        };
         independentJobs.set(failedChild, {
           ...third,
           runs: third.runs.map((run) => ({ ...run, status: "failed" })),
+          turnItems: [...third.turnItems, failedDelivery],
         });
         yield* publishChild(2, "run.updated");
         yield* Deferred.await(failureArrived);
+        assert.isTrue(
+          contexts.some((message) => message.text.includes(failedDelivery.failure.message)),
+          "terminal state and its delivery failure both reach the planner",
+        );
+        const lateChildFailure = {
+          ...failedDelivery,
+          id: TurnItemId.make("turn-item:runtime-request-delivery-failure:failed-child"),
+          failure: {
+            ...failedDelivery.failure,
+            message: "Answer not delivered after task failure",
+          },
+        };
+        const lateChildText = JSON.stringify({
+          type: "background_task_output",
+          taskId: receipts[2]!.taskId,
+          requestId: receipts[2]!.requestId,
+          runId: receipts[2]!.runId,
+          kind: "update",
+          resultReady: false,
+          text: JSON.stringify({
+            type: "background_task_delivery_failed",
+            runId: receipts[2]!.runId,
+            status: "failed",
+            message: lateChildFailure.failure.message,
+            resultReady: false,
+          }),
+        });
+        const lateChildReceived = yield* Deferred.make<void>();
+        contextSignals.set(lateChildText, lateChildReceived);
+        const failedProjection = independentJobs.get(failedChild)!;
+        independentJobs.set(failedChild, {
+          ...failedProjection,
+          turnItems: [...failedProjection.turnItems, lateChildFailure],
+        });
+        yield* Queue.offer(
+          independentQueues.get(failedChild)!.get("turn-item.updated")!,
+          eventFor({
+            type: "turn-item.updated",
+            threadId: failedChild,
+            runId: receipts[2]!.runId,
+            payload: lateChildFailure,
+          } as never),
+        );
+        yield* Deferred.await(lateChildReceived);
+        assert.equal(contexts.filter((message) => message.text === lateChildText).length, 1);
         const failedReceipt = decodeJson(
           yield* taskControl(2, "steer", "failed-task", "Do not replace failed work"),
         ) as Record<string, unknown>;
@@ -3604,6 +3751,12 @@ it.effect.each([false, true])(
         assert.equal(independentJobs.get(failedChild)!.runs[0]!.status, "failed");
         assert.equal(admissions, 3, "failure and rejected steering never create replacement tasks");
         yield* service.stop(session, { ...parallelLease, clientRequestId: "parallel-end" });
+        for (const receipt of receipts)
+          assert.equal(
+            readbackSubscriptions.get(receipt.threadId!),
+            0,
+            "EndCall releases terminal and active task readback subscriptions",
+          );
         assert.equal(
           independentJobs.get(receipts[1]!.threadId!)!.runs[0]!.status,
           "running",
@@ -3858,8 +4011,33 @@ it.effect.each([false, true])(
                     },
                   ],
                 };
+                const deliveryFailed = reuseRuntime && mainInputs.length === 1;
+                if (deliveryFailed)
+                  durableProjection = {
+                    ...durableProjection,
+                    turnItems: [
+                      ...durableProjection.turnItems,
+                      {
+                        ...durableProjection.turnItems[0]!,
+                        type: "user_message" as const,
+                        id: TurnItemId.make(`turn-item:message:${input.messageId}`),
+                        messageId: input.messageId,
+                        runId: run.id,
+                        status: "failed" as const,
+                        text: input.text,
+                        inputIntent: "steer" as const,
+                        createdBy: "user" as const,
+                        creationSource: "voice" as const,
+                        attachments: [],
+                      },
+                    ],
+                  };
                 const result = {
-                  delivery: mainInputs.length === 1 ? "started" : "steered",
+                  delivery: deliveryFailed
+                    ? "failed"
+                    : mainInputs.length === 1
+                      ? "started"
+                      : "steered",
                   run,
                 } as Effect.Success<ReturnType<NonNullable<typeof mainSend>>>;
                 mainReceipts.set(input.commandId, result);
@@ -3943,8 +4121,13 @@ it.effect.each([false, true])(
         );
         const mainReceipt = decodeJson(mainStored[0]!.receipt_json) as {
           previewContext: string;
+          accepted: boolean;
+          delivery: string;
           intakeIntent: { id: string; threadId: string; provisional: boolean };
         };
+        assert.equal(mainReceipt.accepted, !reuseRuntime);
+        assert.equal(mainReceipt.delivery, reuseRuntime ? "failed" : "accepted");
+        assert.equal(durableProjection.runs[0]!.status, "running");
         assert.equal(mainReceipt.previewContext, selected);
         assert.equal(mainReceipt.intakeIntent.threadId, threadId);
         assert.isFalse(mainReceipt.intakeIntent.provisional);
