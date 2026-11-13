@@ -3,6 +3,7 @@ import {
   RunId,
   RuntimeRequestId,
   ThreadId,
+  TurnItemId,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -78,10 +79,63 @@ describe("canonical attention inbox", () => {
     expect(model.entries[0]?.id).toContain(request.id);
     expect(model.entries[0]?.threadRef).toEqual({ environmentId, threadId: threads[0]!.id });
     expect(model.entries.map((entry) => entry.title)).toContain("Authentication required");
+    expect(model.entries.find((entry) => entry.requestId === request.id)?.title).toBe(
+      "Question awaiting your answer",
+    );
     const renamed = deriveAttentionInbox(environmentId, [
       shell({ title: "New title", updatedAt: now, pendingRuntimeRequest: request }),
     ]);
     expect(renamed.entries[0]?.id).toBe(model.entries[0]?.id);
+  });
+
+  it("preserves every pending category and exact request target in one working thread", () => {
+    const requests = [
+      { ...request, id: RuntimeRequestId.make("q1"), label: "Use staging?" },
+      { ...request, id: RuntimeRequestId.make("q2"), label: "Deploy now?" },
+      {
+        ...request,
+        id: RuntimeRequestId.make("approve"),
+        kind: "command" as const,
+        label: "Deploy staging",
+      },
+      {
+        ...request,
+        id: RuntimeRequestId.make("auth"),
+        kind: "auth_refresh" as const,
+        label: "Private authentication details",
+      },
+      { ...request, id: RuntimeRequestId.make("secret-card") },
+      { ...request, id: RuntimeRequestId.make("link-card") },
+    ];
+    const source = {
+      ...shell(),
+      pendingRuntimeRequest: requests[1]!,
+      pendingRuntimeRequests: requests,
+    };
+    const model = deriveAttentionInbox(environmentId, [source]);
+    expect(model.counts).toEqual({ questions: 4, approvals: 1, warnings: 1 });
+    expect(model.entries.find((entry) => entry.requestId === "q1")?.title).toBe("Use staging?");
+    expect(model.entries.find((entry) => entry.requestId === "q2")?.title).toBe("Deploy now?");
+    expect(model.entries.find((entry) => entry.requestId === "approve")?.title).toBe(
+      "Deploy staging",
+    );
+    expect(model.entries.find((entry) => entry.requestId === "auth")?.title).toBe(
+      "Authentication required",
+    );
+    expect(model.entries.find((entry) => entry.requestId === "secret-card")?.title).toBe(
+      "Question awaiting your answer",
+    );
+    expect(model.entries.map((entry) => entry.requestId).sort()).toEqual(
+      requests.map((entry) => entry.id).sort(),
+    );
+    const after = deriveAttentionInbox(environmentId, [
+      { ...source, pendingRuntimeRequests: requests.filter((entry) => entry.id !== "q2") },
+    ]);
+    expect(after.entries.some((entry) => entry.requestId === "q2")).toBe(false);
+    expect(after.counts).toEqual({ questions: 3, approvals: 1, warnings: 1 });
+    expect(
+      deriveAttentionInbox(environmentId, [{ ...source, pendingRuntimeRequests: [] }]).entries,
+    ).toEqual([]);
   });
 
   it("removes an answered question only when the canonical pending request changes", () => {
@@ -127,6 +181,29 @@ describe("canonical attention inbox", () => {
         { ...settledQuestion, settledOverride: "active", settledAt: null },
       ]).counts.questions,
     ).toBe(1);
+  });
+
+  it("keeps a request delivery warning actionable without turning completed results into questions", () => {
+    const failure = {
+      requestId: request.id,
+      itemId: TurnItemId.make("turn-item:runtime-request-delivery-failure:request-answer"),
+      message: "Answer delivery not confirmed",
+      occurredAt: now,
+    };
+    const thread = {
+      ...shell({ status: "completed", pendingRuntimeRequest: null }),
+      requestDeliveryFailure: failure,
+    };
+    const model = deriveAttentionInbox(environmentId, [thread]);
+    expect(model.counts).toEqual({ questions: 0, approvals: 0, warnings: 1 });
+    expect(model.entries[0]).toMatchObject({
+      requestId: request.id,
+      title: "Answer delivery not confirmed",
+      description: failure.message,
+    });
+    expect(
+      deriveAttentionInbox(environmentId, [{ ...thread, settledOverride: "settled" }]).entries,
+    ).toEqual([]);
   });
 
   it("shows actual failure or usage-limit state and clears warnings when the run recovers", () => {

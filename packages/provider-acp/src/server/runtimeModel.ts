@@ -1,3 +1,5 @@
+import * as NodeUtil from "node:util";
+
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -8,6 +10,7 @@ import * as EffectAcpSchema from "effect-acp/compat";
 import * as EffectAcpSchemaV1 from "effect-acp/schema-v1";
 import {
   deriveToolActivityPresentation,
+  isGenericToolActivityTitle,
   mergeToolActivityData,
 } from "@t3tools/shared/toolActivity";
 import { T3_MCP_TOOL_NAMES } from "@t3tools/shared/t3McpToolPresentation";
@@ -930,11 +933,20 @@ export function mergeToolCallState(
 ): AcpToolCallState {
   const nextKind = next.kind ?? (typeof next.data.kind === "string" ? next.data.kind : undefined);
   const kind = nextKind ?? previous?.kind;
-  const title = next.title ?? previous?.title;
+  const data = mergeToolActivityData(previous?.data, next.data) ?? next.data;
+  const retainTitle =
+    previous?.title !== undefined &&
+    !isGenericToolActivityTitle(previous.title) &&
+    next.data.title === undefined &&
+    isGenericToolActivityTitle(next.title) &&
+    (nextKind === undefined || nextKind === previous.kind) &&
+    (next.command === undefined || next.command === previous.command) &&
+    (next.data.name === undefined || next.data.name === previous.data.name) &&
+    NodeUtil.isDeepStrictEqual(data.rawInput, previous.data.rawInput);
+  const title = retainTitle ? previous.title : (next.title ?? previous?.title);
   const status = next.status ?? previous?.status;
   const command = next.command ?? previous?.command;
   const detail = next.detail ?? previous?.detail;
-  const data = mergeToolActivityData(previous?.data, next.data) ?? next.data;
   return {
     toolCallId: next.toolCallId,
     ...(kind ? { kind } : {}),

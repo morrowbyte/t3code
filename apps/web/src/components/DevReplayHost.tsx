@@ -42,7 +42,7 @@ export function DevReplayHost() {
     environmentProjects.find((candidate) => candidate.id === routeThread?.projectId) ??
     environmentProjects[0];
 
-  const replay = async (scenario?: string): Promise<ThreadId> => {
+  const replay = async (scenario?: string, prompt?: string): Promise<ThreadId> => {
     const model = scenario ?? scenarios[0]?.slug;
     if (environmentId === null || project === undefined || model === undefined) {
       throw new Error("Replay needs a dev server with a project and the Replay (dev) provider.");
@@ -58,7 +58,12 @@ export function DevReplayHost() {
       environmentId,
       input: {
         threadId,
-        message: { messageId: newMessageId(), role: "user", text: title, attachments: [] },
+        message: {
+          messageId: newMessageId(),
+          role: "user",
+          text: prompt ?? title,
+          attachments: [],
+        },
         modelSelection,
         runtimeMode: "approval-required",
         interactionMode: "default",
@@ -92,7 +97,7 @@ export function DevReplayHost() {
   useEffect(() => {
     window.t3dev = {
       replayScenarios: () => listScenarios(),
-      replay: (scenario) => replayFromConsole(scenario),
+      replay: (scenario, prompt) => replayFromConsole(scenario, prompt),
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.repeat) return;

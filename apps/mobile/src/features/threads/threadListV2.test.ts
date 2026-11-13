@@ -23,7 +23,9 @@ import {
   ProjectId,
   ProviderInstanceId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -38,6 +40,7 @@ import {
   resolveThreadListV2SnoozeMenuSelection,
   resolveThreadListV2SnoozePresets,
   resolveThreadListV2Status,
+  resolveThreadRequestDeliveryFailure,
   resolveThreadListV2WokeAt,
   revealThreadListV2RouteAncestors,
   toggleThreadListV2Family,
@@ -63,6 +66,12 @@ function makeThread(
 const NOW = "2026-06-02T00:00:00.000Z";
 
 describe("native thread families", () => {
+  const deliveryFailure = {
+    requestId: RuntimeRequestId.make("answered-q2"),
+    itemId: TurnItemId.make("outside-loaded-history"),
+    message: "The provider did not acknowledge the saved answer.",
+    occurredAt: DateTime.makeUnsafe(NOW),
+  };
   const parent = makeThread({ id: ThreadId.make("parent"), title: "Parent" });
   const child = makeThread({
     id: ThreadId.make("child"),
@@ -388,12 +397,12 @@ describe("native thread families", () => {
       settledShelfExpanded: true,
     };
     const layout = buildThreadListV2Items(input);
-    expect(layout.workingCount).toBe(1);
+    expect(layout.workingCount).toBe(2);
     expect(resolveThreadListV2Status(settled)).toBe("ready");
     expect(resolveThreadListV2Status(idle)).toBe("ready");
     expect(
       buildThreadListV2Items({ ...input, environmentId: parent.environmentId }).workingCount,
-    ).toBe(0);
+    ).toBe(1);
     const items = itemsFor([parent, idle, settled, asking]);
     const familyInput = {
       items,
@@ -403,7 +412,7 @@ describe("native thread families", () => {
     };
     const folded = buildThreadListV2FamilyRows(familyInput);
     expect(folded.every((row) => row.displaySection === "active")).toBe(true);
-    expect(folded[0]?.activeDescendantCount).toBe(0);
+    expect(folded[0]?.activeDescendantCount).toBe(1);
     expect(folded.map((row) => row.key)).not.toContain(grandchildKey);
     const reopened = {
       ...settled,
@@ -422,12 +431,112 @@ describe("native thread families", () => {
     expect(settled.runtime).toBe(working.runtime);
   });
 
-  it.each(["approval", "user_input", "active_run", "route"] as const)(
+  it.each([
+    { worker: "parent", attention: "question" },
+    { worker: "sibling", attention: "question" },
+    { worker: "parent", attention: "delivery_failure" },
+    { worker: "sibling", attention: "delivery_failure" },
+  ] as const)(
+    "keeps a running $attention outside collapsed Working while its $worker also works",
+    ({ worker, attention }) => {
+      const asking = makeThread({
+        ...grandchild,
+        runtime: working.runtime,
+        hasPendingUserInput: attention === "question",
+        source: {
+          ...grandchild.source,
+          ...(attention === "delivery_failure" ? { requestDeliveryFailure: deliveryFailure } : {}),
+        },
+      });
+      const other = makeThread({
+        ...child,
+        id: ThreadId.make("sibling"),
+        runtime: working.runtime,
+      });
+      const threads = [
+        worker === "parent" ? { ...parent, runtime: working.runtime } : parent,
+        child,
+        asking,
+        ...(worker === "sibling" ? [other] : []),
+      ];
+      const visible = buildThreadListV2Items({
+        threads,
+        environmentId: null,
+        searchQuery: "",
+        now: NOW,
+        includeSubagents: true,
+        workingShelfEnabled: true,
+        workingShelfExpanded: false,
+      });
+      expect(visible.workingCount).toBe(2);
+      expect(resolveThreadListV2Status(asking)).toBe(
+        attention === "question" ? "input" : "warning",
+      );
+      expect(visible.items.map((item) => keyOf(item.thread))).toContain(grandchildKey);
+      const rows = buildThreadListV2FamilyRows({
+        items: itemsFor(threads),
+        visibleKeys: new Set(visible.items.map((item) => keyOf(item.thread))),
+        disclosure,
+        workingShelfEnabled: true,
+      });
+      expect(rows.every((row) => row.displaySection === "active")).toBe(true);
+      expect(rows.find((row) => row.key === grandchildKey)?.depth).toBe(2);
+      expect(rows[0]?.activeDescendantCount).toBe(worker === "parent" ? 1 : 2);
+    },
+  );
+
+  it("uses the canonical delivery warning without reopening input and suppresses it until reopened", () => {
+    const answered = makeThread({
+      ...grandchild,
+      runtime: working.runtime,
+      snoozedAt: "2026-06-01T12:00:00.000Z",
+      snoozedUntil: "2026-06-03T00:00:00.000Z",
+      source: { ...grandchild.source, requestDeliveryFailure: deliveryFailure },
+    });
+    const layoutFor = (thread: EnvironmentThreadShell) =>
+      buildThreadListV2Items({
+        threads: [thread],
+        environmentId: null,
+        searchQuery: "",
+        now: NOW,
+        includeSubagents: true,
+        workingShelfEnabled: true,
+        workingShelfExpanded: false,
+      });
+    const warning = layoutFor(answered);
+    expect(warning.snoozedCount).toBe(0);
+    expect(warning.workingCount).toBe(1);
+    expect(warning.items.map((item) => [item.thread.id, item.variant, item.snoozed])).toEqual([
+      [answered.id, "card", false],
+    ]);
+    const snoozedAgain = layoutFor({ ...answered, snoozedAt: NOW });
+    expect(snoozedAgain.snoozedCount).toBe(1);
+    expect(snoozedAgain.workingCount).toBe(1);
+    expect(snoozedAgain.items).toEqual([]);
+    expect(resolveThreadRequestDeliveryFailure(answered)).toBe(deliveryFailure);
+    expect(resolveThreadListV2Status(answered)).toBe("warning");
+    expect(answered.hasPendingUserInput).toBe(false);
+    expect(answered.pendingSubagentRequest).toBeNull();
+    expect(resolveThreadRequestDeliveryFailure({})).toBeNull();
+    expect(resolveThreadRequestDeliveryFailure(grandchild)).toBeNull();
+    const settled = { ...answered, settledOverride: "settled" as const };
+    expect(layoutFor(settled).settledCount).toBe(1);
+    expect(layoutFor(settled).workingCount).toBe(0);
+    expect(resolveThreadRequestDeliveryFailure(settled)).toBeNull();
+    expect(resolveThreadListV2Status(settled)).toBe("ready");
+    expect(resolveThreadListV2Status({ ...settled, settledOverride: null })).toBe("warning");
+  });
+
+  it.each(["approval", "user_input", "delivery_failure", "active_run", "route"] as const)(
     "retains a %s descendant while omitting inactive historical siblings",
     (reason) => {
       const selected = makeThread({
         ...grandchild,
         pendingSubagentRequest: reason === "approval" || reason === "user_input" ? reason : null,
+        source: {
+          ...grandchild.source,
+          ...(reason === "delivery_failure" ? { requestDeliveryFailure: deliveryFailure } : {}),
+        },
         runtime: {
           ...working.runtime!,
           status: reason === "active_run" ? "running" : "idle",
@@ -509,6 +618,30 @@ describe("native thread families", () => {
     const navigated = revealThreadListV2RouteAncestors(closed, unpromoted, grandchildKey);
     expect(navigated.closedKeys.size).toBe(0);
     expect([...navigated.expandedKeys]).toEqual([parentKey]);
+  });
+
+  it("reveals ancestors loaded after the selected child reconnects without reopening a manual collapse", () => {
+    const initial: ThreadListV2FamilyDisclosure = {
+      routeKey: null,
+      expandedKeys: new Set(),
+      closedKeys: new Set(),
+    };
+    const orphan = revealThreadListV2RouteAncestors(initial, [grandchild], grandchildKey);
+    expect(orphan.routeKey).toBe(grandchildKey);
+    expect(orphan.expandedKeys.size).toBe(0);
+    const loaded = revealThreadListV2RouteAncestors(
+      orphan,
+      [parent, child, grandchild],
+      grandchildKey,
+    );
+    expect(loaded.expandedKeys.has(parentKey)).toBe(true);
+    expect(
+      revealThreadListV2RouteAncestors(loaded, [parent, child, grandchild], grandchildKey),
+    ).toBe(loaded);
+    const closed = toggleThreadListV2Family(loaded, parentKey);
+    expect(
+      revealThreadListV2RouteAncestors(closed, [parent, child, grandchild], grandchildKey),
+    ).toBe(closed);
   });
 
   it("leaves foreign, missing and cyclic ancestry reachable without rewriting lineage", () => {
@@ -2161,8 +2294,15 @@ describe("Working section beta", () => {
       "asks-approval",
       "finished-early",
     ]);
-    expect(layout.workingCount).toBe(2);
+    expect(layout.workingCount).toBe(3);
     expect(layout.workingShelfHeaderIndex).toBe(4);
+
+    const answered = build({
+      threads: threads.map((thread) => ({ ...thread, hasPendingApprovals: false })),
+    });
+    expect(ids(answered)).not.toContain("asks-approval");
+    expect(answered.workingCount).toBe(3);
+    expect(answered.workingShelfHeaderIndex).toBe(3);
 
     const off = build({ workingShelfEnabled: false });
     expect(ids(off)).toContain("working");

@@ -184,6 +184,9 @@ describe("readAgentSend", () => {
       });
       expect(readAgentSend(item)).toEqual({
         targetThreadId: "target",
+        targetEnvironmentId: null,
+        targetScope: "local",
+        replyTo: null,
         text,
         delivery,
         accepted: true,
@@ -213,20 +216,49 @@ describe("readAgentSend", () => {
     });
   });
 
-  it("reads JSON input and Cursor's args wrapper", () => {
-    const text = '{"threadId":"prose-is-not-a-target","messageId":"not-a-receipt"}';
-    expect(
-      readAgentSend(
-        tool({
-          toolName: "mcp__t3_code__t3_thread_send",
-          input: JSON.stringify({
-            toolName: "t3_thread_send",
-            args: { threadId: "target", message: text },
-          }),
-        }),
-      ),
-    ).toMatchObject({ targetThreadId: "target", text, accepted: true });
-  });
+  it.each(["t3_thread_send", "t3_connected_thread_send"])(
+    "reads %s JSON input and Cursor's args wrapper",
+    (toolName) => {
+      const text =
+        '{"threadId":"prose-is-not-a-target","messageId":"not-a-receipt"}\n\nFull original. 🦦';
+      const replyTo = {
+        environmentId: "origin",
+        threadId: "question-thread",
+        messageId: "question",
+      };
+      const args = { environmentId: "remote", threadId: "target", message: text, replyTo };
+      for (const name of [
+        toolName,
+        `mcp__t3_code__${toolName}`,
+        `t3-code.${toolName}`,
+        `t3-code-thread_with_underscores_${toolName}`,
+      ]) {
+        for (const input of [args, JSON.stringify({ toolName, args })]) {
+          expect(readAgentSend(tool({ toolName: name, input }))).toMatchObject({
+            targetThreadId: "target",
+            targetEnvironmentId: "remote",
+            targetScope: "explicit",
+            replyTo,
+            text,
+            delivery: "steered",
+            accepted: true,
+            failed: false,
+          });
+        }
+      }
+      if (toolName === "t3_connected_thread_send") {
+        for (const input of [
+          { threadId: "target", message: text },
+          { ...args, environmentId: " " },
+        ]) {
+          expect(readAgentSend(tool({ toolName, input }))).toMatchObject({
+            targetEnvironmentId: null,
+            targetScope: "unknown",
+          });
+        }
+      }
+    },
+  );
 
   it("does not recognize tool names or receipts embedded in unrelated prose", () => {
     expect(
@@ -238,6 +270,9 @@ describe("readAgentSend", () => {
       ),
     ).toEqual({
       targetThreadId: null,
+      targetEnvironmentId: null,
+      targetScope: "unknown",
+      replyTo: null,
       text: null,
       delivery: null,
       accepted: false,
@@ -316,6 +351,9 @@ describe("readAgentSend", () => {
       readAgentSend(tool({ input: { summary: "Large tool input", truncated: true } })),
     ).toEqual({
       targetThreadId: "target",
+      targetEnvironmentId: null,
+      targetScope: "unknown",
+      replyTo: null,
       text: null,
       delivery: "steered",
       accepted: true,

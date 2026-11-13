@@ -35,7 +35,7 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
-import { useProjects, useNavigationThreadShells } from "../../state/entities";
+import { useProjects, useThreadShells } from "../../state/entities";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
 import { useThreadListNow } from "./use-thread-list-now";
@@ -46,7 +46,7 @@ import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
 import { useWorkspaceState } from "../../state/workspace";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands";
-import { useThreadListV2 } from "./useThreadListV2";
+import { useThreadListV2Families, useThreadListV2FamilyDisclosure } from "./useThreadListV2";
 import { useThreadJumpShortcuts } from "../keyboard/threadKeyboardShortcuts";
 import { requestThreadMessageJump } from "./threadMessageJump";
 import { useThreadListSearchMatches } from "./useThreadListSearchMatches";
@@ -80,16 +80,16 @@ import type { ThreadPrPresentation } from "../../state/thread-pr-presentation";
 import { ThreadPrDemandProvider } from "../../state/thread-pr-demand";
 import {
   isThreadListV2ListItem,
-  threadListV2ListItemsAreEqual,
+  threadListV2FamilyListItemsAreEqual,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
-  type ThreadListV2ListItem,
+  type ThreadListV2FamilyListItem,
 } from "./threadListV2";
 import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 
 type SidebarListItem =
-  | ThreadListV2ListItem
+  | ThreadListV2FamilyListItem
   | {
       readonly type: "v2-show-more";
       readonly key: string;
@@ -156,7 +156,11 @@ function ThreadNavigationSidebarPane(
   const enabledTabs = useEnabledNavigationTabs();
   const floatingTabs = floatingTabsMetrics(enabledTabs.length + 1, scale, fabSize, props.width);
   const projects = useProjects();
-  const threads = useNavigationThreadShells();
+  const threads = useThreadShells();
+  const { familyDisclosure, toggleFamily, revealFamilyThread } = useThreadListV2FamilyDisclosure(
+    threads,
+    props.selectedThreadKey,
+  );
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const searchInputRef = useRef<TextInputInstance>(null);
@@ -305,7 +309,8 @@ function ThreadNavigationSidebarPane(
     items: threadListV2Items,
     contentOnlyThreadKeys,
     olderSettledShelf,
-  } = useThreadListV2({
+  } = useThreadListV2Families({
+    familyDisclosure,
     threads,
     pendingTasks,
     environmentId: options.selectedEnvironmentId,
@@ -444,6 +449,7 @@ function ThreadNavigationSidebarPane(
   // A row listed for a message match opens the thread at that message, by
   // tap or by shortcut.
   const handleSelectThread = (thread: EnvironmentThreadShell) => {
+    revealFamilyThread(thread);
     const key = threadSearchMatchKey({ environmentId: thread.environmentId, threadId: thread.id });
     const messageId = contentOnlyThreadKeys.has(key)
       ? threadSearchMatchByKey.get(key)?.messageId
@@ -483,7 +489,7 @@ function ThreadNavigationSidebarPane(
   useThreadJumpShortcuts(listItems, handleSelectThread);
   const sidebarItemsAreEqual = (previous: SidebarListItem, item: SidebarListItem): boolean => {
     if (isThreadListV2ListItem(previous) && isThreadListV2ListItem(item)) {
-      return threadListV2ListItemsAreEqual(previous, item);
+      return threadListV2FamilyListItemsAreEqual(previous, item);
     }
     if (previous.type === "v2-show-more" && item.type === "v2-show-more") {
       return previous.hiddenCount === item.hiddenCount && previous.state === item.state;
@@ -619,6 +625,8 @@ function ThreadNavigationSidebarPane(
             onSwipeableClose={handleSwipeableClose}
             onSwipeableWillOpen={handleSwipeableWillOpen}
             simultaneousSwipeGesture={sidebarScrollGesture}
+            family={item.family}
+            onToggleFamily={toggleFamily}
           />
         );
       }

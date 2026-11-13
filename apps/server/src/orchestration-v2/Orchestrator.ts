@@ -2100,6 +2100,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(queuedMessage.remoteSender === undefined
             ? {}
             : { remoteSender: queuedMessage.remoteSender }),
+          ...(queuedMessage.replyTo === undefined ? {} : { replyTo: queuedMessage.replyTo }),
           ...(queuedMessage.sendRequest === undefined
             ? {}
             : { sendRequest: queuedMessage.sendRequest }),
@@ -4742,6 +4743,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly scheduledTaskId?: OrchestrationV2ConversationMessage["scheduledTaskId"];
     readonly senderThreadId?: OrchestrationV2ConversationMessage["senderThreadId"];
     readonly remoteSender?: OrchestrationV2ConversationMessage["remoteSender"];
+    readonly replyTo?: OrchestrationV2ConversationMessage["replyTo"];
     readonly sendRequest?: OrchestrationV2ConversationMessage["sendRequest"];
     readonly idleCompaction?: OrchestrationV2ConversationMessage["idleCompaction"];
     readonly delegatedCompletion?: OrchestrationV2ConversationMessage["delegatedCompletion"];
@@ -4908,6 +4910,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             : { scheduledTaskId: input.scheduledTaskId }),
           ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
           ...(input.remoteSender === undefined ? {} : { remoteSender: input.remoteSender }),
+          ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
           ...(input.sendRequest === undefined ? {} : { sendRequest: input.sendRequest }),
           ...(input.idleCompaction === undefined ? {} : { idleCompaction: input.idleCompaction }),
           id: input.messageId,
@@ -4930,6 +4933,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             : { scheduledTaskId: input.scheduledTaskId }),
           ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
           ...(input.remoteSender === undefined ? {} : { remoteSender: input.remoteSender }),
+          ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
           ...(input.sendRequest === undefined ? {} : { sendRequest: input.sendRequest }),
           ...(input.idleCompaction === undefined ? {} : { idleCompaction: input.idleCompaction }),
           id: idAllocator.derive.userTurnItem({ messageId: input.messageId }),
@@ -5576,6 +5580,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         creationSource: command.creationSource,
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
         ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
+        ...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
         ...(command.sendRequest === undefined ? {} : { sendRequest: command.sendRequest }),
         createdAt: now,
         updatedAt: now,
@@ -6187,6 +6192,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : { scheduledTaskId: command.scheduledTaskId }),
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
         ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
+        ...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
         ...(command.sendRequest === undefined ? {} : { sendRequest: command.sendRequest }),
         ...(command.idleCompaction === undefined ? {} : { idleCompaction: command.idleCompaction }),
         forceRestart: dispatchMode.type === "restart_active",
@@ -6424,6 +6430,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : { scheduledTaskId: command.scheduledTaskId }),
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
         ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
+        ...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
         ...(command.sendRequest === undefined ? {} : { sendRequest: command.sendRequest }),
         ...(command.idleCompaction === undefined ? {} : { idleCompaction: command.idleCompaction }),
         id: command.messageId,
@@ -6775,6 +6782,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : { scheduledTaskId: command.scheduledTaskId }),
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
         ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
+        ...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
         ...(command.sendRequest === undefined ? {} : { sendRequest: command.sendRequest }),
         ...(command.idleCompaction === undefined ? {} : { idleCompaction: command.idleCompaction }),
         id: command.messageId,
@@ -6799,6 +6807,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : { scheduledTaskId: command.scheduledTaskId }),
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
         ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
+        ...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
         ...(command.sendRequest === undefined ? {} : { sendRequest: command.sendRequest }),
         ...(command.idleCompaction === undefined ? {} : { idleCompaction: command.idleCompaction }),
         id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
@@ -7530,6 +7539,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : { scheduledTaskId: command.scheduledTaskId }),
       ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
       ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
+      ...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
       ...(command.sendRequest === undefined ? {} : { sendRequest: command.sendRequest }),
       ...(command.idleCompaction === undefined ? {} : { idleCompaction: command.idleCompaction }),
       id: command.messageId,
@@ -7554,6 +7564,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : { scheduledTaskId: command.scheduledTaskId }),
       ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
       ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
+      ...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
       ...(command.sendRequest === undefined ? {} : { sendRequest: command.sendRequest }),
       ...(command.idleCompaction === undefined ? {} : { idleCompaction: command.idleCompaction }),
       id: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
@@ -10112,6 +10123,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(queuedMessage.remoteSender === undefined
         ? {}
         : { remoteSender: queuedMessage.remoteSender }),
+      ...(queuedMessage.replyTo === undefined ? {} : { replyTo: queuedMessage.replyTo }),
       ...(queuedMessage.sendRequest === undefined
         ? {}
         : { sendRequest: queuedMessage.sendRequest }),
@@ -14242,6 +14254,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             message.payload.createdBy !== command.createdBy ||
             message.payload.creationSource !== command.creationSource ||
             message.payload.senderThreadId !== command.senderThreadId ||
+            message.payload.replyTo?.environmentId !== command.replyTo?.environmentId ||
+            message.payload.replyTo?.threadId !== command.replyTo?.threadId ||
+            message.payload.replyTo?.messageId !== command.replyTo?.messageId ||
             message.payload.remoteSender?.environmentId !== command.remoteSender?.environmentId ||
             message.payload.remoteSender?.threadId !== command.remoteSender?.threadId)
         )
@@ -14263,6 +14278,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             message.payload.createdBy !== command.createdBy ||
             message.payload.creationSource !== command.creationSource ||
             message.payload.senderThreadId !== command.senderThreadId ||
+            message.payload.replyTo?.environmentId !== command.replyTo?.environmentId ||
+            message.payload.replyTo?.threadId !== command.replyTo?.threadId ||
+            message.payload.replyTo?.messageId !== command.replyTo?.messageId ||
             command.dispatchMode.type !== "start_immediately" ||
             command.context !== undefined ||
             command.notification !== undefined ||

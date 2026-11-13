@@ -14,6 +14,8 @@ import { RenderErrorBoundary } from "../RenderErrorBoundary";
 import { Button } from "../ui/button";
 import { HighlightedTokens } from "./HighlightedTokens";
 import { PlainCodeLines } from "./RecordedSourceLines";
+import { EmbeddedScriptBlocks } from "./ShellCommandBlock";
+import { localizedToolActivityTitle, toolActivitySourceTitle } from "@t3tools/shared/toolActivity";
 
 export interface ExecutionCodePanelProps {
   readonly threadRef: ScopedThreadRef;
@@ -116,6 +118,8 @@ export function ExecutionCodeView(props: {
   };
   const nextMatch = (direction: -1 | 1) => {
     if (!searchPattern || !code?.text || !source.current) return;
+    const invocation = source.current.closest("details");
+    if (invocation) invocation.open = true;
     const offsets = Array.from(
       code.text.matchAll(new RegExp(searchPattern, "giu")),
       (match) => match.index,
@@ -160,6 +164,34 @@ export function ExecutionCodeView(props: {
   })();
   const time = (value: OrchestrationV2TurnItem["startedAt"] | undefined) =>
     value ? DateTime.formatIso(value) : "Not supplied";
+  const actionTitle =
+    item?.type === "command_execution" || item?.type === "dynamic_tool"
+      ? (localizedToolActivityTitle(item) ?? toolActivitySourceTitle(item))
+      : undefined;
+  const originalSource =
+    code?.text !== null && code?.text !== undefined ? (
+      <pre
+        ref={source}
+        aria-label="Recorded input"
+        tabIndex={0}
+        className="min-h-40 shrink-0 border border-border p-3 font-mono text-xs whitespace-pre-wrap [overflow-wrap:anywhere] select-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
+        <RenderErrorBoundary fallback={<PlainCodeLines code={code.text} />} resetKeys={[code.text]}>
+          <Suspense fallback={<PlainCodeLines code={code.text} />}>
+            {code.text.length > 65_536 ? (
+              <PlainCodeLines code={code.text} />
+            ) : (
+              <ExecutionSyntax
+                code={code.text}
+                language={code.language}
+                shell={code.shell}
+                theme={resolvedTheme}
+              />
+            )}
+          </Suspense>
+        </RenderErrorBoundary>
+      </pre>
+    ) : null;
   return (
     <section
       aria-label="Execution code"
@@ -189,32 +221,37 @@ export function ExecutionCodeView(props: {
         }
       }}
     >
-      <h2 className="text-sm font-medium">{code?.title ?? "Recorded input unavailable"}</h2>
+      <h2 className="text-sm font-medium">
+        {actionTitle ?? code?.title ?? "Recorded input unavailable"}
+      </h2>
       <dl className="my-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs wrap-break-word">
         <dt>Environment / host</dt>
         <dd>{props.environmentLabel ?? props.environmentId}</dd>
-        <dt>Environment ID</dt>
-        <dd>{props.environmentId}</dd>
-        <dt>Thread</dt>
-        <dd>{props.target.threadId}</dd>
-        <dt>Run</dt>
-        <dd>{props.target.runId ?? "Not supplied"}</dd>
-        <dt>Item</dt>
-        <dd>{props.target.itemId}</dd>
         <dt>Observed status</dt>
         <dd>{item?.status ?? "Unavailable"}</dd>
         <dt>Working directory</dt>
         <dd>{code?.cwd ?? "Not supplied for this execution"}</dd>
-        <dt>Started</dt>
-        <dd>{time(item?.startedAt)}</dd>
-        <dt>Completed</dt>
-        <dd>{time(item?.completedAt)}</dd>
         <dt>Exit code</dt>
         <dd>{code?.exitCode ?? "Not supplied"}</dd>
       </dl>
-      <p className="mb-3 text-xs text-muted-foreground">Recorded input · Read-only</p>
       <details className="mb-3 text-xs text-muted-foreground">
-        <summary>Input details</summary>
+        <summary className="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+          Execution details
+        </summary>
+        <dl className="my-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 wrap-break-word">
+          <dt>Environment ID</dt>
+          <dd>{props.environmentId}</dd>
+          <dt>Thread</dt>
+          <dd>{props.target.threadId}</dd>
+          <dt>Run</dt>
+          <dd>{props.target.runId ?? "Not supplied"}</dd>
+          <dt>Item</dt>
+          <dd>{props.target.itemId}</dd>
+          <dt>Started</dt>
+          <dd>{time(item?.startedAt)}</dd>
+          <dt>Completed</dt>
+          <dd>{time(item?.completedAt)}</dd>
+        </dl>
         A script filename does not include its historical file contents.
       </details>
       <p className="sr-only">Opening this view does not run code.</p>
@@ -271,30 +308,17 @@ export function ExecutionCodeView(props: {
                 : ""}
             {query && matchIndex >= 0 ? ` Match ${matchIndex + 1}.` : ""}
           </p>
-          <pre
-            ref={source}
-            aria-label="Recorded input"
-            tabIndex={0}
-            className="min-h-40 shrink-0 overflow-auto border border-border p-3 font-mono text-xs whitespace-pre-wrap [overflow-wrap:anywhere] select-text"
-          >
-            <RenderErrorBoundary
-              fallback={<PlainCodeLines code={code.text} />}
-              resetKeys={[code.text]}
-            >
-              <Suspense fallback={<PlainCodeLines code={code.text} />}>
-                {code.text.length > 65_536 ? (
-                  <PlainCodeLines code={code.text} />
-                ) : (
-                  <ExecutionSyntax
-                    code={code.text}
-                    language={code.language}
-                    shell={code.shell}
-                    theme={resolvedTheme}
-                  />
-                )}
-              </Suspense>
-            </RenderErrorBoundary>
-          </pre>
+          <RenderErrorBoundary fallback={originalSource} resetKeys={[code.text]}>
+            <Suspense fallback={originalSource}>
+              <EmbeddedScriptBlocks
+                command={code.text}
+                language={code.language}
+                theme={resolvedTheme}
+              >
+                {originalSource}
+              </EmbeddedScriptBlocks>
+            </Suspense>
+          </RenderErrorBoundary>
         </>
       ) : (
         <p role="status" className="text-sm text-muted-foreground">
@@ -310,7 +334,7 @@ export function ExecutionCodeView(props: {
           <pre
             aria-label="Complete structured input"
             tabIndex={0}
-            className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap select-text"
+            className="mt-2 whitespace-pre-wrap [overflow-wrap:anywhere] select-text"
           >
             {code.argumentsText}
           </pre>
@@ -321,7 +345,7 @@ export function ExecutionCodeView(props: {
         <pre
           aria-label="Recorded output"
           tabIndex={0}
-          className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap select-text"
+          className="mt-2 whitespace-pre-wrap [overflow-wrap:anywhere] select-text"
         >
           {code?.output ??
             (props.pending

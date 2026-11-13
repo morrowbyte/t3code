@@ -3511,6 +3511,14 @@ describe("OrchestratorMcpService thread list", () => {
         snoozed: true,
       });
       assert.equal(listed.projectId, null);
+      assert.deepStrictEqual(listed.coverage, {
+        environmentId: client.environmentId,
+        includesSubagents: true,
+        includesArchived: false,
+        includesSideChats: false,
+        linkedEnvironments: "not_read",
+        filters: { statuses: null, settled: null, snoozed: true, titleContains: null },
+      });
       assert.deepStrictEqual(
         listed.threads.map((thread) => [thread.threadId, thread.projectId]),
         [

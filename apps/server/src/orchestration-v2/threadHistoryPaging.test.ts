@@ -544,6 +544,47 @@ describe("threadHistoryPaging", () => {
     expect(bounded.projection.visibleTurnItems.map((row) => row.position)).toEqual([0, 1, 2, 3, 4]);
     expect(bounded.latestLocalTurnOrdinal).toBe(40);
     expect(computeLatestLocalTurnOrdinal(full.turnItems)).toBe(40);
+    const cards: OrchestrationV2TurnItem[] = [
+      {
+        ...makeRow(0).item,
+        type: "secret_request",
+        id: TurnItemId.make("open-secret"),
+        runId: RunId.make("run-1"),
+        status: "waiting",
+        label: "Test credential",
+        reason: "Complete the pending check",
+        secretStatus: "pending",
+      },
+      {
+        ...makeRow(1).item,
+        type: "link_request",
+        id: TurnItemId.make("open-link"),
+        status: "waiting",
+        reason: "Connect the requested environment",
+        linkStatus: "pending",
+      },
+    ];
+    const control = {
+      ...full,
+      runs: [{ ...full.runs[0]!, status: "running" as const }],
+      turnItems: [...cards, ...full.turnItems],
+    };
+    const retained = buildBoundedThreadProjection({
+      projection: control,
+      snapshotSequence: 8,
+      policy: { maxItems: 5, maxEncodedBytes: 10_000_000 },
+    }).projection.turnItems;
+    expect(retained.filter((item) => cards.some((card) => card.id === item.id))).toEqual(cards);
+    const finished = buildBoundedThreadProjection({
+      projection: {
+        ...control,
+        runs: [{ ...control.runs[0]!, status: "completed" as const }],
+        turnItems: cards.map((card) => ({ ...card, status: "completed" as const })),
+      },
+      snapshotSequence: 9,
+      policy: { maxItems: 5, maxEncodedBytes: 10_000_000 },
+    }).projection.turnItems;
+    expect(finished.some((item) => cards.some((card) => card.id === item.id))).toBe(false);
   });
 
   it("carries a full-projection watermark when the bounded window is inherited-only", () => {

@@ -109,7 +109,10 @@ export function UserFormField({
           inputMode={field.type === "number" ? "decimal" : "text"}
           placeholder={field.type === "number" ? undefined : field.placeholder}
           maxLength={field.type === "number" ? undefined : field.maxLength}
-          onChangeText={onChange}
+          onChangeText={(next) => {
+            setTouched(true);
+            onChange(next);
+          }}
           onFocus={() => onInputFocusChange?.(true)}
           onBlur={() => {
             setTouched(true);
@@ -123,7 +126,7 @@ export function UserFormField({
         />
       )}
       {error ? (
-        <Text accessibilityRole="alert" className="font-sans text-xs text-danger">
+        <Text accessibilityRole="alert" className="font-sans text-xs text-danger-foreground">
           {error}
         </Text>
       ) : null}

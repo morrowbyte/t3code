@@ -3,6 +3,7 @@ import { useRightPanelStore } from "~/rightPanelStore";
 import { useClientSettings } from "../../hooks/useSettings";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import { WorkLogDetails, WorkLogRow } from "./WorkLog";
+import { ComputerObservationReceipt } from "./ComputerObservationReceipt";
 import {
   getQuestionAnswerPreview,
   getQuestionAnswerText,
@@ -27,7 +28,8 @@ import {
   turnItemDetailRevision,
   turnItemNeedsDetailFetch,
 } from "@t3tools/client-runtime/work-log/item-detail";
-import { claudeSkillInvocation } from "@t3tools/shared/toolActivity";
+import { parseApprovalReviewDetail } from "@t3tools/client-runtime/approvalReview";
+import { authoredCodeIntent, claudeSkillInvocation } from "@t3tools/shared/toolActivity";
 import { memo, use, useState, type KeyboardEvent } from "react";
 import {
   workEntryDisplayIndicatesToolFailure,
@@ -128,6 +130,9 @@ export function ReasoningTraceContent({ entries }: { entries: ReadonlyArray<Time
     isWorking && entry.runId === latestRunId && entry.toolLifecycleStatus === "inProgress";
   return (
     <WorkLogDetails followLive={entries.some(isStreaming)}>
+      {entries.some((entry) => entry.structuredPayload?.title?.trim()) ? (
+        <span className="text-xs text-muted-foreground">Original</span>
+      ) : null}
       {entries.map((entry) => (
         <ReasoningTraceEntry key={entry.id} entry={entry} isStreaming={isStreaming(entry)} />
       ))}
@@ -361,6 +366,21 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
     ? getQuestionTextPreview(workEntry.questionAnswer)
     : "";
   const reasoningSummary = isReasoning ? workEntry.structuredPayload?.title?.trim() : undefined;
+  const reasoningText =
+    workEntry.detail?.trim() || (failureItem?.type === "reasoning" ? failureItem.text.trim() : "");
+  const completeShortReasoning =
+    isReasoning &&
+    reasoningText.length > 0 &&
+    reasoningText.length <= 180 &&
+    !/[\r\n<[]/u.test(reasoningText) &&
+    (!reasoningSummary || reasoningSummary === reasoningText);
+  const plainApprovalCommand =
+    failureItem?.type === "approval_request" &&
+    failureItem.requestKind === "command" &&
+    !failureItem.privilegedCommand &&
+    parseApprovalReviewDetail(failureItem.prompt).kind === "none"
+      ? failureItem.prompt
+      : undefined;
   const previewText =
     isReasoning && workEntry.structuredPayload?.title?.trim()
       ? workEntry.structuredPayload.title
@@ -368,7 +388,9 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         ? workEntry.toolLifecycleStatus === "inProgress"
           ? "Thinking"
           : "Thought"
-        : questionHeading || (displayLabel ?? workEntryDisplayLabel(workEntry, workspaceRoot));
+        : plainApprovalCommand
+          ? (authoredCodeIntent(plainApprovalCommand) ?? "Command approval")
+          : questionHeading || (displayLabel ?? workEntryDisplayLabel(workEntry, workspaceRoot));
   const answerPreview =
     workEntry.questionAnswer && hasQuestionAnswer(workEntry.questionAnswer)
       ? getQuestionAnswerPreview(workEntry.questionAnswer)
@@ -418,8 +440,9 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
     plainOutput !== undefined &&
     workEntry.projectedItem !== undefined &&
     turnItemNeedsDetailFetch(workEntry.projectedItem.item);
-  const canExpandProjectedItem =
-    plainOutput !== undefined
+  const canExpandProjectedItem = completeShortReasoning
+    ? false
+    : plainOutput !== undefined
       ? Boolean(plainOutput || viewedImage || workEntry.questionAnswer || plainOutputFetches)
       : workEntry.projectedItem === undefined
         ? canExpand
@@ -475,7 +498,9 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       data-v2-item-type={workEntry.projectedItem?.item.type}
       data-v2-item-visibility={workEntry.projectedItem?.visibility}
       {...rowToggleProps}
-      wrapLabel={executionStatus !== undefined || Boolean(reasoningSummary)}
+      wrapLabel={
+        executionStatus !== undefined || Boolean(reasoningSummary) || completeShortReasoning
+      }
       icon={
         <span
           className={iconWrapperClass}
@@ -496,18 +521,20 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
             <span
               className={cn(
                 answerPreview ? "min-w-0" : "min-w-0 flex-1",
-                executionStatus
-                  ? "line-clamp-2 whitespace-normal [overflow-wrap:anywhere]"
-                  : reasoningSummary
-                    ? "line-clamp-2 whitespace-normal"
-                    : "truncate",
+                completeShortReasoning
+                  ? "whitespace-normal [overflow-wrap:anywhere]"
+                  : executionStatus
+                    ? "line-clamp-2 whitespace-normal [overflow-wrap:anywhere]"
+                    : reasoningSummary
+                      ? "line-clamp-2 whitespace-normal"
+                      : "truncate",
                 headingClass,
               )}
             >
-              {isReasoning && !expanded ? (
+              {isReasoning && (!expanded || completeShortReasoning) ? (
                 <ChatMarkdown
                   inline
-                  text={reasoningSummary || workEntry.detail || previewText}
+                  text={reasoningSummary || reasoningText || previewText}
                   cwd={ctx.markdownCwd}
                   parseRawHtml={false}
                   extraRemarkPlugins={
@@ -619,6 +646,13 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         </>
       }
     >
+      {payload?.type === "dynamic_tool" && workEntry.projectedItem ? (
+        <ComputerObservationReceipt
+          projectedItem={workEntry.projectedItem}
+          environmentId={ctx.activeThreadEnvironmentId}
+          source={ctx.turnItemSource}
+        />
+      ) : null}
       {expanded && viewedImage && threadRef ? (
         <WorkLogDetails kind="media">
           <ChatMarkdownAssetImage
@@ -635,7 +669,9 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       {expanded && workEntry.questionAnswer ? (
         <QuestionAnswerHistory answer={workEntry.questionAnswer} />
       ) : null}
-      {expanded && isReasoning ? <ReasoningTraceContent entries={[workEntry]} /> : null}
+      {expanded && isReasoning && canExpandProjectedItem ? (
+        <ReasoningTraceContent entries={[workEntry]} />
+      ) : null}
       {expanded &&
       !isReasoning &&
       !workEntry.questionAnswer &&

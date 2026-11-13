@@ -62,6 +62,7 @@ const make = Effect.gen(function* () {
         text: input.text,
         attachments: [],
         ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
+        ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
         delegation: input.delegation,
         dispatchMode: { type: "start_immediately" },
         createdBy: input.createdBy,

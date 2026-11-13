@@ -48,6 +48,7 @@ export function ThreadTimeline({
     nextEntries: entries,
     rememberedForActive: peekRememberedThreadTimeline<typeof entries>(activeThreadKey),
   });
+  const computerUseConfirmed = !syncing && !detailLoading && displayedEntries === entries;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- stores the committed ready timeline in the module-level cache used during thread switches
   useLayoutEffect(() => {
     if (detailLoading || entries.length === 0 || timelineHasEphemeralPreviewUrls(entries)) {
@@ -56,7 +57,13 @@ export function ThreadTimeline({
     rememberReadyThreadTimeline({ threadKey: activeThreadKey, entries });
   }, [activeThreadKey, detailLoading, entries]);
   if (!threadDetailRef)
-    return <MessagesTimeline {...timelineProps} timelineEntries={displayedEntries} />;
+    return (
+      <MessagesTimeline
+        {...timelineProps}
+        computerUseConfirmed={false}
+        timelineEntries={displayedEntries}
+      />
+    );
   return (
     <WebVoiceCallHistory
       key={`${threadDetailRef.environmentId}:${threadDetailRef.threadId}`}
@@ -66,6 +73,7 @@ export function ThreadTimeline({
       {(voiceItems, voiceHistoryControls) => (
         <MessagesTimeline
           {...timelineProps}
+          computerUseConfirmed={computerUseConfirmed}
           timelineEntries={displayedEntries}
           voiceItems={voiceItems}
           voiceHistoryControls={voiceHistoryControls}

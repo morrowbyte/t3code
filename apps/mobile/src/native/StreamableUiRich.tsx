@@ -1,4 +1,5 @@
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
+import { useVisualInteraction } from "./useVisualInteraction";
 /* oxlint-disable react/no-array-index-key -- Point records append; indices preserve duplicate labels and existing native elements. */
 import { memo, useEffect, useId, useMemo, useRef, useState, type ComponentRef } from "react";
 import {
@@ -155,10 +156,12 @@ function NativeUml({
   const [width, setWidth] = useState(300);
   const queue = useRef<ReturnType<typeof createUmlSnapshotQueue> | null>(null);
   const snapshots = useRef(diagram.snapshots);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- feeds arriving snapshots into the cancellable native rendering queue
   useEffect(() => {
     snapshots.current = diagram.snapshots;
     queue.current?.update(diagram.snapshots);
   }, [diagram.snapshots]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns and disposes the remote native diagram renderer for this connection
   useEffect(() => {
     if (prepared._tag === "None") return;
     const connection = prepared.value;
@@ -267,7 +270,7 @@ function Facts({ facts }: { facts: VisualFact[] }) {
         >
           <Text className="min-w-0 max-w-full text-sm text-foreground-muted">{fact.label}</Text>
           <Text selectable className="ml-auto min-w-0 max-w-full text-right text-sm tabular-nums">
-            {fact.value ?? "—"}
+            {fact.value ?? "N/A"}
           </Text>
         </View>
       ))}
@@ -275,14 +278,25 @@ function Facts({ facts }: { facts: VisualFact[] }) {
   );
 }
 
-function Disclosure({ title, children }: { title: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
+function Disclosure({
+  title,
+  children,
+  expanded,
+  onExpandedChange,
+}: {
+  title: string;
+  children: React.ReactNode;
+  expanded?: boolean | undefined;
+  onExpandedChange?: ((expanded: boolean) => void) | undefined;
+}) {
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = expanded ?? localOpen;
   return (
     <View className="gap-2">
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
-        onPress={() => setOpen((previous) => !previous)}
+        onPress={() => (onExpandedChange ? onExpandedChange(!open) : setLocalOpen(!open))}
         className="min-h-11 flex-row items-center gap-2 active:opacity-65"
       >
         <Text className="text-sm text-foreground-muted" accessibilityElementsHidden>
@@ -296,13 +310,29 @@ function Disclosure({ title, children }: { title: string; children: React.ReactN
 }
 
 function Report({ report }: { report: VisualReport }) {
-  const [selected, setSelected] = useState<string>();
-  const active = selected ?? report.sections[0]?.key;
+  const [interaction, update] = useVisualInteraction(report.id, `report:${report.layout}`);
+  const selected = interaction.selected;
+  const setSelected = (key: string) => update((previous) => ({ ...previous, selected: key }));
+  const active = report.sections.some((section) => section.key === selected)
+    ? selected
+    : report.sections[0]?.key;
   if (report.layout === "details")
     return (
       <View className="gap-3">
         {report.sections.map((section) => (
-          <Disclosure key={section.key} title={section.title}>
+          <Disclosure
+            key={section.key}
+            title={section.title}
+            expanded={interaction.openSections?.includes(section.key) ?? false}
+            onExpandedChange={(open) =>
+              update((previous) => ({
+                ...previous,
+                openSections: open
+                  ? [...(previous.openSections ?? []), section.key]
+                  : previous.openSections?.filter((key) => key !== section.key),
+              }))
+            }
+          >
             <View className="gap-3">
               {section.text ? (
                 <Text selectable className="text-sm">
@@ -693,6 +723,7 @@ function ChartBar({
   isStreaming: boolean;
 }) {
   const geometry = useSharedValue({ x, y, width, height });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- synchronizes the native animation worklet with chart geometry
   useEffect(() => {
     geometry.set(
       isStreaming
@@ -718,6 +749,7 @@ function ChartDot({
   isStreaming: boolean;
 }) {
   const geometry = useSharedValue({ cx, cy, r: isStreaming ? r : 0 });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- synchronizes the native animation worklet with point geometry
   useEffect(() => {
     geometry.set(
       isStreaming
@@ -907,7 +939,7 @@ function CartesianChart({
   );
   const categoryTicks = spacedIndices(
     model.categories.length,
-    Math.floor(plotWidth / (72 * fontScale)),
+    Math.floor(plotWidth / (44 * fontScale)),
   );
   const labelWidth = Math.min(112 * fontScale, plotWidth / Math.max(1, categoryTicks.length));
   const labelHeight = Math.max(
@@ -1206,7 +1238,9 @@ function PolarChart({
   const maximum = chart.maximum ?? Math.max(1, model.domain[1]);
   const positive = (value: number | null | undefined) => Math.max(0, value ?? 0);
   const rows = model.categories.flatMap((label, index) =>
-    hidden.has(`c${index}`) ? [] : [{ index, label, value: positive(model.values[index]?.[0]) }],
+    hidden.has(`category:${label}`)
+      ? []
+      : [{ index, label, value: positive(model.values[index]?.[0]) }],
   );
   const wedges = pie<(typeof rows)[number]>()
     .sort(null)
@@ -1451,7 +1485,13 @@ function PolarChart({
 export const RichChart = memo(
   function RichChart({ chart, isStreaming }: { chart: VisualChart; isStreaming: boolean }) {
     const model = useMemo(() => chartDataModel(chart), [chart]);
-    const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+    const [interaction, update] = useVisualInteraction(
+      chart.id,
+      `chart:${["pie", "donut", "radial"].includes(chart.kind) ? "categories" : "series"}`,
+    );
+    const hidden = new Set(interaction.hidden);
+    const setHidden = (change: (previous: Set<string>) => Set<string>) =>
+      update((previous) => ({ ...previous, hidden: [...change(new Set(previous.hidden))] }));
     const [selected, setSelected] = useState<number | null>(null);
     const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
     const { fontScale } = useWindowDimensions();
@@ -1464,6 +1504,7 @@ export const RichChart = memo(
     const { color: foreground } = useResolveClassNames("text-foreground");
     const { color: border } = useResolveClassNames("text-border");
     const colors = [primary, secondary, warning, danger, foreground];
+    // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns the timer that clears transient clipboard feedback
     useEffect(() => {
       if (copyState === "idle") return;
       const timer = setTimeout(() => setCopyState("idle"), 2200);
@@ -1474,7 +1515,7 @@ export const RichChart = memo(
     const circular = chart.kind === "pie" || chart.kind === "donut" || chart.kind === "radial";
     const polar = circular || chart.kind === "radar";
     const legend = circular
-      ? model.categories.map((label, index) => ({ key: `c${index}`, label }))
+      ? model.categories.map((label) => ({ key: `category:${label}`, label }))
       : chart.series.length > 0
         ? model.series
         : [];
@@ -1593,7 +1634,7 @@ export const RichChart = memo(
                           selectable
                           className="ml-auto min-w-0 max-w-full text-right text-sm tabular-nums"
                         >
-                          {value ?? "—"}
+                          {value ?? "N/A"}
                           {value !== null && value !== undefined && chart.yLabel
                             ? ` ${chart.yLabel}`
                             : ""}
@@ -1613,6 +1654,8 @@ export const RichChart = memo(
         ) : null}
         <Disclosure
           title={`View data (${chart.points.length} ${chart.points.length === 1 ? "point" : "points"})`}
+          expanded={interaction.expanded}
+          onExpandedChange={(expanded) => update((previous) => ({ ...previous, expanded }))}
         >
           <View className="flex-row items-center justify-end gap-2">
             <Text accessibilityLiveRegion="polite" className="text-xs text-foreground-muted">

@@ -22,6 +22,12 @@ const harness = vi.hoisted(() => ({
   copy: vi.fn(async (_text: string) => true),
   threadShell: vi.fn((_ref: unknown) => undefined),
 }));
+vi.mock("./markdownCodeHighlightState", () => ({
+  useMarkdownCodeHighlight: () => undefined,
+}));
+vi.mock("../settings/appearance/AppearancePreferencesProvider", () => ({
+  useAppearancePreferences: () => ({ themeAppearance: "dark" }),
+}));
 vi.mock("./useOpenLinkedThread", () => ({
   useOpenLinkedThread: () => harness.navigate,
 }));
@@ -137,7 +143,9 @@ function reviewApproval(bundle: ReviewBundle = reviewFixture) {
 }
 const sha256 = (value: string) =>
   NodeCrypto.createHash("sha256").update(value, "utf8").digest("hex");
+const FIXTURE_NOW = Date.UTC(2026, 10, 12);
 function hostApproval(receiptLifetime = 60_000) {
+  vi.setSystemTime(FIXTURE_NOW);
   // Unit-test metadata models a human Host V2 order; no real host channel or VM run is established.
   const fullText =
     " \r\nKurz: exact order 🦦, not an agent summary\nTechnik:\n  Keep this immutable.\n";
@@ -155,8 +163,8 @@ function hostApproval(receiptLifetime = 60_000) {
       principal: "synthetic-human-principal",
       threadId: ThreadId.make("synthetic-source-thread"),
       messageId: MessageId.make("native-test-registry-record"),
-      createdAt: Date.now() - 1_000,
-      expiresAt: Date.now() + receiptLifetime,
+      createdAt: FIXTURE_NOW - 1_000,
+      expiresAt: FIXTURE_NOW + receiptLifetime,
       fullText,
       fullTextHash: sha256(fullText),
       originalLink: "host-order:native-test-order",
@@ -195,7 +203,7 @@ function hostApproval(receiptLifetime = 60_000) {
   const authority = {
     packageHash: bundle.hash,
     verifiedTargetId: "fixture-host",
-    expiresAt: Date.now() + 60_000,
+    expiresAt: FIXTURE_NOW + 60_000,
     state: "pending",
     approverSessionId: AuthSessionId.make("fixture-approver-session"),
     approverSubject: "fixture-approver",
@@ -282,13 +290,21 @@ afterEach(() => {
 });
 
 describe("PendingApprovalCard", () => {
-  it("shows the real peer, configured mode and exact expandable code without inferring sudo rights", () => {
+  it("shows the real peer, configured mode and exact expandable code without inferring sudo rights", async () => {
     render();
     expect(host.textContent).toContain("RemoteHost");
     expect(host.textContent).toContain("Auto");
     expect(host.textContent).not.toContain(approval.detail);
     act(() => button("Show provider details").click());
-    expect(host.textContent).toContain(approval.detail);
+    expect(host.textContent).toContain("Write-Output '脚本'");
+    await act(async () => button("Copy input").click());
+    expect(harness.copy).toHaveBeenCalledWith(approval.detail, { target: "recorded input" });
+    await act(async () => button("Open Approval Review").click());
+    const reviewDialog = host.querySelector('[role="dialog"]')!;
+    expect(reviewDialog.textContent).toContain("Write-Output '脚本'");
+    harness.copy.mockClear();
+    await act(async () => button("Copy input", reviewDialog).click());
+    expect(harness.copy).toHaveBeenCalledWith(approval.detail, { target: "recorded input" });
     expect(host.textContent).toContain("OS privilege: Not supplied");
     expect(host.textContent).toContain("Effective provider policy: Not supplied");
     expect(host.textContent).toContain("Execution unconfirmed");
@@ -366,7 +382,7 @@ describe("PendingApprovalCard", () => {
     render();
     act(() => button("Open Approval Review").click());
     const dialog = host.querySelector('[role="dialog"]')!;
-    expect(dialog.textContent).toContain(approval.detail);
+    expect(dialog.textContent).toContain("Write-Output '脚本'");
     expect(dialog.textContent).not.toContain("Package integrity verified");
     act(() => button("Steps").click());
     expect(dialog.textContent).toContain("No step graph supplied.");

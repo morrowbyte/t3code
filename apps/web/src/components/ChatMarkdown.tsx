@@ -1610,6 +1610,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
   pre: function MarkdownPre({ node, children, ...props }) {
     const {
       environmentId,
+      threadRef,
       resolvedTheme,
       diffThemeName,
       expandMedia,
@@ -1643,6 +1644,9 @@ const CHAT_MARKDOWN_COMPONENTS = {
       return (
         <StreamableUi
           environmentId={environmentId}
+          scope={
+            threadRef ? JSON.stringify([threadRef.environmentId, threadRef.threadId]) : undefined
+          }
           code={codeBlock.code.replace(/\n$/, "")}
           isStreaming={isStreaming && !isClosedCodeFence(node, text, codeBlock.code)}
         />

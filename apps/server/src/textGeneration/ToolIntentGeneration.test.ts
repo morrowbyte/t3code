@@ -340,6 +340,20 @@ describe("tool intent generation", () => {
       expect(service.retainedPresentation(first)?.sourceTitle).toBe(first.title);
       expect(service.retainedPresentation(second)?.sourceTitle).toBe(second.title);
       expect(service.retainedPresentation(second)?.title).toBe("Cache prüfen");
+      const completed = { ...first, title: "Inspect cache keys", status: "completed" as const };
+      expect(service.retainedPresentation(completed)).toEqual({
+        title: "Cache prüfen",
+        sourceTitle: "Inspect cache keys",
+        language: "de",
+      });
+      yield* service.observe({
+        ...identity,
+        item: completed,
+        commitTitle: () => Effect.die("Preserve source"),
+      });
+      yield* TestClock.adjust(0);
+      expect(calls).toBe(1);
+      expect(service.retainedPresentation(completed)?.title).toBe("Cache prüfen");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -664,6 +678,13 @@ describe("tool intent generation", () => {
             title: "Newer authored title",
           }),
         ).toBeUndefined();
+        expect(
+          service.retainedPresentation({
+            ...item,
+            id: TurnItemId.make("first"),
+            title: "Compare shipments",
+          })?.title,
+        ).toBe("Compare selected shipment quotes");
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -902,7 +923,7 @@ it.effect(
       };
       const newLabel = { ...oldLabel, input: { ...oldLabel.input, title: "Status prüfen" } };
       expect(Service.toolIntentInput(oldLabel)).toBe(Service.toolIntentInput(newLabel));
-      const observeLabel = (next: typeof oldLabel) =>
+      const observeLabel = (next: Extract<OrchestrationV2TurnItem, { type: "dynamic_tool" }>) =>
         service.observe({
           ...identity,
           item: next,
@@ -923,5 +944,52 @@ it.effect(
         sourceTitle: "Status prüfen",
         language: "auto",
       });
+      const changedLabel = {
+        ...newLabel,
+        input: { code: `${newLabel.input.code}\ninspectQueue();`, title: "Warteschlange prüfen" },
+      };
+      expect(Service.toolIntentInput(changedLabel)).toBe(Service.toolIntentInput(newLabel));
+      expect(service.retainedPresentation(changedLabel)).toBeUndefined();
+      yield* observeLabel(changedLabel);
+      const changedRequest = yield* Queue.take(requests);
+      expect(changedRequest.input.message).toContain("Warteschlange prüfen");
+      expect(service.retainedPresentation(changedLabel)).toBeUndefined();
+      yield* Deferred.succeed(changedRequest.reply, { title: "Warteschlange prüfen" });
+      expect(yield* Queue.take(committed)).toEqual({
+        title: "Warteschlange prüfen",
+        sourceTitle: "Warteschlange prüfen",
+        language: "auto",
+      });
+      expect(
+        service.retainedPresentation({
+          ...changedLabel,
+          input: {
+            ...changedLabel.input,
+            code: `${changedLabel.input.code}\ninspectOtherQueue();`,
+          },
+        }),
+      ).toBeUndefined();
+      expect(
+        service.retainedPresentation({ ...changedLabel, toolName: "another_tool" }),
+      ).toBeUndefined();
+      expect(
+        service.retainedPresentation({
+          ...changedLabel,
+          input: { ...changedLabel.input, cwd: "/another-checkout" },
+        }),
+      ).toBeUndefined();
+      const completedLabel = {
+        ...changedLabel,
+        title: "Inspect the queue",
+        status: "completed" as const,
+      };
+      expect(service.retainedPresentation(completedLabel)?.title).toBe("Warteschlange prüfen");
+      yield* observeLabel(completedLabel);
+      expect(yield* Queue.take(committed)).toEqual({
+        title: "Warteschlange prüfen",
+        sourceTitle: "Warteschlange prüfen",
+        language: "auto",
+      });
+      expect(yield* Queue.size(requests)).toBe(0);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

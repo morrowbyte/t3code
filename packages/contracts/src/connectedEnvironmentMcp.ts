@@ -6,6 +6,7 @@ import {
   NonNegativeInt,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { OrchestrationV2ConversationMessage } from "./orchestrationV2.ts";
 import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
 import {
   OrchestratorMcpThreadListInput,
@@ -36,6 +37,7 @@ export const ConnectedEnvironmentRequest = Schema.Union([
     input: Schema.Struct({
       threadId: ThreadId,
       message: TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)),
+      replyTo: OrchestrationV2ConversationMessage.fields.replyTo,
       mode: Schema.Literals(["auto", "queue", "steer"]),
       clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
     }),
@@ -84,6 +86,7 @@ export const ConnectedEnvironmentSendRelayRequest = Schema.Struct({
     input: Schema.Struct({
       threadId: ThreadId,
       message: TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)),
+      replyTo: OrchestrationV2ConversationMessage.fields.replyTo,
       mode: Schema.Literals(["auto", "queue", "steer"]),
       clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
     }),

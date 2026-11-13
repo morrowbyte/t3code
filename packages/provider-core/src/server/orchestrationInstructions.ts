@@ -54,29 +54,33 @@ Native inline visuals are available in assistant messages on web, desktop, and m
 - Cards are only for short independent metrics or compact alternatives. Keep ordinary explanations and qualitative summaries in Markdown, never in cards or report sections merely to make them look visual. Do not repeat the chart as cards or a table unless requested. Explicit table requests and reference lookups can stay tables.
 
 When useful, stream normal Markdown together with fenced \`t3-ui\` blocks containing JSON Lines: one complete JSON object per physical line, with no enclosing array or commas between records. Completed records render immediately, before the fence closes. This is Morrowbyte's bounded local component protocol, not OpenUI Lang. The examples below are illustrative, not live measurements. Only these records and fields are supported:
+Give every new chart and report a distinct component \`id\` beginning with \`result-\` from its first appearance (1-64 letters, digits, underscores or hyphens in total). Reuse that SAME id and compatible series/section keys in a follow-up correction, emitting the complete corrected result. This preserves hidden series, selected tabs and open sections within this thread. Earlier replies remain historical versions. Use a new id for an independent result or incompatible units/meaning; do not remove a series merely because the user hid it. The existing id field works on older clients too; do not add identity metadata fields.
+
+Keep component identity bookkeeping out of the visible explanation; describe the correction in the user's terms.
+
 {"type":"metric","id":"summary","label":"Label","value":"123 USD","detail":"Optional explanation","sources":[{"label":"Source","url":"https://example.com"}]}
 {"type":"table","id":"prices","title":"Daily closes","columns":["Date","Close (USD)"]}
 {"type":"row","id":"prices","cells":["Day 1",123.45]}
-{"type":"chart","id":"trend","title":"Ideal pump scaling","kind":"line","xLabel":"Speed (% of rated)","yLabel":"% of rated"}
-{"type":"series","id":"trend","key":"flow","label":"Flow"}
-{"type":"series","id":"trend","key":"head","label":"Head"}
-{"type":"series","id":"trend","key":"power","label":"Power"}
-{"type":"point","id":"trend","series":"flow","label":"60","value":60}
-{"type":"point","id":"trend","series":"head","label":"60","value":36}
-{"type":"point","id":"trend","series":"power","label":"60","value":21.6}
-{"type":"point","id":"trend","series":"flow","label":"80","value":80}
-{"type":"point","id":"trend","series":"head","label":"80","value":64}
-{"type":"point","id":"trend","series":"power","label":"80","value":51.2}
-{"type":"point","id":"trend","series":"flow","label":"100","value":100}
-{"type":"point","id":"trend","series":"head","label":"100","value":100}
-{"type":"point","id":"trend","series":"power","label":"100","value":100}
-{"type":"chart","id":"comparison","title":"Energy use and target","kind":"composed","xLabel":"Week","yLabel":"kWh"}
-{"type":"series","id":"comparison","key":"actual","label":"Used","kind":"bar"}
-{"type":"series","id":"comparison","key":"target","label":"Target","kind":"line"}
-{"type":"point","id":"comparison","series":"actual","label":"Week 1","value":24}
-{"type":"point","id":"comparison","series":"target","label":"Week 1","value":20}
-{"type":"point","id":"comparison","series":"actual","label":"Week 2","value":18}
-{"type":"point","id":"comparison","series":"target","label":"Week 2","value":20}
+{"type":"chart","id":"result-pump-scaling","title":"Ideal pump scaling","kind":"line","xLabel":"Speed (% of rated)","yLabel":"% of rated"}
+{"type":"series","id":"result-pump-scaling","key":"flow","label":"Flow"}
+{"type":"series","id":"result-pump-scaling","key":"head","label":"Head"}
+{"type":"series","id":"result-pump-scaling","key":"power","label":"Power"}
+{"type":"point","id":"result-pump-scaling","series":"flow","label":"60","value":60}
+{"type":"point","id":"result-pump-scaling","series":"head","label":"60","value":36}
+{"type":"point","id":"result-pump-scaling","series":"power","label":"60","value":21.6}
+{"type":"point","id":"result-pump-scaling","series":"flow","label":"80","value":80}
+{"type":"point","id":"result-pump-scaling","series":"head","label":"80","value":64}
+{"type":"point","id":"result-pump-scaling","series":"power","label":"80","value":51.2}
+{"type":"point","id":"result-pump-scaling","series":"flow","label":"100","value":100}
+{"type":"point","id":"result-pump-scaling","series":"head","label":"100","value":100}
+{"type":"point","id":"result-pump-scaling","series":"power","label":"100","value":100}
+{"type":"chart","id":"result-energy-comparison","title":"Energy use and target","kind":"composed","xLabel":"Week","yLabel":"kWh"}
+{"type":"series","id":"result-energy-comparison","key":"actual","label":"Used","kind":"bar"}
+{"type":"series","id":"result-energy-comparison","key":"target","label":"Target","kind":"line"}
+{"type":"point","id":"result-energy-comparison","series":"actual","label":"Week 1","value":24}
+{"type":"point","id":"result-energy-comparison","series":"target","label":"Week 1","value":20}
+{"type":"point","id":"result-energy-comparison","series":"actual","label":"Week 2","value":18}
+{"type":"point","id":"result-energy-comparison","series":"target","label":"Week 2","value":20}
 {"type":"cards","id":"options","title":"Options"}
 {"type":"card","id":"options","key":"small","title":"Small","value":"20 EUR","badge":"Starter","detail":"Optional detail"}
 {"type":"fact","id":"options","item":"small","key":"capacity","label":"Capacity","value":2}
@@ -89,9 +93,9 @@ When useful, stream normal Markdown together with fenced \`t3-ui\` blocks contai
 {"type":"edge","id":"flow","key":"next","from":"edit","to":"check"}
 {"type":"edge","id":"flow","key":"retry","from":"check","to":"edit","label":"Fail: fix"}
 {"type":"edge","id":"flow","key":"ready","from":"check","to":"publish","label":"Pass"}
-{"type":"report","id":"decision","title":"Decision","layout":"tabs"}
-{"type":"section","id":"decision","key":"risks","title":"Risks","text":"Optional plain text"}
-{"type":"fact","id":"decision","item":"risks","key":"budget","label":"Budget buffer","value":"7000 EUR"}
+{"type":"report","id":"result-decision-details","title":"Decision","layout":"tabs"}
+{"type":"section","id":"result-decision-details","key":"risks","title":"Risks","text":"Optional plain text"}
+{"type":"fact","id":"result-decision-details","item":"risks","key":"budget","label":"Budget buffer","value":"7000 EUR"}
 {"type":"uml","id":"request","title":"Request flow","kind":"sequence"}
 {"type":"uml-snapshot","id":"request","key":"request-1","source":"@startuml\\nactor User\\nparticipant API\\nUser -> API: Request\\n@enduml"}
 Declare each component once. IDs and item keys are 1-64 letters, digits, underscores or hyphens. Data records reference an already declared component by id; facts reference a prior card or report section by item; points reference a prior series by series; edges reference prior nodes by from/to. Append completed records as data becomes available. Never redeclare a component or keyed item. Chart kind is optional: "line" (default), "area", "bar", "pie", "donut", "radar", "radial", "scatter", or "composed". Choose a chart for a real comparison, trend, distribution or relationship. Bar supports horizontal:true; bar/area support stacked:true. Radar/radial may set maximum (for example 100 for percent). Pie/donut/radial use one value series; all polar values must be nonnegative. Scatter points require numeric x and use label for the sample name. Composed series may set kind:"bar", "area" or "line"; keep comparable units. Omit series for a legacy single-series chart; otherwise declare each series first and use its key on points. A series has at most one point per category label (per numeric x for scatter). Values at the same category share a tooltip. Users can copy all arrived chart data as CSV from View data. Choose comparable units within one chart. Reports use layout "tabs" or "details" (default). Status is optional: "pending", "active", "complete", or "blocked". Card value/badge/detail, event/node time/status/detail, edge label and section text are optional. Report text is plain text, not Markdown or HTML. Workflow nodes may set kind:"start", "step", "decision" or "end". UML kind is "sequence", "class", "state", "usecase" or "activity". Append uml-snapshot records with a unique key and a COMPLETE valid @startuml/@enduml PlantUML source string; escape newlines inside the JSON string. Each snapshot expands the diagram so far; do not send incomplete DSL fragments. Include proper UML notation: sequence lifelines/activations/alt/loop, class members/relations, state transitions, use-case actors/boundary/include/extend, activity branches/forks/joins. Snapshot source permits at most 16000 characters/256 lines, 24 snapshots per diagram; preprocessing, external resources, links, images and custom styling are unsupported. Rendering stays on the connected environment. Invalid or cancelled updates preserve the last valid image. No generated controls execute actions or send messages.
