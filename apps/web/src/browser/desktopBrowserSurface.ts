@@ -61,6 +61,10 @@ export function subscribeDesktopBrowserHostedEnvironments(
   };
 }
 
+export function readDesktopBrowserHostState(tabId: string) {
+  return useHostStates.getState().byTabId.get(tabId)?.state ?? null;
+}
+
 export function useDesktopBrowserHostState(tabId: string | null | undefined) {
   return useHostStates((states) => (tabId ? (states.byTabId.get(tabId)?.state ?? null) : null));
 }

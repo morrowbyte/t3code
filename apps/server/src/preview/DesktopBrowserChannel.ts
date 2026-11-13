@@ -12,6 +12,7 @@ import {
   DesktopBrowserRegistration,
   DesktopBrowserRegistrationDescriptor,
   type DesktopBrowserCommand as DesktopBrowserCommandType,
+  type DesktopBrowserTabRestoration,
   type DesktopBrowserPrivateEntryAttachment,
   type DesktopBrowserPrivateEntryRequest,
   type DesktopBrowserPrivateEntryResponse,
@@ -57,6 +58,10 @@ export interface DesktopTabKey {
   readonly threadId: string;
   readonly tabId: string;
 }
+
+export type DesktopTabAttachment = DesktopTabKey & {
+  readonly restoration?: DesktopBrowserTabRestoration;
+};
 
 export type DesktopPrivateEntryTarget = DesktopTabKey & DesktopBrowserPrivateEntryAttachment;
 export interface DesktopPrivateEntryHandler {
@@ -195,7 +200,7 @@ export class DesktopBrowserChannel extends Context.Service<
      */
     readonly awaitAttached: (key: DesktopTabKey, timeout: Duration.Input) => Effect.Effect<boolean>;
     readonly detached: Stream.Stream<DesktopTabKey>;
-    readonly attached: Stream.Stream<DesktopTabKey>;
+    readonly attached: Stream.Stream<DesktopTabAttachment>;
     readonly isAttached: (key: DesktopTabKey) => Effect.Effect<boolean>;
     readonly endpoint: (key: DesktopTabKey) => Effect.Effect<string, never, Scope.Scope>;
     readonly pointer: (
@@ -237,7 +242,8 @@ const make = Effect.gen(function* () {
   const environmentId = yield* identity.getEnvironmentId;
   const inputFd = config.desktopBrowserFd;
   const controlFd = config.desktopBrowserControlFd;
-  const changes = yield* PubSub.unbounded<{ key: DesktopTabKey; attached: boolean }>();
+  const changes = yield* PubSub.unbounded<{ key: DesktopTabAttachment; attached: boolean }>();
+  const attachmentEvents = new WeakMap<DesktopTabKey, DesktopAttachment>();
   const attachedTabs = new Map<string, DesktopAttachment>();
   const connections = new Set<DesktopConnection>();
   const activeTurns = new Map<string, Set<DesktopConnection>>();
@@ -351,20 +357,26 @@ const make = Effect.gen(function* () {
           return;
         }
         if (attachment) yield* detach(attachment);
-        attachedTabs.set(id, {
+        const admitted: DesktopAttachment = {
           key,
           connection,
           privateEntry: event.privateEntry,
           waiting: new Set(),
           relay: undefined,
-        });
+        };
+        attachedTabs.set(id, admitted);
         yield* privateEntries.attach(key, event.privateEntry);
         const turnOwners = activeTurns.get(key.threadId);
         if (turnOwners && !turnOwners.has(connection)) {
           turnOwners.add(connection);
           yield* connection.send({ type: "turn", threadId: key.threadId, active: true });
         }
-        yield* PubSub.publish(changes, { key, attached: true });
+        const attached: DesktopTabAttachment = {
+          ...key,
+          ...(event.restoration === undefined ? {} : { restoration: event.restoration }),
+        };
+        attachmentEvents.set(attached, admitted);
+        yield* PubSub.publish(changes, { key: attached, attached: true });
         return;
       }
       case "detached": {
@@ -620,11 +632,17 @@ const make = Effect.gen(function* () {
       Stream.map((change) => change.key),
     ),
     attached: Stream.fromPubSub(changes).pipe(
-      Stream.filter((change) => change.attached),
+      Stream.filter((change) => {
+        const attachment = attachmentEvents.get(change.key);
+        return change.attached && attachment !== undefined && current(attachment);
+      }),
       Stream.map((change) => change.key),
     ),
     isAttached: Effect.fn("DesktopBrowserChannel.isAttached")(function (key) {
-      return Effect.sync(() => attachedTabs.has(keyOf(key)));
+      return Effect.sync(() => {
+        const attachment = attachmentEvents.get(key);
+        return attachment === undefined ? attachedTabs.has(keyOf(key)) : current(attachment);
+      });
     }),
     endpoint,
     turn: Effect.fn("DesktopBrowserChannel.turn")(function* (threadId, active) {

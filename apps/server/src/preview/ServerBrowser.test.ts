@@ -430,10 +430,10 @@ const dependencies = Layer.mergeAll(
         (onDetach) => Effect.sync(() => desktopDetaches.off("detach", onDetach)),
       ),
     ),
-    attached: Stream.callback<{ threadId: string; tabId: string }>((queue) =>
+    attached: Stream.callback<DesktopChannel.DesktopTabAttachment>((queue) =>
       Effect.acquireRelease(
         Effect.sync(() => {
-          const onAttach = (key: { threadId: string; tabId: string }) =>
+          const onAttach = (key: DesktopChannel.DesktopTabAttachment) =>
             Queue.offerUnsafe(queue, key);
           desktopDetaches.on("attach", onAttach);
           desktopDetaches.emit("attach-ready");
@@ -821,6 +821,22 @@ it.live.each(["desktop" as const, undefined])(
           ...(runtime === undefined ? {} : { runtime }),
         });
         desktopTabs.add(local.tabId);
+        const boundEvents = yield* manager.subscribeEvents;
+        const bound = yield* Stream.fromSubscription(boundEvents).pipe(
+          Stream.filter((event) => "snapshot" in event && event.snapshot.desktopHostId === "native-host"),
+          Stream.take(1), Stream.toPull,
+        );
+        desktopDetaches.emit("attach", {
+          threadId: scope.thread.threadId, tabId: local.tabId,
+          restoration: {
+            desktopHostId: "native-host", url: "https://example.com/logged-in", title: "Signed in",
+            canGoBack: true, canGoForward: false, profileId: "default",
+          },
+        });
+        yield* bound;
+        expect((yield* manager.list({ threadId: scope.thread.threadId })).sessions.find(
+          (session) => session.tabId === local.tabId,
+        )?.desktopHostId).toBe("native-host");
         const status = yield* broker.invoke<PreviewAutomationStatus>({
           scope,
           operation: "status",
@@ -2640,84 +2656,112 @@ it.live("an agent tab keeps throwaway storage when no client reported profiles",
   ).pipe(Effect.provide(layer)),
 );
 
-it.live("a desktop page that comes back reconnects without waiting for a viewer", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const manager = yield* Manager.PreviewManager;
-      const browser = yield* ServerBrowser.ServerBrowser;
-      const connected = desktopEvent("connected");
-      const detachReady =
-        desktopDetaches.listenerCount("detach") === 0 ? desktopEvent("detach-ready") : undefined;
-      const attachReady =
-        desktopDetaches.listenerCount("attach") === 0 ? desktopEvent("attach-ready") : undefined;
-      if (detachReady !== undefined) yield* Effect.promise(() => detachReady);
-      if (attachReady !== undefined) yield* Effect.promise(() => attachReady);
-      desktopRendersNext = true;
-      const opened = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
-      yield* Effect.promise(() => connected);
-      yield* Effect.promise(() => desktopConnections[0]!.context.registered);
-      const firstViewerScope = yield* Scope.make();
-      yield* browser
-        .attachViewer({ ...viewerInput(opened.tabId, false), frames: false })
-        .pipe(Effect.provideService(Scope.Scope, firstViewerScope));
-      const firstSession = desktopConnections[0]!.context.sessions.at(-1)!;
-      const released = desktopEvent("released");
-      desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId: opened.tabId });
-      yield* Effect.promise(() => released);
-      yield* Scope.close(firstViewerScope, Exit.void);
-      expect(firstSession.detach).not.toHaveBeenCalled();
-      const reconnected = desktopEvent("connected");
-      desktopDetaches.emit("attach", { threadId: scope.thread.threadId, tabId: opened.tabId });
-      yield* Effect.promise(() => reconnected);
-      yield* Effect.promise(() => desktopConnections[1]!.context.registered);
-      expect(desktopConnections).toHaveLength(2);
-      const connection = desktopConnections[1]!;
-      const attachedViewerScope = yield* Scope.make();
-      yield* browser
-        .attachViewer({ ...viewerInput(opened.tabId, false), frames: false })
-        .pipe(Effect.provideService(Scope.Scope, attachedViewerScope));
-      const attachedSession = connection.context.sessions.at(-1)!;
-      yield* Scope.close(attachedViewerScope, Exit.void);
-      expect(attachedSession.detach).toHaveBeenCalledOnce();
-      expect(connection.closed).toBe(false);
-      expect(connection.context.page.close).not.toHaveBeenCalled();
-
-      const lostViewerScope = yield* Scope.make();
-      yield* browser
-        .attachViewer({ ...viewerInput(opened.tabId, false), frames: false })
-        .pipe(Effect.provideService(Scope.Scope, lostViewerScope));
-      const lostSession = connection.context.sessions.at(-1)!;
-      const detachStarted = Promise.withResolvers<void>();
-      const detachReleased = Promise.withResolvers<void>();
-      let detachCompleted = false;
-      lostSession.detach.mockImplementation(async () => {
-        detachStarted.resolve();
-        await detachReleased.promise;
-        detachCompleted = true;
-      });
-      const closing = yield* Scope.close(lostViewerScope, Exit.void).pipe(Effect.forkScoped);
-      try {
-        yield* Effect.promise(() => detachStarted.promise);
+it.live.each([false, true])(
+  "a desktop page that comes back reconnects without waiting for a viewer (missing snapshot: %s)",
+  (missingSnapshot) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const manager = yield* Manager.PreviewManager;
+        const browser = yield* ServerBrowser.ServerBrowser;
+        const connected = desktopEvent("connected");
+        const detachReady =
+          desktopDetaches.listenerCount("detach") === 0 ? desktopEvent("detach-ready") : undefined;
+        const attachReady =
+          desktopDetaches.listenerCount("attach") === 0 ? desktopEvent("attach-ready") : undefined;
+        if (detachReady !== undefined) yield* Effect.promise(() => detachReady);
+        if (attachReady !== undefined) yield* Effect.promise(() => attachReady);
+        desktopRendersNext = true;
+        const opened = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
+        yield* Effect.promise(() => connected);
+        yield* Effect.promise(() => desktopConnections[0]!.context.registered);
+        const firstViewerScope = yield* Scope.make();
+        yield* browser
+          .attachViewer({ ...viewerInput(opened.tabId, false), frames: false })
+          .pipe(Effect.provideService(Scope.Scope, firstViewerScope));
+        const firstSession = desktopConnections[0]!.context.sessions.at(-1)!;
+        const released = desktopEvent("released");
+        desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId: opened.tabId });
+        yield* Effect.promise(() => released);
+        yield* Scope.close(firstViewerScope, Exit.void);
+        expect(firstSession.detach).not.toHaveBeenCalled();
+        if (missingSnapshot) {
+          yield* manager.close({ threadId: scope.thread.threadId, tabId: opened.tabId });
+        }
+        const reconnected = desktopEvent("connected");
+        desktopDetaches.emit("attach", {
+          threadId: scope.thread.threadId,
+          tabId: opened.tabId,
+          restoration: {
+            desktopHostId: "surviving-native-host",
+            url: "https://example.com/survived",
+            title: "Survived",
+            canGoBack: true,
+            canGoForward: false,
+            viewport: { _tag: "freeform", width: 900, height: 700 },
+            profileId: "default",
+          },
+        });
+        yield* Effect.promise(() => reconnected);
+        yield* Effect.promise(() => desktopConnections[1]!.context.registered);
+        expect(desktopConnections).toHaveLength(2);
+        const restored = (yield* manager.list({ threadId: scope.thread.threadId })).sessions.find(
+          (session) => session.tabId === opened.tabId,
+        );
+        expect(restored?.desktopHostId).toBe("surviving-native-host");
+        if (missingSnapshot) {
+          expect(restored).toMatchObject({ runtime: "desktop", profileId: "default" });
+          expect(restored).not.toHaveProperty("automationOwner");
+          expect(restored).not.toHaveProperty("revealRequest");
+        }
+        const connection = desktopConnections[1]!;
+        expect(connection.context.page.goto).not.toHaveBeenCalled();
+        expect(connection.context.page.reload).not.toHaveBeenCalled();
+        const attachedViewerScope = yield* Scope.make();
+        yield* browser
+          .attachViewer({ ...viewerInput(opened.tabId, false), frames: false })
+          .pipe(Effect.provideService(Scope.Scope, attachedViewerScope));
+        const attachedSession = connection.context.sessions.at(-1)!;
+        yield* Scope.close(attachedViewerScope, Exit.void);
+        expect(attachedSession.detach).toHaveBeenCalledOnce();
         expect(connection.closed).toBe(false);
-        connection.disconnect();
-        yield* Fiber.join(closing);
-        expect(detachCompleted).toBe(false);
-        expect(lostSession.detach).toHaveBeenCalledOnce();
         expect(connection.context.page.close).not.toHaveBeenCalled();
-      } finally {
-        detachReleased.resolve();
-        yield* Fiber.join(closing);
-      }
-      return opened.tabId;
-    }).pipe(Effect.provide(layer)),
-  ).pipe(
-    Effect.tap((tabId) =>
-      Effect.sync(() => {
-        expect(releasedDesktopTabs).toEqual([tabId, tabId]);
-        expect(desktopConnections.map((connection) => connection.closed)).toEqual([true, true]);
-      }),
+
+        const lostViewerScope = yield* Scope.make();
+        yield* browser
+          .attachViewer({ ...viewerInput(opened.tabId, false), frames: false })
+          .pipe(Effect.provideService(Scope.Scope, lostViewerScope));
+        const lostSession = connection.context.sessions.at(-1)!;
+        const detachStarted = Promise.withResolvers<void>();
+        const detachReleased = Promise.withResolvers<void>();
+        let detachCompleted = false;
+        lostSession.detach.mockImplementation(async () => {
+          detachStarted.resolve();
+          await detachReleased.promise;
+          detachCompleted = true;
+        });
+        const closing = yield* Scope.close(lostViewerScope, Exit.void).pipe(Effect.forkScoped);
+        try {
+          yield* Effect.promise(() => detachStarted.promise);
+          expect(connection.closed).toBe(false);
+          connection.disconnect();
+          yield* Fiber.join(closing);
+          expect(detachCompleted).toBe(false);
+          expect(lostSession.detach).toHaveBeenCalledOnce();
+          expect(connection.context.page.close).not.toHaveBeenCalled();
+        } finally {
+          detachReleased.resolve();
+          yield* Fiber.join(closing);
+        }
+        return opened.tabId;
+      }).pipe(Effect.provide(layer)),
+    ).pipe(
+      Effect.tap((tabId) =>
+        Effect.sync(() => {
+          expect(releasedDesktopTabs).toEqual([tabId, tabId]);
+          expect(desktopConnections.map((connection) => connection.closed)).toEqual([true, true]);
+        }),
+      ),
     ),
-  ),
 );
 
 it.live.each(["none", "key", "mouse"] as const)(

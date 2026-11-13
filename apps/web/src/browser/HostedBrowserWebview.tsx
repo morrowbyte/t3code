@@ -206,6 +206,11 @@ export function HostedBrowserWebview(props: {
     };
   }, [runtimeTabId]);
 
+  const restorationDefaults = useEffectEvent(() => ({
+    ...(profileId === undefined ? {} : { profileId }),
+    viewport,
+  }));
+
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- leases the desktop preview tab and releases it on cleanup
   useEffect(() => {
     if (!clientSettingsHydrated) return;
@@ -216,6 +221,7 @@ export function HostedBrowserWebview(props: {
         ? {
             threadId: threadRef.threadId,
             tabId,
+            ...restorationDefaults(),
             ...(primaryHost ? {} : { environmentId: threadRef.environmentId }),
           }
         : undefined,

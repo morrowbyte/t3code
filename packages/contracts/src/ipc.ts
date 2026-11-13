@@ -987,6 +987,8 @@ export const DesktopPreviewCreateTabInputSchema = Schema.Struct({
       environmentId: Schema.optional(TrimmedNonEmptyString),
       threadId: TrimmedNonEmptyString,
       tabId: TrimmedNonEmptyString,
+      profileId: Schema.optional(BrowserProfileId),
+      viewport: Schema.optional(PreviewViewportSetting),
     }),
   ),
 });
@@ -1000,6 +1002,8 @@ export interface DesktopPreviewTabDefaults {
         readonly environmentId?: string | undefined;
         readonly threadId: string;
         readonly tabId: string;
+        readonly profileId?: BrowserProfileId | undefined;
+        readonly viewport?: PreviewViewportSetting | undefined;
       }
     | undefined;
 }

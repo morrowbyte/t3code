@@ -58,7 +58,14 @@ function hostedBrowserSessions(
           .map((snapshot) => ({
             threadRef,
             snapshot,
-            runtimeTabId: previewRuntimeTabId(threadRef, previewState.serverEpoch, snapshot.tabId),
+            runtimeTabId: previewRuntimeTabId(
+              threadRef,
+              previewState.serverEpoch,
+              snapshot.tabId,
+              !snapshot.headless && snapshot.threadId === threadRef.threadId
+                ? snapshot.desktopHostId
+                : undefined,
+            ),
             pictureInPicture:
               previewState.desktopByTabId[snapshot.tabId]?.pictureInPicture ?? false,
             zoomFactor: previewState.desktopByTabId[snapshot.tabId]?.zoomFactor ?? 1,

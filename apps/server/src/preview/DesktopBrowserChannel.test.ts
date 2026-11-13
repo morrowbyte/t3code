@@ -198,6 +198,11 @@ effectIt.live(
         if ((yield* HostProcess.Platform) !== "win32") {
           expect((yield* fs.stat(descriptorPath)).mode & 0o777).toBe(0o600);
         }
+        const attached = yield* channel.attached.pipe(Stream.rechunk(1), Stream.toPull);
+        const restoration = {
+          desktopHostId: "native-host", url: "https://example.com/current", title: "Current",
+          canGoBack: true, canGoForward: false, profileId: "default",
+        };
         const first = yield* makeLocalPeer(descriptor);
         // Registration and the first event may share a single OS read.
         yield* first.writer.writeAll([
@@ -205,6 +210,7 @@ effectIt.live(
           `${JSON.stringify(registration(descriptor)).slice(17)}\n${JSON.stringify({
             type: "attached",
             ...privateTarget,
+            restoration,
             privateEntry: {
               channelEpoch: privateTarget.channelEpoch,
               attachmentId: privateTarget.attachmentId,
@@ -218,6 +224,9 @@ effectIt.live(
         });
         expect(yield* channel.awaitAttached(privateTarget, "5 seconds")).toBe(true);
         expect(channel.available).toBe(true);
+        expect(yield* attached).toEqual([{
+          threadId: privateTarget.threadId, tabId: privateTarget.tabId, restoration,
+        }]);
         yield* channel.turn(privateTarget.threadId, true);
         expect(yield* first.next).toEqual({
           type: "turn",
@@ -229,6 +238,15 @@ effectIt.live(
         yield* channel.registerPrivateEntryHandler({
           request: (request) => Queue.offer(requested, request.requestId).pipe(Effect.asVoid),
           invalidate: (target) => Queue.offer(invalidated, target.attachmentId).pipe(Effect.asVoid),
+        });
+        yield* first.send({
+          type: "attached",
+          ...privateTarget,
+          privateEntry: {
+            channelEpoch: privateTarget.channelEpoch,
+            attachmentId: privateTarget.attachmentId,
+          },
+          restoration: { ...restoration, title: "Ignored duplicate metadata" },
         });
         yield* first.send({ ...privateTarget, type: "private-entry-acquire", requestId: "take" });
         expect(yield* Queue.take(requested)).toBe("take");
@@ -254,7 +272,7 @@ effectIt.live(
         yield* second.send(registration(descriptor));
         yield* second.next;
         const other = { threadId: "other-thread", tabId: "other-tab" };
-        yield* second.send({ type: "attached", ...privateTarget });
+        yield* second.send({ type: "attached", ...privateTarget, restoration: { ...restoration, desktopHostId: "foreign-host" } });
         yield* second.send({ type: "detached", ...privateTarget });
         yield* second.send({
           ...privateTarget,
@@ -273,6 +291,7 @@ effectIt.live(
         // This later event on the same stream confirms the collision was consumed before EOF.
         yield* second.send({ type: "attached", ...other });
         expect(yield* channel.awaitAttached(other, "5 seconds")).toBe(true);
+        expect(yield* attached).toEqual([other]);
         yield* channel.turn(other.threadId, true);
         expect(yield* second.next).toEqual({
           type: "turn",
@@ -327,12 +346,17 @@ effectIt.live(
         yield* second.send({
           type: "attached",
           ...replacement,
+          restoration: { ...restoration, title: "Fresh replacement" },
           privateEntry: {
             channelEpoch: replacement.channelEpoch,
             attachmentId: replacement.attachmentId,
           },
         });
         expect(yield* channel.awaitAttached(replacement, "5 seconds")).toBe(true);
+        expect(yield* attached).toEqual([{
+          threadId: privateTarget.threadId, tabId: privateTarget.tabId,
+          restoration: { ...restoration, title: "Fresh replacement" },
+        }]);
         expect(yield* second.next).toEqual({
           type: "turn",
           threadId: replacement.threadId,

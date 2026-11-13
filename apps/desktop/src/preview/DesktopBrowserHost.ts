@@ -5,6 +5,7 @@ import {
   DesktopBrowserEvent,
   DesktopBrowserPrivateEntryResponse,
   PreviewViewportSetting,
+  type DesktopBrowserTabRestoration,
   type DesktopBrowserPrivateEntryAttachment,
   type DesktopBrowserPrivateEntryRequest,
   type DesktopBrowserEvent as DesktopBrowserEventType,
@@ -66,6 +67,7 @@ export interface DesktopBrowserTabKey {
 export interface DesktopBrowserTabDebugger {
   readonly webContents: Electron.WebContents;
   readonly debugger: Electron.Debugger;
+  readonly getRestoration?: () => DesktopBrowserTabRestoration | undefined;
   readonly setViewport?: (setting: PreviewViewportSetting) => Promise<void>;
   readonly captureRevision?: () => number;
   readonly acquireCaptureHold?: () => () => void;
@@ -905,6 +907,14 @@ export const make = Effect.gen(function* () {
     );
   };
 
+  const restorationFor = (tab: AttachedTab) => {
+    if (tab.debuggee.webContents.isDestroyed() || privateContents.has(tab.debuggee.webContents)) {
+      return {};
+    }
+    const restoration = tab.debuggee.getRestoration?.();
+    return restoration === undefined ? {} : { restoration };
+  };
+
   const attach = (key: DesktopBrowserTabKey, debuggee: DesktopBrowserTabDebugger) => {
     const id = keyOf(key);
     if (tabs.get(id)?.debuggee.webContents === debuggee.webContents) return;
@@ -956,6 +966,7 @@ export const make = Effect.gen(function* () {
       {
         type: "attached",
         ...wireKey(key),
+        ...restorationFor(tab),
         ...(tab.attachment ? { privateEntry: tab.attachment } : {}),
       },
       key.environmentId,
@@ -1058,7 +1069,12 @@ export const make = Effect.gen(function* () {
     tab.cancelled.clear();
     yield* PubSub.publish(outbox, {
       connection: connection.token,
-      event: { type: "attached", ...wireKey(tab.key), privateEntry: tab.attachment },
+      event: {
+        type: "attached",
+        ...wireKey(tab.key),
+        ...restorationFor(tab),
+        privateEntry: tab.attachment,
+      },
     });
   });
   const announceAll = (connection: TargetConnection) =>

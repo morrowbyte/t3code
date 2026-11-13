@@ -3236,9 +3236,22 @@ const make = Effect.gen(function* () {
   yield* desktopChannel.attached.pipe(
     Stream.runForEach((key) =>
       Effect.gen(function* () {
+        if (!(yield* desktopChannel.isAttached(key))) return;
+        const threadId = ThreadId.make(key.threadId);
+        const { sessions } = yield* manager.list({ threadId });
+        if (!(yield* desktopChannel.isAttached(key))) return;
+        let snapshot = sessions.find((session) => session.tabId === key.tabId);
+        if (key.restoration) {
+          snapshot = snapshot
+            ? yield* manager.bindDesktopTab({
+                threadId,
+                tabId: key.tabId,
+                desktopHostId: key.restoration.desktopHostId,
+              })
+            : yield* manager.restoreDesktopTab({ threadId, tabId: key.tabId, ...key.restoration });
+        }
+        if (!(yield* desktopChannel.isAttached(key))) return;
         if (tabs.has(tabKey(key.threadId, key.tabId))) return;
-        const { sessions } = yield* manager.list({ threadId: ThreadId.make(key.threadId) });
-        const snapshot = sessions.find((session) => session.tabId === key.tabId);
         if (snapshot) yield* Effect.promise(() => ensureTab(snapshot).catch(constVoid));
       }).pipe(Effect.ignore),
     ),

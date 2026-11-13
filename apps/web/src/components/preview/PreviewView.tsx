@@ -193,8 +193,16 @@ export function PreviewView({
   usePreviewSession(threadRef);
 
   const tabId = requestedTabId ?? previewState.activeTabId;
+  const snapshot = tabId ? (previewState.sessions[tabId] ?? null) : null;
   const runtimeTabId = tabId
-    ? previewRuntimeTabId(threadRef, previewState.serverEpoch, tabId)
+    ? previewRuntimeTabId(
+        threadRef,
+        previewState.serverEpoch,
+        tabId,
+        !snapshot?.headless && snapshot?.threadId === threadRef.threadId
+          ? snapshot.desktopHostId
+          : undefined,
+      )
     : null;
   const recordingRuntimeTabId =
     tabId && runtimeTabId
@@ -202,7 +210,6 @@ export function PreviewView({
         ? runtimeTabId
         : findActiveBrowserRecordingRuntimeTabId(threadRef, tabId)
       : null;
-  const snapshot = tabId ? (previewState.sessions[tabId] ?? null) : null;
   const localHost = useDesktopBrowserHostState(runtimeTabId);
   const localOffscreenTab = localHost?.kind === "offscreen";
   const nativeServerTab =
@@ -254,7 +261,7 @@ export function PreviewView({
 
   const { environmentId: threadEnvironmentId, threadId } = threadRef;
   const documentRevision = tabId ? (previewState.documentRevisionByTabId?.[tabId] ?? 0) : 0;
-  const selectionScope = `${runtimeTabId ?? ""}\n${url}\n${documentRevision}`;
+  const selectionScope = `${runtimeTabId ?? ""}\n${previewState.serverEpoch ?? ""}\n${url}\n${documentRevision}`;
   const selectionScopeRef = useRef(selectionScope);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fences browser pick callbacks and clears the external selection store when its scope ends
   useLayoutEffect(() => {

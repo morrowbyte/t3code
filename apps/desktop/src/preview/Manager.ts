@@ -119,11 +119,7 @@ export interface PreviewTabState {
   controller: "human" | "agent" | "none";
   capturing: boolean;
   favicon?: DesktopPreviewFavicon;
-  serverTab?: {
-    readonly environmentId?: string | undefined;
-    readonly threadId: string;
-    readonly tabId: string;
-  };
+  serverTab?: DesktopPreviewTabDefaults["serverTab"];
   updatedAt: string;
 }
 
@@ -2932,6 +2928,30 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         browserHost.attach(afterAttach.serverTab, {
           webContents: wc,
           debugger: control.debugger,
+          getRestoration: () => {
+            const current = Effect.runSync(SynchronizedRef.get(tabsRef)).get(tabId);
+            if (
+              wc.isDestroyed() ||
+              current?.webContentsId !== wc.id ||
+              (host !== undefined && hostedContents.get(tabId) !== host)
+            ) {
+              return undefined;
+            }
+            const viewport =
+              host?.webContents === wc ? host.getViewport() : current.serverTab?.viewport;
+            const url = wc.getURL();
+            return {
+              desktopHostId: tabId,
+              ...(url === "" ? {} : { url }),
+              title: wc.getTitle().slice(0, 512),
+              canGoBack: wc.navigationHistory.canGoBack(),
+              canGoForward: wc.navigationHistory.canGoForward(),
+              ...(viewport === undefined ? {} : { viewport }),
+              ...(current.serverTab?.profileId === undefined
+                ? {}
+                : { profileId: current.serverTab.profileId }),
+            };
+          },
           ...(host?.webContents === wc
             ? {
                 setViewport: async (setting: PreviewViewportSetting) => {

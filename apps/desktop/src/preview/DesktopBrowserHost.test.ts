@@ -203,8 +203,14 @@ describe("DesktopBrowserHost", () => {
         const host = yield* DesktopBrowserHost.make;
         const backend = yield* connect(host);
         const debuggee = makeDebuggee();
-        host.attach(key, debuggee.tab);
-        yield* Queue.take(backend.messages);
+        const restoration = {
+          desktopHostId: "native-host", url: "https://example.com/current", title: "Current page",
+          canGoBack: true, canGoForward: false,
+          viewport: { _tag: "freeform" as const, width: 900, height: 700 }, profileId: "default",
+        };
+        const getRestoration = vi.fn(() => restoration);
+        host.attach(key, { ...debuggee.tab, getRestoration });
+        expect(yield* Queue.take(backend.messages)).toMatchObject({ type: "attached", restoration });
         const { lease } = yield* grant(host, backend, debuggee.tab.webContents);
         host.setPrivateEntry(debuggee.tab.webContents, true);
         const releasing = yield* Effect.tryPromise(() => lease.release()).pipe(Effect.forkScoped);
@@ -244,8 +250,11 @@ describe("DesktopBrowserHost", () => {
         const changes = yield* Stream.toQueue(host.privateEntryChanges, { capacity: "unbounded" });
         const old = yield* connect(host);
         const debuggee = makeDebuggee();
-        host.attach(key, debuggee.tab);
-        yield* Queue.take(old.messages);
+        const getRestoration = vi.fn(() => ({
+          desktopHostId: "native-host", title: "Public", canGoBack: false, canGoForward: false,
+        }));
+        host.attach(key, { ...debuggee.tab, getRestoration });
+        expect(yield* Queue.take(old.messages)).toHaveProperty("restoration");
         const first = yield* grant(host, old, debuggee.tab.webContents);
         host.setPrivateEntry(debuggee.tab.webContents, true);
         expect(yield* Queue.take(changes)).toEqual({
@@ -272,6 +281,8 @@ describe("DesktopBrowserHost", () => {
         const current = yield* connect(host);
         const attached = yield* Queue.take(current.messages);
         expect(attached.type).toBe("attached");
+        expect(attached).not.toHaveProperty("restoration");
+        expect(getRestoration).toHaveBeenCalledTimes(1);
         expect(host.canRequestPrivateEntry(debuggee.tab.webContents)).toBe(true);
         yield* old.connection.closed;
         yield* old.connection.handleCommandLine(encodeJson(first.response));
@@ -679,10 +690,27 @@ describe("DesktopBrowserHost", () => {
   it.effect("announces tabs already attached to a backend that starts later", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;
-      host.attach(key, makeDebuggee().tab);
+      const debuggee = makeDebuggee();
+      let title = "Original document";
+      let destroyed = false;
+      debuggee.tab.webContents.isDestroyed = () => destroyed;
+      const getRestoration = vi.fn(() => ({
+        desktopHostId: "native-host", title, canGoBack: false, canGoForward: false,
+      }));
+      host.attach(key, { ...debuggee.tab, getRestoration });
       // A restarted backend subscribes after the attach and still hears it.
-      expect(yield* takeEvents(host, 1)).toMatchObject([{ type: "attached", ...key }]);
-      expect(yield* takeEvents(host, 1)).toMatchObject([{ type: "attached", ...key }]);
+      expect(yield* takeEvents(host, 1)).toMatchObject([
+        { type: "attached", ...key, restoration: { title: "Original document" } },
+      ]);
+      title = "Current document";
+      expect(yield* takeEvents(host, 1)).toMatchObject([
+        { type: "attached", ...key, restoration: { title: "Current document" } },
+      ]);
+      const reads = getRestoration.mock.calls.length;
+      destroyed = true;
+      const [attached] = yield* takeEvents(host, 1);
+      expect(attached).not.toHaveProperty("restoration");
+      expect(getRestoration).toHaveBeenCalledTimes(reads);
     }),
   );
 

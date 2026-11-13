@@ -1,4 +1,6 @@
 import {
+  type DesktopBrowserTabRestoration,
+  type ThreadId,
   type PreviewCloseInput,
   type PreviewEvent,
   type PreviewError,
@@ -38,6 +40,12 @@ export class PreviewManager extends Context.Service<
         /** Runs before the `opened` event publishes, so subscribers find state keyed by the tab. */
         readonly beforePublish?: (snapshot: PreviewSessionSnapshot) => void;
       },
+    ) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
+    readonly restoreDesktopTab: (
+      input: DesktopBrowserTabRestoration & { readonly threadId: ThreadId; readonly tabId: string },
+    ) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
+    readonly bindDesktopTab: (
+      input: { readonly threadId: ThreadId; readonly tabId: string; readonly desktopHostId: string },
     ) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
     readonly reportStatus: (
       input: PreviewReportStatusInput & { readonly serverControlled?: boolean },
@@ -176,7 +184,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     function* (input) {
       const runtime = input.runtime;
       // Persisted client surfaces must not bind to a different tab after a server restart.
-      const tabId = `${newPreviewTabId()}${runtime === "server" ? `_${serverEpoch}` : ""}`;
+      const tabId = `${newPreviewTabId()}_${serverEpoch}`;
       const updatedAt = yield* currentIsoTimestamp;
       const snapshot: PreviewSessionSnapshot = {
         threadId: input.threadId,
@@ -220,6 +228,72 @@ export const make = Effect.gen(function* PreviewManagerMake() {
       return snapshot;
     },
   );
+
+  const bindDesktopTab: PreviewManager["Service"]["bindDesktopTab"] = Effect.fn(
+    "PreviewManager.bindDesktopTab",
+  )(function* (input) {
+    return yield* mutateExistingSession(input.threadId, input.tabId, Effect.fn("PreviewManager.bindDesktopHost")(function* (session) {
+      if (session.snapshot.headless || (session.snapshot.desktopHostId !== undefined && session.snapshot.desktopHostId !== input.desktopHostId)) {
+        return yield* new PreviewControlRequiredError({ tabId: input.tabId });
+      }
+      if (session.snapshot.desktopHostId === input.desktopHostId) {
+        return { next: session, emit: null, result: session.snapshot };
+      }
+      const snapshot = { ...session.snapshot, desktopHostId: input.desktopHostId, updatedAt: yield* currentIsoTimestamp };
+      return { next: { ...session, snapshot }, emit: { type: "navigated" as const, threadId: input.threadId, tabId: input.tabId, createdAt: snapshot.updatedAt, snapshot }, result: snapshot };
+    }));
+  });
+
+  const restoreDesktopTab: PreviewManager["Service"]["restoreDesktopTab"] = Effect.fn(
+    "PreviewManager.restoreDesktopTab",
+  )(function* (input) {
+    return yield* SynchronizedRef.modifyEffect(stateRef, (state) =>
+      Effect.gen(function* () {
+        for (const session of state.sessions.values()) {
+          if (session.tabId !== input.tabId) continue;
+          if (
+            session.threadId === input.threadId &&
+            session.snapshot.desktopHostId === input.desktopHostId
+          ) {
+            return [session.snapshot, state] as const;
+          }
+          return yield* new PreviewControlRequiredError({ tabId: input.tabId });
+        }
+        const snapshot: PreviewSessionSnapshot = {
+          threadId: input.threadId,
+          tabId: input.tabId,
+          desktopHostId: input.desktopHostId,
+          runtime: "desktop",
+          navStatus:
+            input.url === undefined
+              ? { _tag: "Idle" }
+              : { _tag: "Success", url: yield* normalizeUrl(input.url), title: input.title },
+          canGoBack: input.canGoBack,
+          canGoForward: input.canGoForward,
+          viewport: input.viewport ?? FILL_PREVIEW_VIEWPORT,
+          ...(input.profileId === undefined ? {} : { profileId: input.profileId }),
+          updatedAt: yield* currentIsoTimestamp,
+        };
+        const revision = state.revision + 1;
+        const sessions = new Map(state.sessions);
+        sessions.set(compositeKey(input.threadId, input.tabId), {
+          threadId: input.threadId,
+          tabId: input.tabId,
+          snapshot,
+        });
+        yield* PubSub.publish(eventsPubSub, {
+          type: "opened",
+          threadId: input.threadId,
+          tabId: input.tabId,
+          createdAt: snapshot.updatedAt,
+          serverEpoch,
+          revision,
+          snapshot,
+        });
+        return [snapshot, { sessions, revision }] as const;
+      }),
+    );
+  });
 
   const reportStatus: PreviewManager["Service"]["reportStatus"] = Effect.fn(
     "PreviewManager.reportStatus",
@@ -449,6 +523,8 @@ export const make = Effect.gen(function* PreviewManagerMake() {
 
   return PreviewManager.of({
     open,
+    bindDesktopTab,
+    restoreDesktopTab,
     requestReveal,
     reportStatus,
     markHeadless,

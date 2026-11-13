@@ -419,6 +419,7 @@ export const createOffscreenHost = (options: OffscreenHostOptions) => {
     },
     acquireCaptureHold,
     resize,
+    getViewport: () => viewport,
     setViewport: (setting: PreviewViewportSetting) => {
       viewport = setting;
       resize();

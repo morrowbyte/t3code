@@ -130,7 +130,14 @@ function useBrowserMiniPlayerSource(threadRef: ScopedThreadRef | null, tabId: st
   const snapshot = tabId === null ? null : (previewState.sessions[tabId] ?? null);
   const runtimeTabId =
     threadRef && tabId !== null
-      ? previewRuntimeTabId(threadRef, previewState.serverEpoch, tabId)
+      ? previewRuntimeTabId(
+          threadRef,
+          previewState.serverEpoch,
+          tabId,
+          !snapshot?.headless && snapshot?.threadId === threadRef.threadId
+            ? snapshot.desktopHostId
+            : undefined,
+        )
       : null;
   const desktopOverlay = tabId === null ? null : (previewState.desktopByTabId[tabId] ?? null);
   const layoutZoomFactor = useBrowserLayoutZoomFactor(desktopOverlay?.zoomFactor ?? 1);
@@ -218,7 +225,14 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
   const httpBaseUrl = useEnvironmentHttpBaseUrl(threadRef.environmentId);
   const { serverEpoch, snapshot, desktopOverlay, serverTab, nativeControlsTab, sourceSize } =
     useBrowserMiniPlayerSource(threadRef, tabId);
-  const runtimeTabId = previewRuntimeTabId(threadRef, serverEpoch, tabId);
+  const runtimeTabId = previewRuntimeTabId(
+    threadRef,
+    serverEpoch,
+    tabId,
+    !snapshot?.headless && snapshot?.threadId === threadRef.threadId
+      ? snapshot.desktopHostId
+      : undefined,
+  );
   const localHost = useDesktopBrowserHostState(runtimeTabId);
   const recordingTabIds = useActiveBrowserRecordingTabIds();
   const recording =

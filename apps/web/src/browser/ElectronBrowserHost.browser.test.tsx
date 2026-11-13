@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   ensureOffscreenHost: vi.fn<DesktopPreviewBridge["ensureOffscreenHost"]>(),
   getHostedEnvironmentIds: vi.fn<DesktopPreviewBridge["getHostedEnvironmentIds"]>(),
   onHostedEnvironmentsChange: vi.fn<DesktopPreviewBridge["onHostedEnvironmentsChange"]>(),
+  onStateChange: vi.fn<DesktopPreviewBridge["onStateChange"]>(),
   primaryEnvironmentId: null as EnvironmentId | null,
   discoveryBindings: new Map<symbol, EnvironmentId>(),
 }));
@@ -56,6 +57,7 @@ vi.mock(import("~/components/preview/previewBridge"), async (original) => ({
     ensureOffscreenHost: mocks.ensureOffscreenHost,
     getHostedEnvironmentIds: mocks.getHostedEnvironmentIds,
     onHostedEnvironmentsChange: mocks.onHostedEnvironmentsChange,
+    onStateChange: mocks.onStateChange,
   } as never,
 }));
 
@@ -90,7 +92,11 @@ import {
   __resetClientSettingsPersistenceForTests,
   ensureClientSettingsHydrated,
 } from "~/hooks/useSettings";
-import { reconcilePreviewServerSessions, resetPreviewStateForTests } from "~/previewStateStore";
+import {
+  readThreadPreviewState,
+  reconcilePreviewServerSessions,
+  resetPreviewStateForTests,
+} from "~/previewStateStore";
 import { AppAtomRegistryProvider, appAtomRegistry } from "~/rpc/atomRegistry";
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 import { ElectronBrowserHost } from "./ElectronBrowserHost";
@@ -125,6 +131,7 @@ function setup(): Disposable {
   mocks.registerWebview.mockReset().mockResolvedValue(undefined);
   mocks.getHostedEnvironmentIds.mockReset().mockResolvedValue([]);
   mocks.onHostedEnvironmentsChange.mockReset().mockReturnValue(() => {});
+  mocks.onStateChange.mockReset().mockReturnValue(() => {});
   mocks.ensureOffscreenHost.mockReset().mockResolvedValue({
     kind: "webview",
     webContentsId: 7,
@@ -320,6 +327,57 @@ describe("ElectronBrowserHost", () => {
     });
     await act(() => vi.advanceTimersByTimeAsync(500));
     expect(mocks.registerWebview).toHaveBeenCalledTimes(registrations);
+    expect(screen.container.querySelector("webview")).toBe(replacement);
+    expect(mocks.createTab).toHaveBeenCalledTimes(3);
+    expect(mocks.closeTab).toHaveBeenCalledExactlyOnceWith(nativeRuntimeTabId);
+
+    await act(() => {
+      for (const [changed] of mocks.onStateChange.mock.calls) {
+        changed(legacyRuntimeTabId, {
+          tabId: legacyRuntimeTabId,
+          webContentsId: 9,
+          hostKind: "webview",
+          navStatus: { kind: "Success", url: "https://example.com/legacy", title: "legacy" },
+          canGoBack: false,
+          canGoForward: false,
+          zoomFactor: 1,
+          pictureInPicture: false,
+          colorScheme: "system",
+          audioMuted: false,
+          audible: false,
+          controller: "none",
+          capturing: false,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        });
+      }
+    });
+    const admitted = {
+      ...snapshot("legacy", "2026-01-01T00:00:01.000Z"),
+      desktopHostId: legacyRuntimeTabId,
+    };
+    await act(() => {
+      reconcilePreviewServerSessions(threadRef, {
+        sessions: [admitted],
+        serverEpoch: "remote-epoch",
+        revision: 3,
+      });
+      reconcilePreviewServerSessions(threadRef, {
+        sessions: [],
+        serverEpoch: "restarted-epoch",
+        revision: 0,
+      });
+    });
+    expect(screen.container.querySelector("webview")).toBe(replacement);
+    expect(readThreadPreviewState(threadRef).serverEpoch).toBe("restarted-epoch");
+    expect(readThreadPreviewState(threadRef).snapshot?.desktopHostId).toBe(legacyRuntimeTabId);
+    await act(() => {
+      reconcilePreviewServerSessions(threadRef, {
+        sessions: [{ ...admitted, runtime: "desktop" }],
+        serverEpoch: "restarted-epoch",
+        revision: 1,
+      });
+    });
+    await act(() => vi.advanceTimersByTimeAsync(0));
     expect(screen.container.querySelector("webview")).toBe(replacement);
     expect(mocks.createTab).toHaveBeenCalledTimes(3);
     expect(mocks.closeTab).toHaveBeenCalledExactlyOnceWith(nativeRuntimeTabId);

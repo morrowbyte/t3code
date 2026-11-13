@@ -1,6 +1,8 @@
 import * as Schema from "effect/Schema";
 
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { BrowserProfileId } from "./browserProfile.ts";
+import { PreviewViewportSetting } from "./preview.ts";
 
 const TabKey = {
   threadId: TrimmedNonEmptyString,
@@ -68,6 +70,17 @@ export const DesktopBrowserPrivateEntryResponse = Schema.Union([
 ]);
 export type DesktopBrowserPrivateEntryResponse = typeof DesktopBrowserPrivateEntryResponse.Type;
 
+export const DesktopBrowserTabRestoration = Schema.Struct({
+  desktopHostId: TrimmedNonEmptyString,
+  profileId: Schema.optional(BrowserProfileId),
+  viewport: Schema.optional(PreviewViewportSetting),
+  url: Schema.optional(Schema.String),
+  title: Schema.String.check(Schema.isMaxLength(512)),
+  canGoBack: Schema.Boolean,
+  canGoForward: Schema.Boolean,
+});
+export type DesktopBrowserTabRestoration = typeof DesktopBrowserTabRestoration.Type;
+
 /** Desktop -> server. */
 export const DesktopBrowserEvent = Schema.Union([
   DesktopBrowserPrivateEntryRequest,
@@ -75,6 +88,7 @@ export const DesktopBrowserEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("attached"),
     ...TabKey,
+    restoration: Schema.optional(DesktopBrowserTabRestoration),
     privateEntry: Schema.optionalKey(DesktopBrowserPrivateEntryAttachment),
   }),
   /** Its `<webview>` went away: closed, crashed, swapped, or devtools took the debugger. */
