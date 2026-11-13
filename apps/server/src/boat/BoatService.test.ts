@@ -2658,7 +2658,7 @@ it.effect("keeps newer process and period usage when older reads finish", () =>
         : Effect.void,
     );
     yield* Effect.gen(function* () {
-      yield* TestClock.setTime(Date.parse("2026-11-01T00:00:00Z"));
+      yield* TestClock.setTime(Date.parse("2026-11-30T23:59:59Z"));
       const boat = yield* make;
       yield* boat.connect(Redacted.make("boat_fixture_private"));
       yield* boat.configure(projectId, {
