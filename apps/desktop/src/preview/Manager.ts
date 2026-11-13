@@ -1175,6 +1175,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       current();
       const releaseFrame = host!.holdInputFrame();
       try {
+        if (input.input.type === "text" || (input.input.type === "key" && input.input.action === "down")) {
+          const ready: unknown = await wc!.executeJavaScriptInIsolatedWorld(
+            PROTON_PASS_AUTOFILL_WORLD_ID,
+            [{ code: protonPassAutofillScripts.ready }],
+          );
+          current();
+          if (ready !== true) throw new Error("The private login fields are not ready for input.");
+        }
         const result = await sendNativeSurfaceInput(wc!, input.input, current);
         current();
         return result;

@@ -1079,6 +1079,20 @@ describe("PreviewManager", () => {
           expect(target?.current()).toBe(false);
           yield* manager.focusSurface({ ...privateFrame, focused: true }, 7);
           expect(target?.current()).toBe(true);
+          fixture.wc.executeJavaScript.mockResolvedValue(true);
+          fixture.wc.executeJavaScriptInIsolatedWorld.mockResolvedValueOnce(false);
+          expect(
+            Exit.isFailure(
+              yield* Effect.exit(
+                manager.sendSurfaceInput(
+                  { ...privateFrame, input: { type: "text", text: "unprepared-private-input" } },
+                  7,
+                ),
+              ),
+            ),
+          ).toBe(true);
+          expect(fixture.wc.insertText).not.toHaveBeenCalled();
+          expect(peer.host.isPrivateEntry(fixture.wc)).toBe(true);
           const inputProbeStarted = Promise.withResolvers<void>();
           const inputProbe = Promise.withResolvers<boolean>();
           fixture.wc.executeJavaScript.mockImplementationOnce(() => {
