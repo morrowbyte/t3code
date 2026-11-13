@@ -284,13 +284,13 @@ it.effect.each(["safe", "before-tool", "before-final"] as const)(
             assert.include(request.instructions, "Current source instructions");
             assert.deepEqual(
               request.tools.map((tool) => tool.name),
-              ["exec"],
+              ["crew_fixture_exec"],
             );
             return {
               type: "tool_call",
               evaluationId: "crew-eval",
               callId: "fixture-call",
-              name: "exec",
+              name: "crew_fixture_exec",
               visibleText: stage === "before-tool" ? commentary : "Reading the fixture.",
               arguments: { code: "text(await tools.exec_command({cmd: 'printf fixture'}));" },
             };
@@ -348,7 +348,7 @@ it.effect("reports an unmapped Crew shell as a fixture error and cancels its eva
               type: "tool_call",
               evaluationId: "crew-eval",
               callId: "unmapped",
-              name: "exec",
+              name: "crew_fixture_exec",
               arguments: { code: "text(await tools.exec_command({cmd: 'whoami'}));" },
             }
           : { type: "cancelled", evaluationId: request.evaluationId };

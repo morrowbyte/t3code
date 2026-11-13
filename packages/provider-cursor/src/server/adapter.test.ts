@@ -13,7 +13,9 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -65,6 +67,9 @@ describe("CursorAdapterV2", () => {
           browserToolsAvailable: true,
         });
         let sentWithMcpOverride = true;
+        let sdkCloses = 0;
+        const openedOwners: ThreadId[] = [];
+        const finish = yield* Deferred.make<void>();
         const modelSelection = { instanceId, model: "composer-2.5" };
         const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: "full-access",
@@ -77,11 +82,13 @@ describe("CursorAdapterV2", () => {
         }).pipe(
           Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
             assertComplete: Effect.void,
-            open: () =>
-              Effect.succeed({
+            open: (openInput) =>
+              Effect.succeed<CursorAgentSdk.CursorAgentSdkSession>({
                 agentId: "native-cursor-lifecycle",
                 listMessages: Effect.succeed([]),
-                close: Effect.void,
+                close: Effect.sync(() => {
+                  sdkCloses += 1;
+                }),
                 send: (input) =>
                   Effect.gen(function* () {
                     sentWithMcpOverride = Object.hasOwn(input.options ?? {}, "mcpServers");
@@ -115,7 +122,7 @@ describe("CursorAdapterV2", () => {
                               : {}),
                           },
                         },
-                      }).pipe(Effect.orDie);
+                      });
                     }
                     const readUpdates: ReadonlyArray<InteractionUpdate> = [
                       {
@@ -143,22 +150,31 @@ describe("CursorAdapterV2", () => {
                       })),
                     ];
                     for (const update of readUpdates) {
-                      yield* input.onDelta!(update).pipe(Effect.orDie);
+                      yield* input.onDelta!(update);
                     }
                     return {
                       agentId: "native-cursor-lifecycle",
                       runId: "native-cursor-run",
-                      wait: Effect.succeed({
-                        id: "native-cursor-run",
-                        requestId: "native-request",
-                        status,
-                        model: { id: "composer-2.5" },
-                        durationMs: 1,
-                      }),
+                      wait: Deferred.await(finish).pipe(
+                        Effect.as({
+                          id: "native-cursor-run",
+                          requestId: "native-request",
+                          status,
+                          model: { id: "composer-2.5" },
+                          durationMs: 1,
+                        }),
+                      ),
                       cancel: Effect.void,
                     };
+                  }).pipe(Effect.orDie),
+              }).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    assert.deepEqual(openInput.environment, { HOME: workspace });
+                    openedOwners.push(openInput.threadId);
                   }),
-              }),
+                ),
+              ),
           }),
           Effect.provide(TestProviderHost.layer({ cwd: workspace })),
         );
@@ -215,11 +231,29 @@ describe("CursorAdapterV2", () => {
             attachments: [],
           },
         });
+        const foreignThreadId = ThreadId.make("cursor-foreign-owner");
+        const foreignResume = yield* runtime
+          .resumeThread({ providerThread, threadId: foreignThreadId })
+          .pipe(Effect.exit);
+        assert(Exit.isFailure(foreignResume));
+        assert.equal(sdkCloses, 0);
+        assert.deepEqual(openedOwners, [threadId]);
+        yield* Deferred.succeed(finish, undefined);
         const events = yield* runtime.events.pipe(
           Stream.takeUntil((event) => event.type === "turn.terminal"),
           Stream.runCollect,
         );
         assert.isFalse(sentWithMcpOverride);
+        yield* runtime.resumeThread({ providerThread });
+        assert.equal(sdkCloses, 0);
+        const resumedThread = yield* runtime.resumeThread({
+          providerThread,
+          threadId: foreignThreadId,
+        });
+        assert.equal(sdkCloses, 1);
+        assert.deepEqual(openedOwners, [threadId, foreignThreadId]);
+        assert.equal(resumedThread.appThreadId, foreignThreadId);
+        assert.equal(providerThread.appThreadId, threadId);
         const rows = events.filter((event) => event.type === "subagent.updated");
         assert.equal(rows[0]?.subagent.status, "running");
         assert.equal(rows[0]?.subagent.model, model ?? null);

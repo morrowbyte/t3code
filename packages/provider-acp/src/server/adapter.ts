@@ -662,12 +662,14 @@ interface AcpMcpContext {
 }
 
 function acpMcpContext(
+  threadId: ThreadId | null,
   session: McpProviderSession.McpProviderSessionConfig | undefined,
   self: SelfInvocation,
   mcpOverHttp: boolean | undefined,
 ): AcpMcpContext {
+  const processEnvironment = { T3CODE_THREAD_ID: threadId ?? undefined };
   if (session === undefined) {
-    return { servers: [], acpServers: [], httpServers: [] };
+    return { servers: [], acpServers: [], httpServers: [], processEnvironment };
   }
   // codex-acp 1.2.0 and pi-acp drop injected HTTP servers, so HTTP is opt-in per flavor.
   return {
@@ -698,6 +700,7 @@ function acpMcpContext(
     endpoint: session.endpoint,
     authorization: session.authorizationHeader,
     processEnvironment: {
+      ...processEnvironment,
       T3_ACP_MCP_ENDPOINT: session.endpoint,
       T3_ACP_MCP_AUTHORIZATION: session.authorizationHeader,
       T3_ACP_MCP_NODE: self.command,
@@ -1454,10 +1457,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
   const { flavor, selfInvocation: self } = options;
   const readMcpContext = (threadId: ThreadId | null) =>
     threadId === null
-      ? Effect.succeed(acpMcpContext(undefined, self, flavor.mcpOverHttp))
+      ? Effect.succeed(acpMcpContext(threadId, undefined, self, flavor.mcpOverHttp))
       : mcpSessions
           .read(threadId)
-          .pipe(Effect.map((session) => acpMcpContext(session, self, flavor.mcpOverHttp)));
+          .pipe(
+            Effect.map((session) => acpMcpContext(threadId, session, self, flavor.mcpOverHttp)),
+          );
   const driver = flavor.driver;
   const continuationRequests = options.continuationRequests;
   const postSettleContinuationEnabled =
@@ -1552,7 +1557,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             ? undefined
             : yield* makeAcpClientTerminals({
                 defaultCwd: input.runtimePolicy.cwd ?? process.cwd(),
-                environment: options.clientTerminals.environment,
+                environment: {
+                  ...options.clientTerminals.environment,
+                  T3CODE_THREAD_ID: undefined,
+                },
                 shellCommands: options.clientTerminals.shellCommands,
                 environmentForSession: (sessionId) => {
                   const remembered = terminalEnvironmentBySessionId.get(sessionId);
@@ -2168,6 +2176,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           };
         };
         let runtimeScope: Scope.Closeable | undefined;
+        let runtimeThreadId = input.threadId;
         let runtime!: AcpSessionRuntime.AcpSessionRuntime["Service"];
         let runtimeMcpBridge: AcpMcpOverAcpBridge | undefined;
         yield* Effect.addFinalizer(() =>
@@ -6505,6 +6514,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               Effect.provideService(AgentScope, agentScope),
               Effect.provideService(AgentScopeThreadId, threadId ?? undefined),
             );
+          runtimeThreadId = threadId;
         });
 
         const startAcpRuntime = Effect.fnUntraced(function* (
@@ -6628,6 +6638,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   }
                   yield* quarantineNativeTransportAtGeneration(previousGeneration);
                   runtime = replacementExit.value.replacementRuntime;
+                  runtimeThreadId = threadId;
                   runtimeScope = replacementScope;
                   runtimeMcpBridge = replacementMcpBridge;
                   yield* Ref.set(runtimeCallbackGeneration, replacementGeneration);
@@ -7487,7 +7498,18 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           threadId: ThreadId | null,
         ) {
           const restartRequired = yield* Ref.get(runtimeRestartRequired);
-          if (!restartRequired) return false;
+          if (!restartRequired && runtimeThreadId === threadId) return false;
+          if (runtimeThreadId !== threadId) {
+            const pendingWork = yield* (
+              sessionRuntime.hasPendingBackgroundWork ?? Effect.succeed(false)
+            );
+            if ((yield* Ref.get(activeTurn)) !== null || pendingWork)
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver,
+                detail:
+                  "Cannot change ACP runtime thread while a turn or background work is active",
+              });
+          }
           yield* restartAcpRuntime(threadId);
           yield* Ref.set(runtimeRestartRequired, false);
           yield* Ref.set(activeSessionId, null);
@@ -8046,7 +8068,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             function* (threadInput: ProviderAdapter.ProviderAdapterV2EnsureThreadInput) {
               return yield* runtimeTransitionPermit.withPermit(
                 Effect.gen(function* () {
-                  if (threadInput.forceNewNativeThread) {
+                  if (
+                    threadInput.forceNewNativeThread ||
+                    runtimeThreadId !== threadInput.threadId
+                  ) {
                     const currentTurn = yield* Ref.get(activeTurn);
                     const pendingWork = yield* (
                       sessionRuntime.hasPendingBackgroundWork ?? Effect.succeed(false)
@@ -8115,6 +8140,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           resumeThread: Effect.fn("AcpAdapterV2.resumeThread")(
             function* (threadInput: {
               readonly providerThread: OrchestrationV2ProviderThread;
+              readonly threadId?: ThreadId;
               readonly modelSelection?: ModelSelection;
               readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
             }) {
@@ -8127,8 +8153,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   const restorePreviousItemIdentity = Effect.sync(() => {
                     itemIdentityVersion = previousItemIdentityVersion;
                   });
+                  const threadId = threadInput.threadId ?? threadInput.providerThread.appThreadId;
                   const restartAfterInterrupt = yield* restartRuntimeAfterTeardownIfRequired(
-                    threadInput.providerThread.appThreadId,
+                    threadId,
                   ).pipe(Effect.tapError(() => restorePreviousItemIdentity));
                   if ((yield* Ref.get(activeSessionId)) !== sessionId || restartAfterInterrupt) {
                     yield* Ref.set(snapshot, {
@@ -8138,10 +8165,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       loadingMessageId: null,
                       loadingIndex: 0,
                     });
-                    const activated = yield* activateSession(
-                      sessionId,
-                      threadInput.providerThread.appThreadId,
-                    ).pipe(Effect.tapError(() => restorePreviousItemIdentity));
+                    const activated = yield* activateSession(sessionId, threadId).pipe(
+                      Effect.tapError(() => restorePreviousItemIdentity),
+                    );
                     yield* Ref.set(activeSessionId, activated.sessionId);
                     yield* setActiveSessionSetup(activated);
                     const nextSelection = threadInput.modelSelection ?? input.modelSelection;
@@ -8153,6 +8179,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   const now = yield* DateTime.now;
                   return {
                     ...threadInput.providerThread,
+                    appThreadId: threadId,
                     providerSessionId: input.providerSessionId,
                     status: "idle" as const,
                     updatedAt: now,

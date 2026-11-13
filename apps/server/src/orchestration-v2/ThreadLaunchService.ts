@@ -423,7 +423,7 @@ const make = Effect.gen(function* () {
           ((provider?.driver === "cursor" || provider?.driver === "antigravity") &&
             initialMessage.attachments.length === 0 &&
             initialMessage.text.trim() === "/logout"));
-      if (!controlCommand) {
+      if (!controlCommand && input.workspaceStrategy.type === "worktree") {
         const storageFailure = yield* Effect.promise(() =>
           storage.check([serverConfig.stateDir, project.workspaceRoot]),
         );

@@ -39,7 +39,6 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
-import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as HumanAuthority from "../auth/ApprovalReviewHumanAuthority.ts";
@@ -1038,10 +1037,12 @@ it.effect(
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
           const executing = yield* worker.runOnce.pipe(Effect.forkScoped);
           yield* Deferred.await(startedAgain);
-          yield* ProviderTurnStartService.storageRunInterrupt(orchestrator)({
+          yield* orchestrator.dispatch({
+            type: "run.interrupt",
+            commandId: CommandId.make(`recovery-interrupt:${runId}`),
             threadId,
             runId,
-            reason: "Storage pressure fixture",
+            reason: "Recovery interruption fixture",
           });
           assert.equal(
             (yield* projections.getRuntimeRequest(threadId, stopId))?.privilegedCommand?.state,

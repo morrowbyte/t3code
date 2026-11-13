@@ -181,17 +181,17 @@ describe("resolveMarkdownMediaPreview", () => {
     }
   });
 
-  it.each(["doc", "docx", "xls", "xlsx", "ppt", "pptx", "unknown", "zip"])(
-    "keeps main's source reader for host %s links and embeds",
+  it.each(["doc", "docx", "xls", "xlsx", "ppt", "pptx", "zip"])(
+    "opens host %s links and embeds as downloadable documents",
     (extension) => {
       const name = `report.${extension}`;
       for (const href of [name, `./${name}`, `/tmp/${name}`, `file:///tmp/${name}`]) {
         for (const imageEmbed of [false, true]) {
           expect(resolveMarkdownMediaPreview(href, { ...input, imageEmbed })).toMatchObject({
-            kind: "file",
+            kind: "document",
             source: {
               name,
-              mimeType: "text/plain",
+              resource: { disposition: "attachment" },
             },
           });
           expect(
@@ -200,7 +200,7 @@ describe("resolveMarkdownMediaPreview", () => {
               threadId: undefined,
               imageEmbed,
             })?.kind,
-          ).toBe("file");
+          ).toBe("document");
           expect(resolveMarkdownLinkPresentation(href)).toMatchObject({ kind: "file" });
         }
       }

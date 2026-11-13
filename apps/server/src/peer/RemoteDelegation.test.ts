@@ -106,6 +106,7 @@ interface BoxThread {
   readonly waitedFor: Ref.Ref<ReadonlyArray<RunId | undefined>>;
   /** The thread's run ends with a task of its own still running, whose result wakes it again. */
   readonly nested: Ref.Ref<boolean>;
+  readonly supportsSettledWait: Ref.Ref<boolean>;
   /** Completed once a wait there blocks on that task. */
   readonly nestedWaiting: Deferred.Deferred<void>;
   /** That task settled and the run it woke answered, with `laterReply`. */
@@ -149,6 +150,7 @@ const makeBoxThread = Effect.gen(function* () {
     laterReply: yield* Ref.make<string | null>(null),
     waitedFor: yield* Ref.make<ReadonlyArray<RunId | undefined>>([]),
     nested: yield* Ref.make(false),
+    supportsSettledWait: yield* Ref.make(true),
     nestedWaiting: yield* Deferred.make<void>(),
     nestedSettled: yield* Deferred.make<void>(),
     gone: yield* Ref.make(false),
@@ -276,6 +278,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
         if (
           Option.isSome(done) &&
           input.untilDelegatedWorkSettled === true &&
+          (yield* Ref.get(thread.supportsSettledWait)) &&
           (yield* Ref.get(thread.nested))
         ) {
           yield* Deferred.succeed(thread.nestedWaiting, undefined);
@@ -300,6 +303,16 @@ const boxToolkitLayer = (thread: BoxThread) => {
             status: later ? "completed" : yield* Ref.get(thread.status),
           } as OrchestrationV2Run,
           timedOut: Option.isNone(done),
+          ...(Option.isSome(done) &&
+          input.untilDelegatedWorkSettled === true &&
+          (yield* Ref.get(thread.supportsSettledWait))
+            ? {
+                resultRun: {
+                  id: runId,
+                  status: yield* Ref.get(thread.status),
+                } as OrchestrationV2Run,
+              }
+            : {}),
         };
       }),
     getTimelinePage: (threadId, options) =>
@@ -1283,40 +1296,56 @@ it.effect("a task's result is its own run's whole last reply, not a later run's"
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("a task whose thread there waits on its own task ends with the answer after it", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const thread = yield* makeBoxThread;
-      const b = yield* serveBox(thread);
-      const offers = yield* SubscriptionRef.make<
-        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-      >([]);
-      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const a = yield* makeLaptop(database, offers);
-      yield* linkTo(a.links, b, "full-access");
-      yield* seedParent(a);
-      const delegated = yield* delegateToBox(a);
+it.effect.each([true, false])(
+  "waits for a remote nested result or reports an unsupported peer (supportsSettledWait=%s)",
+  (supportsSettledWait) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const delegated = yield* delegateToBox(a);
 
-      // The task's run there ends after delegating a review of its own.
-      yield* Ref.set(thread.nested, true);
-      yield* Ref.set(thread.reply, "Started a review; I will answer when it reports.");
-      yield* Ref.set(thread.status, "completed");
-      yield* Deferred.succeed(thread.finished, undefined);
-      const first = yield* Effect.raceFirst(
-        Deferred.await(thread.nestedWaiting).pipe(Effect.as("waiting there" as const)),
-        taskResult(a, delegated.taskId).pipe(Effect.as("completed here" as const)),
-      );
-      expect(first).toBe("waiting there");
+        // The task's run there ends after delegating a review of its own.
+        yield* Ref.set(thread.nested, true);
+        yield* Ref.set(thread.supportsSettledWait, supportsSettledWait);
+        yield* Ref.set(thread.reply, "Started a review; I will answer when it reports.");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        if (!supportsSettledWait) {
+          expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+            status: "failed",
+            result: expect.stringContaining("cannot confirm"),
+          });
+          const task = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+            (task) => task.id === delegated.taskId,
+          );
+          expect(task?.remoteChild?.stoppedThere).not.toBe(true);
+          yield* a.call("task_cancel", { taskId: delegated.taskId });
+          expect(yield* Ref.get(thread.stops)).toContain("thread.stop");
+          return;
+        }
+        const first = yield* Effect.raceFirst(
+          Deferred.await(thread.nestedWaiting).pipe(Effect.as("waiting there" as const)),
+          taskResult(a, delegated.taskId).pipe(Effect.as("completed here" as const)),
+        );
+        expect(first).toBe("waiting there");
 
-      // The review reports and wakes the thread there, whose next run answers.
-      yield* Ref.set(thread.laterReply, "The review found two issues; both are fixed.");
-      yield* Deferred.succeed(thread.nestedSettled, undefined);
-      expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
-        status: "completed",
-        result: "The review found two issues; both are fixed.",
-      });
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+        // The review reports and wakes the thread there, whose next run answers.
+        yield* Ref.set(thread.laterReply, "The review found two issues; both are fixed.");
+        yield* Deferred.succeed(thread.nestedSettled, undefined);
+        expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+          status: "completed",
+          result: "The review found two issues; both are fixed.",
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("the same key from another provider session is another task", () =>

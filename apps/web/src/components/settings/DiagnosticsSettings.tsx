@@ -782,7 +782,7 @@ function DiagnosticsSettingsBody() {
     setIsOpeningLogsDirectory(true);
     setOpenLogsDirectoryError(null);
     void (async () => {
-      const result = await openInEditor(logsDirectoryPath);
+      const result = await openInEditor(logsDirectoryPath, { isFile: false });
       setIsOpeningLogsDirectory(false);
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);

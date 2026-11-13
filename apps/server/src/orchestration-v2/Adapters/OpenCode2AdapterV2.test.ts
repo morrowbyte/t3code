@@ -315,6 +315,7 @@ const resumed = (
     readonly resolveExtractedTextPath?: (path: string) => Effect.Effect<string | undefined>;
     readonly fileSystem?: FileSystem.FileSystem;
     readonly onPrompt?: (input: unknown) => void;
+    readonly sessionEnvironments?: Map<string, Readonly<Record<string, string>>>;
   },
 ) =>
   Effect.gen(function* () {
@@ -337,6 +338,9 @@ const resumed = (
       {
         ...(options?.fileSystem === undefined ? {} : { fileSystem: options.fileSystem }),
         ...(options?.onPrompt === undefined ? {} : { onPrompt: options.onPrompt }),
+        ...(options?.sessionEnvironments === undefined
+          ? {}
+          : { sessionEnvironments: options.sessionEnvironments }),
         ...(options?.external === undefined ? {} : { external: options.external }),
         ...(options?.replayGate === undefined ? {} : { replayGate: options.replayGate }),
         ...(options?.attachmentsDir === undefined
@@ -416,6 +420,50 @@ const history = {
 };
 
 it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
+  it.effect("keeps execution environments scoped to native sessions on a shared server", () =>
+    Effect.gen(function* () {
+      const otherSession = "ses_other00000000000000000000";
+      const otherThread = ThreadId.make("thread:opencode2-other");
+      const otherRules = [
+        { action: "*", resource: "*", effect: "allow" },
+        { action: "t3-code-*", resource: "*", effect: "deny" },
+        { action: "t3-code-thread_opencode2-other_*", resource: "*", effect: "allow" },
+      ];
+      const sessionEnvironments = new Map<string, Readonly<Record<string, string>>>([
+        [SESSION, { T3CODE_THREAD_ID: "ambient-parent-thread", KEEP: "first" }],
+        [otherSession, { T3CODE_THREAD_ID: "previous-owner", KEEP: "second" }],
+      ]);
+      const { runtime, thread } = yield* resumed(
+        [
+          out("session.get", { sessionID: otherSession }),
+          replyData("session.get", sessionInfo({ id: otherSession, permissions: otherRules })),
+          out("permission.list", { sessionID: otherSession }),
+          replyData("permission.list", []),
+          out("session.form.list", { sessionID: otherSession }),
+          replyData("session.form.list", []),
+          out("session.get", { sessionID: SESSION }),
+          replyData("session.get", sessionInfo()),
+        ],
+        { external: true, sessionEnvironments },
+      );
+      yield* runtime.resumeThread({
+        providerThread: {
+          ...thread,
+          id: ProviderThreadId.make("provider-thread:opencode2-other"),
+          nativeThreadRef: { ...thread.nativeThreadRef!, nativeId: otherSession },
+        },
+        threadId: otherThread,
+        modelSelection: bigPickle,
+        runtimePolicy: policy("full-access"),
+      });
+      yield* runtime.resumeThread({ providerThread: thread, threadId });
+      assert.deepEqual(Object.fromEntries(sessionEnvironments), {
+        [SESSION]: { T3CODE_THREAD_ID: threadId, KEEP: "first" },
+        [otherSession]: { T3CODE_THREAD_ID: otherThread, KEEP: "second" },
+      });
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("switches the session's model and variant before a turn that changed them", () =>
     Effect.gen(function* () {
       const { runtime, thread } = yield* resumed([

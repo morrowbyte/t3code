@@ -166,7 +166,7 @@ export interface ThreadManagementSendResult {
   readonly message: OrchestrationV2ConversationMessage;
   readonly run: OrchestrationV2Run;
   readonly turnItem: Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> | null;
-  readonly delivery: "started" | "queued" | "steered" | "restarted";
+  readonly delivery: "accepted" | "started" | "queued" | "steered" | "restarted" | "failed";
 }
 
 export interface ThreadManagementWaitInput {
@@ -894,10 +894,14 @@ const make = Effect.gen(function* () {
       },
       options,
     );
-    const projection = yield* getProjectThreadRecords(input, ["runs", "messages", "turnItems"], {
-      messageIds: [input.messageId],
-      turnItemTypes: ["user_message"],
-    });
+    const projection = yield* getProjectThreadRecords(
+      input,
+      ["runs", "messages", "turnItems", "providerTurns"],
+      {
+        messageIds: [input.messageId],
+        turnItemTypes: ["user_message"],
+      },
+    );
     const message = projection.messages.find((candidate) => candidate.id === input.messageId);
     const run =
       message?.runId === null || message?.runId === undefined
@@ -920,14 +924,33 @@ const make = Effect.gen(function* () {
         messageId: input.messageId,
       });
     }
+    const runtimeStarted =
+      run.activeAttemptId !== null &&
+      projection.providerTurns.some(
+        (turn) =>
+          turn.runAttemptId === run.activeAttemptId &&
+          turn.status !== "pending" &&
+          turn.startedAt !== null,
+      );
+    const steeringAccepted =
+      turnItem?.status === "completed" &&
+      (yield* hasReceipt(CommandId.make(`${input.commandId}:steering-delivery-accepted`)));
     const delivery: ThreadManagementSendResult["delivery"] =
       turnItem === null || turnItem.inputIntent === "queued_turn"
         ? "queued"
-        : turnItem.inputIntent === "turn_start"
-          ? "started"
-          : input.mode === "restart"
-            ? "restarted"
-            : "steered";
+        : turnItem.status === "failed"
+          ? "failed"
+          : turnItem.inputIntent === "turn_start"
+            ? runtimeStarted
+              ? "started"
+              : "accepted"
+            : input.mode === "restart"
+              ? runtimeStarted
+                ? "restarted"
+                : "accepted"
+              : steeringAccepted
+                ? "steered"
+                : "accepted";
     return { dispatch: dispatched, projection, message, run, turnItem, delivery };
   });
 

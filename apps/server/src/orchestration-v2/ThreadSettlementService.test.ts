@@ -1,12 +1,15 @@
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as ByteSize from "effect/ByteSize";
+import * as Option from "effect/Option";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
   MessageId,
   EventId,
   ProviderInstanceId,
+  ProviderSessionId,
   RunId,
   ThreadId,
   TurnItemId,
@@ -585,11 +588,17 @@ interface HarnessOptions {
   readonly branchPullRequest?: GitManager.GitManager["Service"]["branchPullRequest"];
   readonly pullRequestSummary?: PullRequestService.PullRequestService["Service"]["summary"];
   readonly existingWorktreePaths?: ReadonlyArray<string>;
+  readonly gitDirectories?: ReadonlyArray<string>;
+  readonly gitFiles?: ReadonlyArray<string>;
   readonly onDispatch?: (command: AutoSettleCommand) => Effect.Effect<void>;
   readonly onScriptRun?: (
     input: ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput,
   ) => Effect.Effect<void>;
   readonly onCloseIdle?: () => Effect.Effect<void>;
+  readonly onRealPath?: (path: string) => Effect.Effect<void>;
+  readonly realWorktreePaths?: Readonly<Record<string, string>>;
+  readonly runnerReceiptNames?: Readonly<Record<string, ReadonlyArray<string>>>;
+  readonly onRunnerRead?: (path: string) => Effect.Effect<void>;
   readonly currentThreads?: ReadonlyArray<OrchestrationV2AppThread>;
 }
 
@@ -617,6 +626,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   const summaryRecovery = yield* Ref.make<ReadonlyArray<boolean | undefined>>([]);
   const invalidatedCwds = yield* Ref.make<ReadonlyArray<string>>([]);
   const domainEvents = yield* PubSub.unbounded<OrchestrationV2DomainEvent>();
+  const domainEventSubscription = yield* PubSub.subscribe(domainEvents);
   const closedIdle = yield* Queue.unbounded<{ readonly threadId: string }>();
   const scriptRuns =
     yield* Queue.unbounded<ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput>();
@@ -687,6 +697,31 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
       listShells: () => Ref.get(snapshots).pipe(Effect.map((snapshot) => snapshot.projects)),
     }),
     Layer.mock(ProjectionStore.ProjectionStoreV2)({
+      getShellSnapshot: (query) =>
+        Ref.get(snapshots).pipe(
+          Effect.map((snapshot) => {
+            const threads = new Map(
+              (options.currentThreads ?? []).map((thread) => [
+                thread.id,
+                { ...shell(), ...thread },
+              ]),
+            );
+            for (const thread of snapshot.threads) threads.set(thread.id, thread);
+            const visible = [...threads.values()].filter(
+              (thread) =>
+                (query?.projectId === undefined || thread.projectId === query.projectId) &&
+                (query?.location === "archive"
+                  ? thread.archivedAt !== null
+                  : thread.archivedAt === null),
+            );
+            return {
+              schemaVersion: 1 as const,
+              snapshotSequence: 1,
+              archivedThreads: visible.filter((thread) => thread.archivedAt !== null),
+              threads: visible.filter((thread) => thread.archivedAt === null),
+            };
+          }),
+        ),
       getSettlementCandidates: (threadId) =>
         Ref.update(candidateReads, (reads) => [...reads, threadId]).pipe(
           Effect.andThen(Ref.updateAndGet(snapshotReadCount, (count) => count + 1)),
@@ -699,7 +734,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
           ),
         ),
       getThreadWorktreePaths: () =>
-        Effect.succeed(
+        Effect.sync(() =>
           (options.currentThreads ?? []).flatMap((thread) =>
             thread.worktreePath === null
               ? []
@@ -723,7 +758,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
       },
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
-      streamDomainEvents: Stream.fromPubSub(domainEvents),
+      streamDomainEvents: Stream.fromSubscription(domainEventSubscription),
       dispatch,
     }),
     Layer.mock(TerminalManager.TerminalManager)({
@@ -751,7 +786,41 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     Layer.succeed(ServerActivation.ServerActivation, Deferred.await(activation)),
     Layer.succeed(Crypto.Crypto, testCrypto),
     FileSystem.layerNoop({
-      exists: (path) => Effect.succeed(options.existingWorktreePaths?.includes(path) ?? false),
+      exists: (path) =>
+        Effect.succeed(
+          (options.existingWorktreePaths?.includes(path) ?? false) ||
+            (options.gitDirectories?.includes(path) ?? false) ||
+            (options.gitFiles?.includes(path) ?? false),
+        ),
+      stat: (path) =>
+        Effect.succeed({
+          type: options.gitFiles?.includes(path) ? ("File" as const) : ("Directory" as const),
+          mtime: Option.none(),
+          atime: Option.none(),
+          birthtime: Option.none(),
+          dev: 0,
+          ino: Option.none(),
+          mode: 0o700,
+          nlink: Option.some(1),
+          uid: Option.none(),
+          gid: Option.none(),
+          rdev: Option.none(),
+          size: ByteSize.zero,
+          blksize: Option.none(),
+          blocks: Option.none(),
+        }),
+      readFileString: (path) =>
+        options.gitFiles?.includes(path)
+          ? Effect.succeed("gitdir: /repo/.git/worktrees/task\n")
+          : Effect.die("Unexpected file read"),
+      realPath: (path) =>
+        (options.onRealPath?.(path) ?? Effect.void).pipe(
+          Effect.as(options.realWorktreePaths?.[path] ?? path),
+        ),
+      readDirectory: (path) =>
+        (options.onRunnerRead?.(path) ?? Effect.void).pipe(
+          Effect.as([...(options.runnerReceiptNames?.[path] ?? [])]),
+        ),
     }),
   );
 
@@ -1435,36 +1504,411 @@ describe("ThreadSettlementServiceV2 terminals", () => {
     ),
   );
 
-  it.effect.each(["own run", "shared thread", "background command"] as const)(
-    "does not run cleanup scripts while %s still uses the worktree",
+  it.effect.each([
+    "own run",
+    "shared thread",
+    "aliased shared thread",
+    "background command",
+    "active peer command",
+    "settled peer subagent",
+  ] as const)("does not run cleanup scripts while %s still uses the worktree", (kind) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const worktree = appThread("cleanup-owner", "settled", "/worktrees/busy");
+        const sharedPeer = kind !== "own run" && kind !== "background command";
+        const background = [
+          "background command",
+          "active peer command",
+          "settled peer subagent",
+        ].includes(kind);
+        const peerPath = kind === "aliased shared thread" ? "/worktrees/alias" : "/worktrees/busy";
+        const peer = appThread(
+          "busy-peer",
+          kind === "settled peer subagent" ? "settled" : "active",
+          peerPath,
+        );
+        const marker = appThread("marker-thread", "settled", "/worktrees/marker");
+        const active = shell({
+          id: sharedPeer ? peer.id : worktree.id,
+          worktreePath: sharedPeer ? peerPath : "/worktrees/busy",
+          settledAt: worktree.settledAt,
+          settledOverride: kind === "active peer command" ? "active" : "settled",
+          status: background ? "completed" : "running",
+          activeRunId: background ? null : RunId.make("active-run"),
+          pendingBackgroundTasks: background
+            ? [
+                {
+                  taskId: "preview",
+                  kind: kind === "settled peer subagent" ? "subagent" : "command",
+                  description: "background work",
+                },
+              ]
+            : [],
+        });
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([active]),
+          currentThreads: sharedPeer ? [worktree, peer, marker] : [worktree, marker],
+          existingWorktreePaths: ["/worktrees/busy", "/worktrees/marker"],
+          realWorktreePaths: { "/worktrees/alias": "/worktrees/busy" },
+          onRunnerRead: (path) =>
+            Effect.sync(() => {
+              if (kind !== "background command") assert.notInclude(path, "/worktrees/busy/");
+            }),
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          yield* fixture.publishEvent(settledEvent(worktree));
+          yield* fixture.publishEvent(settledEvent(marker));
+          assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, marker.id);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect.each(["root", "existing_worktree", "linked_worktree"] as const)(
+    "shares canonical resources with archived active subproject peers: %s",
     (kind) =>
       Effect.scoped(
         Effect.gen(function* () {
-          const worktree = appThread("cleanup-owner", "settled", "/worktrees/busy");
-          const peer = appThread("busy-peer", "active", "/worktrees/busy");
-          const marker = appThread("marker-thread", "settled", "/worktrees/marker");
-          const active = shell({
-            id: kind === "shared thread" ? peer.id : worktree.id,
-            worktreePath: "/worktrees/busy",
-            settledAt: worktree.settledAt,
-            settledOverride: "settled",
-            status: kind === "background command" ? "completed" : "running",
-            activeRunId: kind === "background command" ? null : RunId.make("active-run"),
-            pendingBackgroundTasks:
-              kind === "background command"
-                ? [{ taskId: "preview", kind: "command", description: "dev server" }]
-                : [],
-          });
+          const linked = kind === "linked_worktree";
+          const resourceRoot = linked ? "/linked" : "/repo";
+          const ownerPath = kind === "root" ? null : `${resourceRoot}/apps/service`;
+          const peerProjectId = ProjectId.make("sibling-project");
+          const projects = [
+            makeProject(PROJECT_ID, "/repo/apps/service"),
+            makeProject(peerProjectId, "/repo/apps/worker"),
+          ];
+          const owner = appThread("subproject-owner", "settled", ownerPath);
+          const activePeer = {
+            ...appThread("archived-peer", "active", linked ? "/linked/apps/worker" : null),
+            projectId: peerProjectId,
+            archivedAt: DateTime.makeUnsafe(NOW),
+          };
+          const peer = {
+            ...activePeer,
+            settledOverride: "settled" as const,
+            settledAt: owner.settledAt,
+          };
+          const markers = ["one", "two", "three"].map((name) =>
+            appThread(`marker-${name}`, "settled", `/markers/${name}`),
+          );
+          const currentThreads = [owner, activePeer, ...markers];
+          const pending = (thread: OrchestrationV2AppThread) =>
+            shell({
+              ...thread,
+              status: "completed",
+              activeRunId: null,
+              pendingBackgroundTasks: [
+                { taskId: `preview:${thread.id}`, kind: "command", description: "dev server" },
+              ],
+            });
+          const runnerReads: string[] = [];
           const fixture = yield* makeHarness({
-            snapshot: makeSnapshot([active]),
-            currentThreads:
-              kind === "shared thread" ? [worktree, peer, marker] : [worktree, marker],
-            existingWorktreePaths: ["/worktrees/busy", "/worktrees/marker"],
+            snapshot: makeSnapshot([pending(owner), pending(activePeer)], projects),
+            currentThreads,
+            existingWorktreePaths: [
+              "/repo",
+              "/linked",
+              "/repo/apps/service",
+              "/repo/apps/worker",
+              "/linked/apps/service",
+              "/linked/apps/worker",
+              ...markers.map((thread) => thread.worktreePath!),
+            ],
+            gitDirectories: ["/repo/.git"],
+            gitFiles: ["/linked/.git"],
+            onRunnerRead: (path) =>
+              Effect.sync(() => {
+                runnerReads.push(path);
+              }),
           });
           yield* Effect.gen(function* () {
             const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
             yield* startHarness(service, fixture.activation, fixture.snapshotReads);
-            yield* fixture.publishEvent(settledEvent(worktree));
+            yield* fixture.publishEvent(settledEvent(owner));
+            yield* fixture.publishEvent(settledEvent(markers[0]!));
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, markers[0]!.id);
+            assert.notInclude(runnerReads, `${resourceRoot}/.t3/dev-runners`);
+            currentThreads[1] = peer;
+            yield* Ref.set(
+              fixture.snapshots,
+              makeSnapshot([pending(owner), pending(peer)], projects),
+            );
+            yield* fixture.publishEvent(settledEvent(peer));
+            yield* fixture.publishEvent(settledEvent(markers[1]!));
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, markers[1]!.id);
+            assert.lengthOf(
+              runnerReads.filter((path) => path === `${resourceRoot}/.t3/dev-runners`),
+              2,
+            );
+            assert.isFalse(runnerReads.some((path) => path.includes("/apps/")));
+            assert.strictEqual(yield* Queue.size(fixture.scriptRuns), 0);
+            yield* Ref.set(fixture.snapshots, makeSnapshot([], projects));
+            yield* fixture.publishEvent({
+              type: "run.background-work-cancelled",
+              id: EventId.make("event:subproject-ended"),
+              threadId: peer.id,
+              occurredAt: DateTime.makeUnsafe(NOW),
+              payload: { runId: RunId.make("preview-run"), restartCancelledBackgroundWork: [] },
+            });
+            yield* fixture.publishEvent(settledEvent(markers[2]!));
+            if (linked) {
+              const peerRun = yield* Queue.take(fixture.scriptRuns);
+              const ownerRun = yield* Queue.take(fixture.scriptRuns);
+              assert.strictEqual(peerRun.threadId, peer.id);
+              assert.strictEqual(peerRun.worktreePath, peer.worktreePath);
+              assert.strictEqual(ownerRun.threadId, owner.id);
+              assert.strictEqual(ownerRun.worktreePath, ownerPath);
+            }
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, markers[2]!.id);
+            assert.lengthOf(
+              runnerReads.filter((path) => path === `${resourceRoot}/.t3/dev-runners`),
+              4,
+            );
+            assert.strictEqual(yield* Queue.size(fixture.scriptRuns), 0);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+  );
+
+  it.effect.each(["worktree", "root", "existing root"] as const)(
+    "retries deferred %s runners when only their peer settles; commands still block pruning",
+    (kind) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const workspacePath = kind === "worktree" ? "/worktrees/shared" : "/workspace/project";
+          const first = appThread("first-owner", "settled", kind === "root" ? null : workspacePath);
+          const activePeer = appThread(
+            "second-owner",
+            "active",
+            kind === "worktree" ? "/worktrees/alias" : null,
+          );
+          const second = {
+            ...activePeer,
+            settledOverride: "settled" as const,
+            settledAt: first.settledAt,
+          };
+          const marker = appThread("marker-thread", "settled", "/worktrees/marker");
+          const markerTwo = appThread("marker-two", "settled", "/worktrees/marker-two");
+          const markerThree = appThread("marker-three", "settled", "/worktrees/marker-three");
+          const currentThreads = [first, activePeer, marker, markerTwo, markerThree];
+          const runnerReads: string[] = [];
+          const pending = (thread: OrchestrationV2AppThread) =>
+            shell({
+              ...thread,
+              status: "completed",
+              activeRunId: null,
+              pendingBackgroundTasks: [
+                { taskId: `preview:${thread.id}`, kind: "command", description: "dev server" },
+              ],
+            });
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([pending(first), pending(activePeer)]),
+            currentThreads,
+            existingWorktreePaths: [
+              workspacePath,
+              "/worktrees/alias",
+              "/worktrees/marker",
+              "/worktrees/marker-two",
+              "/worktrees/marker-three",
+            ],
+            realWorktreePaths: { "/worktrees/alias": workspacePath },
+            onRunnerRead: (path) =>
+              Effect.sync(() => {
+                runnerReads.push(path);
+              }),
+          });
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            yield* fixture.publishEvent(settledEvent(first));
+            yield* fixture.publishEvent(settledEvent(marker));
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, marker.id);
+            assert.deepStrictEqual(runnerReads, ["/worktrees/marker/.t3/dev-runners"]);
+
+            currentThreads[1] = second;
+            yield* Ref.set(fixture.snapshots, makeSnapshot([pending(first), pending(second)]));
+            yield* fixture.publishEvent(settledEvent(second));
+            yield* fixture.publishEvent(settledEvent(markerTwo));
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, markerTwo.id);
+            assert.lengthOf(
+              runnerReads.filter((path) => path === `${workspacePath}/.t3/dev-runners`),
+              2,
+            );
+            assert.strictEqual(yield* Queue.size(fixture.scriptRuns), 0);
+
+            yield* Ref.set(fixture.snapshots, makeSnapshot([]));
+            yield* fixture.publishEvent({
+              type: "run.background-work-cancelled",
+              id: EventId.make("event:shared-commands-ended"),
+              threadId: second.id,
+              occurredAt: DateTime.makeUnsafe(NOW),
+              payload: { runId: RunId.make("peer-run"), restartCancelledBackgroundWork: [] },
+            });
+            if (kind !== "worktree") {
+              yield* fixture.publishEvent(settledEvent(markerThree));
+              assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, markerThree.id);
+              assert.strictEqual(yield* Queue.size(fixture.scriptRuns), 0);
+              return;
+            }
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, second.id);
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, first.id);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+  );
+
+  it.effect.each(["completed", "interrupted", "failed", "detached"] as const)(
+    "retries settled owners when only their peer ends with %s",
+    (status) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const owner = appThread("deferred-owner", "settled", "/worktrees/deferred");
+          const peer = appThread("finishing-peer", "settled", "/worktrees/alias");
+          const marker = appThread("marker-one", "settled", "/worktrees/marker-one");
+          const markerTwo = appThread("marker-two", "settled", "/worktrees/marker-two");
+          const active = shell({
+            id: peer.id,
+            worktreePath: peer.worktreePath,
+            settledAt: peer.settledAt,
+            settledOverride: "settled",
+            status: "running",
+            activeRunId: RunId.make("active-run"),
+          });
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([active]),
+            currentThreads: [owner, peer, marker, markerTwo],
+            existingWorktreePaths: [
+              "/worktrees/deferred",
+              "/worktrees/alias",
+              "/worktrees/marker-one",
+              "/worktrees/marker-two",
+            ],
+            realWorktreePaths: { "/worktrees/alias": "/worktrees/deferred" },
+          });
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            // A fresh service must also discover owners whose settlement event was before startup.
+            if (status !== "detached") yield* fixture.publishEvent(settledEvent(owner));
+            yield* fixture.publishEvent(settledEvent(marker));
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, marker.id);
+            yield* Ref.set(
+              fixture.snapshots,
+              makeSnapshot([shell({ ...peer, status: status === "detached" ? "idle" : status })]),
+            );
+            const event: OrchestrationV2DomainEvent =
+              status === "detached"
+                ? {
+                    type: "provider-session.detached",
+                    id: EventId.make("detached-for-cleanup"),
+                    threadId: peer.id,
+                    occurredAt: DateTime.makeUnsafe(NOW),
+                    payload: {
+                      providerSessionId: ProviderSessionId.make("finishing-session"),
+                      detachedAt: DateTime.makeUnsafe(NOW),
+                    },
+                  }
+                : {
+                    type: "run.updated",
+                    id: EventId.make("completed-for-cleanup"),
+                    threadId: peer.id,
+                    occurredAt: DateTime.makeUnsafe(NOW),
+                    payload: {
+                      id: RunId.make("active-run"),
+                      threadId: peer.id,
+                      ordinal: 1,
+                      providerInstanceId: peer.providerInstanceId,
+                      modelSelection: peer.modelSelection,
+                      providerThreadId: null,
+                      userMessageId: MessageId.make("message"),
+                      rootNodeId: null,
+                      activeAttemptId: null,
+                      status,
+                      requestedAt: DateTime.makeUnsafe(NOW),
+                      startedAt: DateTime.makeUnsafe(NOW),
+                      completedAt: DateTime.makeUnsafe(NOW),
+                      checkpointId: null,
+                      contextHandoffId: null,
+                    },
+                  };
+            yield* fixture.publishEvent(event);
+            yield* fixture.publishEvent(settledEvent(markerTwo));
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, peer.id);
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, owner.id);
+            assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, markerTwo.id);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+  );
+
+  it.effect("does not scan worktrees when an ordinary active peer ends a turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const owner = appThread("deferred-owner", "settled", "/worktrees/deferred");
+        const peer = appThread("active-peer", "active", "/worktrees/alias");
+        const marker = appThread("marker", "settled");
+        const paths: string[] = [];
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([]),
+          currentThreads: [owner, peer, marker],
+          existingWorktreePaths: ["/worktrees/deferred", "/worktrees/alias"],
+          realWorktreePaths: { "/worktrees/alias": "/worktrees/deferred" },
+          onRealPath: (path) =>
+            Effect.sync(() => {
+              paths.push(path);
+            }),
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          yield* fixture.publishEvent({
+            type: "run.background-work-cancelled",
+            id: EventId.make("event:active-peer-background-ended"),
+            threadId: peer.id,
+            occurredAt: DateTime.makeUnsafe(NOW),
+            payload: { runId: RunId.make("peer-run"), restartCancelledBackgroundWork: [] },
+          });
+          yield* fixture.publishEvent(settledEvent(marker));
+          assert.deepStrictEqual(yield* Queue.take(fixture.closedIdle), { threadId: marker.id });
+          assert.deepStrictEqual(paths, []);
+          assert.strictEqual(yield* Queue.size(fixture.scriptRuns), 0);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect.each(["shells close", "runner receipts are read"] as const)(
+    "skips the settle script for a thread re-engaged while its %s",
+    (stage) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const settled = appThread("reengaging-thread", "settled", "/worktrees/reengaging");
+          const marker = appThread("marker-thread", "settled", "/worktrees/marker");
+          const currentThreads = [settled, marker];
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([]),
+            currentThreads,
+            existingWorktreePaths: ["/worktrees/reengaging", "/worktrees/marker"],
+            onCloseIdle: () =>
+              stage === "shells close"
+                ? Effect.sync(() => {
+                    currentThreads[0] = { ...settled, settledOverride: "active" };
+                  })
+                : Effect.void,
+            onRunnerRead: () =>
+              stage === "runner receipts are read"
+                ? Effect.sync(() => {
+                    currentThreads[0] = { ...settled, settledOverride: "active" };
+                  })
+                : Effect.void,
+          });
+
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            yield* fixture.publishEvent(settledEvent(settled));
             yield* fixture.publishEvent(settledEvent(marker));
             assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, marker.id);
           }).pipe(Effect.provide(fixture.layer));
@@ -1472,87 +1916,21 @@ describe("ThreadSettlementServiceV2 terminals", () => {
       ),
   );
 
-  it.effect("retries deferred cleanup when the settled thread's active run finishes", () =>
+  it.effect("keeps dependencies when a runner ownership receipt cannot be validated", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const owner = appThread("deferred-owner", "settled", "/worktrees/deferred");
-        const marker = appThread("marker-one", "settled", "/worktrees/marker-one");
-        const markerTwo = appThread("marker-two", "settled", "/worktrees/marker-two");
-        const active = shell({
-          id: owner.id,
-          worktreePath: owner.worktreePath,
-          settledAt: owner.settledAt,
-          settledOverride: "settled",
-          status: "running",
-          activeRunId: RunId.make("active-run"),
-        });
+        const owner = appThread("unverified-runner", "settled", "/worktrees/unverified");
+        const marker = appThread("marker-thread", "settled", "/worktrees/marker");
         const fixture = yield* makeHarness({
-          snapshot: makeSnapshot([active]),
-          currentThreads: [owner, marker, markerTwo],
-          existingWorktreePaths: [
-            "/worktrees/deferred",
-            "/worktrees/marker-one",
-            "/worktrees/marker-two",
-          ],
+          snapshot: makeSnapshot([]),
+          currentThreads: [owner, marker],
+          existingWorktreePaths: ["/worktrees/unverified", "/worktrees/marker"],
+          runnerReceiptNames: { "/worktrees/unverified/.t3/dev-runners": ["unknown.json"] },
         });
         yield* Effect.gen(function* () {
           const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
           yield* startHarness(service, fixture.activation, fixture.snapshotReads);
           yield* fixture.publishEvent(settledEvent(owner));
-          yield* fixture.publishEvent(settledEvent(marker));
-          assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, marker.id);
-          yield* Ref.set(fixture.snapshots, makeSnapshot([]));
-          yield* fixture.publishEvent({
-            type: "run.updated",
-            id: EventId.make("completed-for-cleanup"),
-            threadId: owner.id,
-            occurredAt: DateTime.makeUnsafe(NOW),
-            payload: {
-              id: RunId.make("active-run"),
-              threadId: owner.id,
-              ordinal: 1,
-              providerInstanceId: owner.providerInstanceId,
-              modelSelection: owner.modelSelection,
-              providerThreadId: null,
-              userMessageId: MessageId.make("message"),
-              rootNodeId: null,
-              activeAttemptId: null,
-              status: "completed",
-              requestedAt: DateTime.makeUnsafe(NOW),
-              startedAt: DateTime.makeUnsafe(NOW),
-              completedAt: DateTime.makeUnsafe(NOW),
-              checkpointId: null,
-              contextHandoffId: null,
-            },
-          });
-          yield* fixture.publishEvent(settledEvent(markerTwo));
-          assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, owner.id);
-          assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, markerTwo.id);
-        }).pipe(Effect.provide(fixture.layer));
-      }),
-    ),
-  );
-
-  it.effect("skips the settle script for a thread re-engaged while its shells close", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const settled = appThread("reengaging-thread", "settled", "/worktrees/reengaging");
-        const marker = appThread("marker-thread", "settled", "/worktrees/marker");
-        const currentThreads = [settled, marker];
-        const fixture = yield* makeHarness({
-          snapshot: makeSnapshot([]),
-          currentThreads,
-          existingWorktreePaths: ["/worktrees/reengaging", "/worktrees/marker"],
-          onCloseIdle: () =>
-            Effect.sync(() => {
-              currentThreads[0] = { ...settled, settledOverride: "active" };
-            }),
-        });
-
-        yield* Effect.gen(function* () {
-          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
-          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
-          yield* fixture.publishEvent(settledEvent(settled));
           yield* fixture.publishEvent(settledEvent(marker));
           assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, marker.id);
         }).pipe(Effect.provide(fixture.layer));

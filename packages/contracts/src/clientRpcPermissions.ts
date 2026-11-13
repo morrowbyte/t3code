@@ -20,6 +20,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.shellOpenFile]: AuthOrchestrationOperateScope,
   [WS_METHODS.boatDefaults]: AuthSettingsWriteScope,
   [WS_METHODS.boatRead]: AuthOrchestrationReadScope,
+  [WS_METHODS.serverGetExecutionUsage]: AuthOrchestrationReadScope,
   [WS_METHODS.boatConnect]: AuthSettingsWriteScope,
   [WS_METHODS.boatDisconnect]: AuthSettingsWriteScope,
   [WS_METHODS.boatConfigure]: AuthSettingsWriteScope,

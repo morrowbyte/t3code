@@ -702,6 +702,7 @@ describe("terminalLinkAtPositionWithRange", () => {
     expect(terminalLinkAtPositionWithRange(rows, 3, 4)?.text).toBe("C:\\repo\\file.ts");
     expect(terminalLinkAtPositionWithRange(rows, 4, 13)).toEqual({
       text: "C:\\repo\\dir 1\\test",
+      isDirectory: true,
       range: { start: { x: 3, y: 4 }, end: { x: 4, y: 5 } },
     });
     expect(terminalLinkAtPositionWithRange(rows, 5, 2)?.text).toBe("C:\\repo\\dir 1\\test");

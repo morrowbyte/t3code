@@ -31,6 +31,7 @@ export interface ExpandedImageItem {
   originalUrl?: string;
   srcFragment?: string;
   actionsSource?: MediaActionSource;
+  onApplyAnnotation?: (file: File, text: string, signal: AbortSignal) => Promise<boolean>;
 }
 
 export interface ExpandedImagePreview {
@@ -162,6 +163,12 @@ export function attachVideoThumbnail(video: HTMLVideoElement, file: File): () =>
 export function buildExpandedImagePreview(
   images: ReadonlyArray<ChatImageAttachment | ComposerFileAttachment>,
   selectedImageId: string,
+  onApplyAnnotation?: (
+    imageId: string,
+    file: File,
+    text: string,
+    signal: AbortSignal,
+  ) => Promise<boolean>,
 ): ExpandedImagePreview | null {
   const selected = images.find((image) => image.id === selectedImageId);
   if (selected?.type === "file" && selected.file && isVideoAttachment(selected)) {
@@ -203,6 +210,12 @@ export function buildExpandedImagePreview(
       name: image.name,
       mimeType: image.mimeType,
       ...(image.source?.kind === "snap-shot" ? { source: image.source } : {}),
+      ...(onApplyAnnotation
+        ? {
+            onApplyAnnotation: (file: File, text: string, signal: AbortSignal) =>
+              onApplyAnnotation(image.id, file, text, signal),
+          }
+        : {}),
     })),
     index: selectedIndex,
   };

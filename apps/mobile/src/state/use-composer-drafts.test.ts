@@ -13,7 +13,6 @@ import {
 } from "../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
-import { afterEach, describe, expect, it } from "@effect/vitest";
 import {
   CommandId,
   ComposerContextId,
@@ -26,7 +25,7 @@ import {
   type OrchestrationV2ShellSnapshot,
   type ModelSelection,
 } from "@t3tools/contracts";
-import { onTestFinished, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 
 const composerDraftFileMocks = vi.hoisted(() => {
   let document = JSON.stringify({ schemaVersion: 1, drafts: {} });
@@ -121,6 +120,7 @@ const composerDraftFileMocks = vi.hoisted(() => {
 });
 
 const composerAttachmentCleanupMocks = vi.hoisted(() => ({
+  create: vi.fn<typeof import("../lib/composerImages").createComposerFileAttachment>(),
   remove: vi.fn(async () => undefined),
   releaseUploads: vi.fn(async () => undefined),
 }));
@@ -139,6 +139,7 @@ vi.mock("expo-file-system", () => ({
 
 vi.mock("../lib/composerImages", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/composerImages")>()),
+  createComposerFileAttachment: composerAttachmentCleanupMocks.create,
   removePersistedComposerAttachmentFile: composerAttachmentCleanupMocks.remove,
 }));
 
@@ -171,6 +172,8 @@ import {
   formatComposerContextReference,
 } from "@t3tools/shared/composerContextReferences";
 import { appAtomRegistry } from "./atom-registry";
+import { applyComposerImageAnnotation } from "./apply-image-annotation";
+import { questionAttachmentDraftKey } from "./question-attachments";
 import { startComposerDraftOperation } from "./composerDraftOperations";
 import { threadOutboxManager } from "./thread-outbox";
 import {
@@ -201,6 +204,7 @@ import {
   releaseUnusedComposerAttachmentFiles,
   removeComposerDraftsForEnvironment,
   replaceComposerDraftAttachments,
+  replaceComposerDraftAttachment,
   resetComposerDraftsLoadState,
   restoreComposerDraftSnapshotState,
   restoreCloudComposerDrafts,
@@ -241,6 +245,7 @@ afterEach(() => {
   appAtomRegistry.set(modelOptionMemoryAtom, {});
   appAtomRegistry.set(threadOutboxManager.queuedMessagesByThreadKeyAtom, {});
   composerAttachmentCleanupMocks.remove.mockClear();
+  composerAttachmentCleanupMocks.create.mockReset();
   composerAttachmentCleanupMocks.releaseUploads.mockReset();
   composerAttachmentCleanupMocks.releaseUploads.mockResolvedValue(undefined);
   incomingShareStorageMocks.load.mockReset();
@@ -582,6 +587,124 @@ describe("mobile composer drafts", () => {
     }
     h.update({ modelSelection: { ...pick, options: pick.options!.toReversed() } });
     expect(appAtomRegistry.get(composerDraftsAtom)[key]).toBeUndefined();
+  });
+
+  it("replaces an annotated attachment without losing text, references or other files", async () => {
+    const key = "new-task:annotation";
+    const original = {
+      type: "file" as const,
+      id: "original",
+      name: "image.png",
+      mimeType: "image/png",
+      sizeBytes: 1,
+      fileUri: "file:///original.png",
+    };
+    const other = {
+      ...original,
+      id: "other",
+      name: "notes.txt",
+      mimeType: "text/plain",
+      fileUri: "file:///notes.txt",
+    };
+    const replacement = {
+      ...original,
+      id: "annotated",
+      name: "marked.png",
+      fileUri: "file:///marked.png",
+    };
+    appendComposerDraftAttachments(key, [original, other], { appendReference: true });
+    const before = getComposerDraftSnapshot(key);
+    expect(replaceComposerDraftAttachment(key, original.id, replacement, "Look here.")).toBe(true);
+    const after = getComposerDraftSnapshot(key);
+    expect(after.text).toBe(`${before.text}\n\nLook here.`);
+    expect(after.attachments).toEqual([replacement, other]);
+    expect(after.context?.records[0]).toMatchObject({
+      contextId: before.context?.records[0]?.contextId,
+      attachmentId: replacement.id,
+      kind: "image",
+    });
+    expect(replaceComposerDraftAttachment(key, original.id, replacement, "Again")).toBe(false);
+    expect(getComposerDraftSnapshot(key)).toEqual(after);
+
+    const questionKey = questionAttachmentDraftKey(
+      EnvironmentId.make("remote"),
+      ThreadId.make("thread"),
+      "request",
+      "question",
+    );
+    appendComposerDraftAttachments(questionKey, [original, other]);
+    let answer = "Keep the layout.";
+    const onComment = (text: string) => {
+      answer = `${answer}\n\n${text}`;
+    };
+    const controller = new AbortController();
+    const input = {
+      draftKey: questionKey,
+      attachmentId: original.id,
+      image: { uri: "file:///raster.png", name: "marked.png", width: 160, height: 100 },
+      text: "Look here.",
+      signal: controller.signal,
+      isCurrent: () => true,
+      onComment,
+    };
+    composerAttachmentCleanupMocks.create.mockResolvedValueOnce(replacement);
+    expect(await applyComposerImageAnnotation(input)).toBe(true);
+    expect(answer).toBe("Keep the layout.\n\nLook here.");
+    expect(getComposerDraftSnapshot(questionKey).text).toBe("");
+    expect(getComposerDraftSnapshot(questionKey).attachments).toEqual([replacement, other]);
+
+    const questionAfter = getComposerDraftSnapshot(questionKey);
+    for (const cancelledBy of ["abort", "target"] as const) {
+      let current = true;
+      const pending = Promise.withResolvers<typeof replacement>();
+      const abort = new AbortController();
+      composerAttachmentCleanupMocks.create.mockReturnValueOnce(pending.promise);
+      const applying = applyComposerImageAnnotation({
+        ...input,
+        attachmentId: replacement.id,
+        signal: abort.signal,
+        isCurrent: () => current,
+      });
+      if (cancelledBy === "abort") abort.abort();
+      else current = false;
+      const discarded = { ...replacement, id: cancelledBy, fileUri: `file:///${cancelledBy}.png` };
+      pending.resolve(discarded);
+      expect(await applying).toBe(false);
+      expect(getComposerDraftSnapshot(questionKey)).toEqual(questionAfter);
+      expect(answer).toBe("Keep the layout.\n\nLook here.");
+      expect(composerAttachmentCleanupMocks.remove).toHaveBeenCalledWith(discarded.fileUri);
+    }
+
+    let reviewAttachments = [original, other];
+    let reviewComment = "Check this line.";
+    const reviewInput = {
+      image: input.image,
+      text: "Marked region.",
+      signal: new AbortController().signal,
+      isCurrent: () => true,
+      replaceAttachment: (attachment: typeof replacement) => {
+        if (!reviewAttachments.includes(original)) return false;
+        reviewAttachments = reviewAttachments.map((entry) =>
+          entry === original ? attachment : entry,
+        );
+        return true;
+      },
+      onComment: (text: string) => {
+        reviewComment = `${reviewComment}\n\n${text}`;
+      },
+    };
+    composerAttachmentCleanupMocks.create.mockResolvedValueOnce(replacement);
+    expect(await applyComposerImageAnnotation(reviewInput)).toBe(true);
+    expect(reviewAttachments).toEqual([replacement, other]);
+    expect(reviewComment).toBe("Check this line.\n\nMarked region.");
+    expect(getComposerDraftSnapshot(questionKey)).toEqual(questionAfter);
+
+    const rejected = { ...replacement, id: "rejected", fileUri: "file:///rejected.png" };
+    composerAttachmentCleanupMocks.create.mockResolvedValueOnce(rejected);
+    expect(await applyComposerImageAnnotation(reviewInput)).toBe(false);
+    expect(reviewAttachments).toEqual([replacement, other]);
+    expect(reviewComment).toBe("Check this line.\n\nMarked region.");
+    expect(composerAttachmentCleanupMocks.remove).toHaveBeenCalledWith(rejected.fileUri);
   });
 
   it("drops chips and records for attachments a replace no longer keeps", () => {

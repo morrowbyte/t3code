@@ -39,7 +39,9 @@ export const LinearDelivery = Schema.Struct({
   receivedAt: Schema.Number,
   outcome: LinearDeliveryOutcome,
   runId: Schema.NullOr(Schema.String),
-  dispatch: Schema.NullOr(Schema.Literals(["started", "queued", "steered", "restarted"])),
+  dispatch: Schema.NullOr(
+    Schema.Literals(["accepted", "started", "queued", "steered", "restarted", "failed"]),
+  ),
 });
 export type LinearDelivery = typeof LinearDelivery.Type;
 

@@ -118,90 +118,119 @@ const layerDispatchChokepointTest =
       Layer.provideMerge(layerReceiptsTest),
     );
 
-it.effect("replays a successful steer after its target run has completed", () => {
-  const projectId = ProjectId.make("project:steer-retry");
-  const threadId = ThreadId.make("thread:steer-retry");
-  const commandId = CommandId.make("command:steer-retry");
-  const messageId = MessageId.make("message:steer-retry");
-  const runId = RunId.make("run:steer-retry");
-  const attemptId = RunAttemptId.make("attempt:steer-retry");
-  const instanceId = ProviderInstanceId.make("codex_work");
-  let finished = false;
-  const dispatchModes: Array<string> = [];
-  const layerTest = ThreadManagementService.layer.pipe(
-    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
-    Layer.provide(
-      Layer.mock(Orchestrator.OrchestratorV2)({
-        getThreadRecords: () =>
-          Effect.sync(
-            () =>
-              ({
-                thread: {
-                  id: threadId,
-                  projectId,
-                  deletedAt: null,
-                  archivedAt: null,
-                  modelSelection: { instanceId, model: "test" },
-                },
-                runs: [
-                  {
-                    id: runId,
-                    ordinal: 1,
-                    status: finished ? "completed" : "running",
-                    activeAttemptId: attemptId,
+it.effect.each([
+  { deliveryStatus: "completed", runtimeAccepted: true },
+  { deliveryStatus: "completed", runtimeAccepted: false },
+  { deliveryStatus: "failed", runtimeAccepted: false },
+] as const)(
+  "replays a settled steer ($deliveryStatus, acknowledged=$runtimeAccepted)",
+  ({ deliveryStatus, runtimeAccepted }) => {
+    const projectId = ProjectId.make("project:steer-retry");
+    const threadId = ThreadId.make("thread:steer-retry");
+    const commandId = CommandId.make("command:steer-retry");
+    const messageId = MessageId.make("message:steer-retry");
+    const runId = RunId.make("run:steer-retry");
+    const attemptId = RunAttemptId.make("attempt:steer-retry");
+    const instanceId = ProviderInstanceId.make("codex_work");
+    let finished = false;
+    const dispatchModes: Array<string> = [];
+    const layerTest = ThreadManagementService.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+      Layer.provide(
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          getThreadRecords: () =>
+            Effect.sync(
+              () =>
+                ({
+                  thread: {
+                    id: threadId,
+                    projectId,
+                    deletedAt: null,
+                    archivedAt: null,
+                    modelSelection: { instanceId, model: "test" },
                   },
-                ],
-                providerTurns: finished ? [] : [{ runAttemptId: attemptId, status: "running" }],
-                messages: [{ id: messageId, runId }],
-                turnItems: [{ type: "user_message", messageId, inputIntent: "steer" }],
-              }) as unknown as OrchestrationV2ThreadProjection,
-          ),
-        dispatch: (command) =>
-          Effect.sync(() => {
-            if (command.type === "message.dispatch") dispatchModes.push(command.dispatchMode.type);
-            return { sequence: 1, storedEvents: [], replayed: finished } as never;
-          }),
-      }),
-    ),
-    Layer.provide(
-      ServerSettings.layerTest({
-        providerInstances: { [instanceId]: { driver: "codex", enabled: true } },
-      }),
-    ),
-    Layer.provideMerge(layerReceiptsTest),
-  );
-  return Effect.gen(function* () {
-    const threads = yield* ThreadManagementService.ThreadManagementService;
-    const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
-    const request = {
-      projectId,
-      threadId,
-      commandId,
-      messageId,
-      text: "fixture steer",
-      attachments: [],
-      mode: "steer",
-      createdBy: "agent",
-      creationSource: "mcp",
-    } as const;
-    const first = yield* threads.sendToThread(request);
-    expect(first.delivery).toBe("steered");
-    yield* receipts.insertIfAbsent({
-      commandId,
-      threadId,
-      commandType: "message.dispatch",
-      acceptedAt: yield* DateTime.now,
-      resultSequence: 1,
-      status: "accepted",
-      error: null,
-    });
-    finished = true;
-    const replay = yield* threads.sendToThread(request);
-    expect(replay.dispatch.replayed).toBe(true);
-    expect(replay.message.id).toBe(messageId);
-    expect(dispatchModes).toEqual(["steer_active", "start_immediately"]);
-  }).pipe(Effect.provide(layerTest));
-});
+                  runs: [
+                    {
+                      id: runId,
+                      ordinal: 1,
+                      status: finished ? "completed" : "running",
+                      activeAttemptId: attemptId,
+                    },
+                  ],
+                  providerTurns: finished ? [] : [{ runAttemptId: attemptId, status: "running" }],
+                  messages: [{ id: messageId, runId }],
+                  turnItems: [
+                    {
+                      type: "user_message",
+                      messageId,
+                      inputIntent: "steer",
+                      status: finished ? deliveryStatus : "pending",
+                    },
+                  ],
+                }) as unknown as OrchestrationV2ThreadProjection,
+            ),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              if (command.type === "message.dispatch")
+                dispatchModes.push(command.dispatchMode.type);
+              return { sequence: 1, storedEvents: [], replayed: finished } as never;
+            }),
+        }),
+      ),
+      Layer.provide(
+        ServerSettings.layerTest({
+          providerInstances: { [instanceId]: { driver: "codex", enabled: true } },
+        }),
+      ),
+      Layer.provideMerge(layerReceiptsTest),
+    );
+    return Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      const request = {
+        projectId,
+        threadId,
+        commandId,
+        messageId,
+        text: "fixture steer",
+        attachments: [],
+        mode: "steer",
+        createdBy: "agent",
+        creationSource: "mcp",
+      } as const;
+      const first = yield* threads.sendToThread(request);
+      expect(first.delivery).toBe("accepted");
+      yield* receipts.insertIfAbsent({
+        commandId,
+        threadId,
+        commandType: "message.dispatch",
+        acceptedAt: yield* DateTime.now,
+        resultSequence: 1,
+        status: "accepted",
+        error: null,
+      });
+      finished = true;
+      if (runtimeAccepted) {
+        yield* receipts.insertIfAbsent({
+          commandId: CommandId.make(`${commandId}:steering-delivery-accepted`),
+          threadId,
+          commandType: "message.steering.settle",
+          acceptedAt: yield* DateTime.now,
+          resultSequence: 2,
+          status: "accepted",
+          error: null,
+        });
+      }
+      const replay = yield* threads.sendToThread(request);
+      expect(replay.dispatch.replayed).toBe(true);
+      expect(replay.message.id).toBe(messageId);
+      expect(replay.delivery).toBe(
+        deliveryStatus === "failed" ? "failed" : runtimeAccepted ? "steered" : "accepted",
+      );
+      expect(dispatchModes).toEqual(["steer_active", "start_immediately"]);
+    }).pipe(Effect.provide(layerTest));
+  },
+);
 
 it.effect(
   "the dispatch chokepoint refuses a continuation message.dispatch on a project-disabled instance before reaching the orchestrator",

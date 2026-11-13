@@ -1,32 +1,65 @@
 // @effect-diagnostics nodeBuiltinImport:off - builds real worktree layouts on disk.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeFS from "node:fs";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, live } from "@effect/vitest";
 import * as ByteSize from "effect/ByteSize";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
 import { ChildProcessSpawner } from "effect/process";
 
+import {
+  captureIdentity,
+  createDevRunnerOutput,
+  isProvenDead,
+  reconcileDevRunnerOutputs,
+  stopDevRunners,
+} from "@t3tools/shared/node/devRunnerControl";
 import {
   checkPortAvailabilityOnHosts,
   createDevRunnerEnv,
   findFirstAvailableOffset,
   resolveModePortOffsets,
+  resolveTaskWorkspace,
   runDevRunnerWithInput,
 } from "./dev-runner.ts";
 
 const emptyConfigLayer = ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }));
+const decodeReady = Schema.decodeUnknownSync(
+  Schema.Struct({
+    reused: Schema.Boolean,
+    outputPath: Schema.String,
+    connection: Schema.Struct({ baseDir: Schema.String }),
+  }),
+);
+const decodeFailure = Schema.decodeUnknownSync(
+  Schema.Struct({ error: Schema.String, outputPath: Schema.String }),
+);
+const decodeReceipt = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      child: Schema.Struct({ pid: Schema.Number }),
+      owner: Schema.Struct({ pid: Schema.Number }),
+    }),
+  ),
+);
 const netServiceLayer = Layer.succeed(NetService.NetService, {
   canListenOnHost: () => Effect.succeed(true),
   isPortAvailableOnLoopback: () => Effect.succeed(true),
@@ -54,6 +87,24 @@ function mockProcess(exit: number | PlatformError.PlatformError) {
   });
 }
 
+const onceWorkerEvent = (worker: NodeChildProcess.ChildProcess, event: "message" | "exit") =>
+  new Promise<ReadonlyArray<unknown>>((resolve, reject) => {
+    const cleanup = () => {
+      worker.off(event, success);
+      worker.off("error", failure);
+    };
+    const success = (...values: ReadonlyArray<unknown>) => {
+      cleanup();
+      resolve(values);
+    };
+    const failure = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    worker.once(event, success);
+    worker.once("error", failure);
+  });
+
 const devServerInput = {
   mode: "dev:server",
   t3Home: "/tmp/t3code-dev-runner",
@@ -69,7 +120,8 @@ const devServerInput = {
   runArgs: ["--inspect", "secret-token-value"],
 } as const;
 
-it.layer(NodeServices.layer)("dev-runner", (it) => {
+const devRunnerLayer = Layer.merge(NodeServices.layer, Layer.succeed(HostProcess.Environment, {}));
+it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
   describe("createDevRunnerEnv", () => {
     it.effect("forwards the reusable auth token to web dev and removes it for desktop", () =>
       Effect.gen(function* () {
@@ -361,6 +413,536 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
   });
 
   describe("runDevRunnerWithInput", () => {
+    live.each([
+      { detached: false, crashed: false, descendant: false },
+      { detached: true, crashed: false, descendant: false },
+      { detached: true, crashed: true, descendant: false },
+      { detached: true, crashed: true, descendant: true },
+    ])("retains bounded native worker stderr after failure: %j", (fixture) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { detached, crashed, descendant } = fixture;
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const platform = yield* HostProcess.Platform;
+          const root = yield* fs.makeTempDirectoryScoped();
+          const workspace = path.join(root, "workspace");
+          yield* fs.makeDirectory(path.join(workspace, ".git"), { recursive: true });
+          const directory = path.join(workspace, ".t3", "dev-runner-output");
+          yield* fs.makeDirectory(directory, { recursive: true });
+          const db = new NodeSqlite.DatabaseSync(path.join(directory, "failures.sqlite"));
+          try {
+            db.exec(
+              "CREATE TABLE failures (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL)",
+            );
+            for (let index = 0; index < 8; index++) {
+              const name = `runner-retained${index}.log`;
+              NodeFS.writeFileSync(path.join(directory, name), "old failure", { mode: 0o600 });
+              db.prepare("INSERT INTO failures (name) VALUES (?)").run(name);
+            }
+          } finally {
+            db.close();
+          }
+          const active = yield* createDevRunnerOutput({
+            workspacePath: workspace,
+            threadId: "other-active-owner",
+          });
+          NodeFS.writeFileSync(active.path, "other active output");
+          yield* Effect.addFinalizer(() => active.remove.pipe(Effect.orDie));
+          const sameOwnerActive = yield* createDevRunnerOutput({
+            workspacePath: workspace,
+            threadId: "failed-worker-owner",
+          });
+          NodeFS.writeFileSync(sameOwnerActive.path, "same thread active output");
+          yield* Effect.addFinalizer(() => sameOwnerActive.remove.pipe(Effect.orDie));
+          const connected = yield* Deferred.make<NodeNet.Socket>();
+          const sockets = new Set<NodeNet.Socket>();
+          const server = NodeNet.createServer((socket) => {
+            sockets.add(socket);
+            socket.once("close", () => sockets.delete(socket));
+            socket.on("error", () => socket.destroy());
+            socket.once("data", () => Deferred.doneUnsafe(connected, Effect.succeed(socket)));
+          });
+          yield* Effect.acquireRelease(
+            Effect.callback<void>((resume) => {
+              server.listen(0, "127.0.0.1", () => resume(Effect.void));
+            }),
+            () =>
+              Effect.promise(
+                () =>
+                  new Promise<void>((resolve) => {
+                    for (const socket of sockets) socket.destroy();
+                    server.close(() => resolve());
+                  }),
+              ),
+          );
+          const executable = path.join(root, platform === "win32" ? "runner-fixture.cjs" : "vp");
+          yield* fs.writeFileString(
+            executable,
+            `#!${process.execPath}
+const net = require("node:net");
+if (process.env.RUNNER_FIXTURE_CRASH && !process.env.RUNNER_FIXTURE_DESCENDANT) process.on("SIGTERM", () => {});
+const connect = () => {
+const socket = net.createConnection({ host: "127.0.0.1", port: Number(process.env.RUNNER_FIXTURE_PORT) }, () => socket.write("ready\\n"));
+socket.once("data", () => process.stdout.write(process.env.RUNNER_FIXTURE_CRASH ? "crash-output\\n" : Buffer.alloc(3 * 1024 * 1024, "x"), () => process.stderr.write("late-stderr-marker\\n", () => { if (!process.env.RUNNER_FIXTURE_CRASH) process.exit(7); })));
+socket.on("end", () => process.exit(0));
+};
+if (process.env.RUNNER_FIXTURE_DESCENDANT) {
+  const child = require("node:child_process").spawn(process.execPath, ["-e", 'const socket = require("node:net").createConnection({ host: "127.0.0.1", port: Number(process.env.RUNNER_FIXTURE_PORT) }, () => process.send("ready")); process.on("SIGTERM", () => {}); socket.on("end", () => process.exit(0));'], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  child.once("message", connect);
+} else connect();
+`,
+          );
+          yield* fs.chmod(executable, 0o700);
+          if (platform === "win32")
+            yield* fs.writeFileString(
+              path.join(root, "vp.cmd"),
+              `@"${process.execPath}" "%~dp0runner-fixture.cjs" %*\r\n`,
+            );
+          const worker = yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              NodeChildProcess.fork(path.join(import.meta.dirname, "dev-runner-worker.ts"), [], {
+                cwd: workspace,
+                execArgv: [],
+                stdio: ["ignore", "ignore", "ignore", "ipc"],
+                env: {
+                  ...process.env,
+                  PATH: `${root}${NodePath.delimiter}${process.env.PATH ?? ""}`,
+                  T3CODE_THREAD_ID: "failed-worker-owner",
+                  ...(crashed ? { RUNNER_FIXTURE_CRASH: "1" } : {}),
+                  ...(descendant ? { RUNNER_FIXTURE_DESCENDANT: "1" } : {}),
+                  RUNNER_FIXTURE_PORT: String((server.address() as NodeNet.AddressInfo).port),
+                },
+              }),
+            ),
+            (worker) =>
+              Effect.sync(() => {
+                if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGTERM");
+              }),
+          );
+          const exit = onceWorkerEvent(worker, "exit");
+          yield* Effect.promise(() => onceWorkerEvent(worker, "message"));
+          worker.send({ ...devServerInput, t3Home: path.join(root, "state"), seed: false });
+          const [raw] = yield* Effect.promise(() => onceWorkerEvent(worker, "message"));
+          const ready = decodeReady(raw);
+          const socket = yield* Deferred.await(connected);
+          yield* Effect.addFinalizer(() => Effect.sync(() => socket.destroy()));
+          if (detached) worker.disconnect();
+          const failure = detached ? undefined : onceWorkerEvent(worker, "message");
+          if (crashed) {
+            const logged = yield* Deferred.make<void>();
+            yield* Effect.acquireRelease(
+              Effect.sync(() =>
+                NodeFS.watch(ready.outputPath, () => {
+                  if (NodeFS.readFileSync(ready.outputPath, "utf8").includes("late-stderr-marker"))
+                    Deferred.doneUnsafe(logged, Effect.void);
+                }),
+              ),
+              (watcher) => Effect.sync(() => watcher.close()),
+            );
+            socket.write("fail\n");
+            yield* Deferred.await(logged);
+            worker.kill("SIGKILL");
+          } else socket.write("fail\n");
+          if (failure !== undefined) {
+            const [rawFailure] = yield* Effect.promise(() => failure);
+            const value = decodeFailure(rawFailure);
+            assert.strictEqual(value.outputPath, ready.outputPath);
+            assert.notInclude(value.error, "late-stderr-marker");
+          }
+          const [code] = yield* Effect.promise(() => exit);
+          assert.notStrictEqual(code, 0);
+          if (crashed) {
+            yield* reconcileDevRunnerOutputs({
+              workspacePath: workspace,
+              threadId: "failed-worker-owner",
+            }).pipe(
+              Effect.provideService(HostProcess.Platform, "linux"),
+              Effect.provideService(
+                FileSystem.FileSystem,
+                FileSystem.FileSystem.of({
+                  ...fs,
+                  readFileString: (file, encoding) =>
+                    file === "/proc/sys/kernel/random/boot_id"
+                      ? Effect.succeed("unavailable")
+                      : fs.readFileString(file, encoding),
+                }),
+              ),
+            );
+            assert.lengthOf(
+              (yield* fs.readDirectory(directory)).filter((name) => name.endsWith(".log")),
+              11,
+            );
+            yield* reconcileDevRunnerOutputs({
+              workspacePath: workspace,
+              threadId: "failed-worker-owner",
+            });
+          }
+          assert.include(yield* fs.readFileString(ready.outputPath), "late-stderr-marker");
+          assert.strictEqual(yield* fs.readFileString(active.path), "other active output");
+          assert.strictEqual(
+            yield* fs.readFileString(sameOwnerActive.path),
+            "same thread active output",
+          );
+          assert.isAtMost(Number((yield* fs.stat(ready.outputPath)).size), 2 * 1024 * 1024);
+          assert.lengthOf(
+            (yield* fs.readDirectory(directory)).filter((name) => name.endsWith(".log")),
+            10,
+          );
+          assert.isFalse(yield* fs.exists(path.join(directory, "runner-retained0.log")));
+          if (crashed && platform === "linux") {
+            const input = { workspacePath: workspace, threadId: "failed-worker-owner" };
+            const receiptDirectory = path.join(workspace, ".t3", "dev-runners");
+            const [name] = yield* fs.readDirectory(receiptDirectory);
+            const receipt = decodeReceipt(
+              yield* fs.readFileString(path.join(receiptDirectory, name!)),
+            );
+            const child = yield* captureIdentity(receipt.child.pid);
+            assert.isDefined(child);
+            assert.isTrue(
+              yield* stopDevRunners({
+                ...input,
+                threadId: "foreign-owner",
+                canStop: Effect.succeed(true),
+              }),
+            );
+            assert.isFalse(yield* isProvenDead(child));
+            assert.isFalse(yield* stopDevRunners({ ...input, canStop: Effect.succeed(false) }));
+            assert.isFalse(yield* isProvenDead(child));
+            if (descendant) {
+              assert.isFalse(
+                yield* stopDevRunners({
+                  ...input,
+                  canStop: isProvenDead(child).pipe(
+                    Effect.map((dead) => !dead),
+                    Effect.provideService(FileSystem.FileSystem, fs),
+                  ),
+                }),
+              );
+              assert.isTrue(yield* isProvenDead(child));
+              assert.isTrue(yield* fs.exists(path.join(receiptDirectory, name!)));
+            }
+            const stopped = yield* stopDevRunners({ ...input, canStop: Effect.succeed(true) });
+            assert.isTrue(stopped);
+            assert.isTrue(yield* isProvenDead(child));
+            assert.deepEqual(
+              yield* fs.readDirectory(path.join(workspace, ".t3", "dev-runners")),
+              [],
+            );
+          }
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect.each(["root", "linked"] as const)(
+      "resolves a canonical %s workspace from an aliased subdirectory",
+      (kind) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const root = yield* fs.makeTempDirectoryScoped();
+            const workspacePath = path.join(root, "workspace");
+            const nested = path.join(workspacePath, "src", "nested");
+            yield* fs.makeDirectory(nested, { recursive: true });
+            if (kind === "root") yield* fs.makeDirectory(path.join(workspacePath, ".git"));
+            else
+              yield* fs.writeFileString(
+                path.join(workspacePath, ".git"),
+                "gitdir: /repo/.git/worktrees/task\n",
+              );
+            const alias = path.join(root, "alias");
+            yield* fs.symlink(workspacePath, alias);
+            assert.strictEqual(
+              yield* resolveTaskWorkspace(path.join(alias, "src", "nested")),
+              yield* fs.realPath(workspacePath),
+            );
+          }),
+        ),
+    );
+
+    live.each([
+      { signal: "SIGINT", home: "explicit" },
+      { signal: "SIGTERM", home: "explicit" },
+      { signal: "SIGINT", home: "environment" },
+      { signal: "SIGINT", home: "worktree" },
+    ] as const)(
+      "retains the real scoped runner and controller across caller interruption: %j",
+      (fixture) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const { signal, home } = fixture;
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const platform = yield* HostProcess.Platform;
+            const root = yield* fs.makeTempDirectoryScoped();
+            const workspacePath = path.join(root, "workspace");
+            const cwd = path.join(workspacePath, "src");
+            yield* fs.makeDirectory(workspacePath, { recursive: true });
+            if (home === "worktree")
+              yield* fs.writeFileString(
+                path.join(workspacePath, ".git"),
+                "gitdir: /repo/.git/worktrees/task\n",
+              );
+            else yield* fs.makeDirectory(path.join(workspacePath, ".git"));
+            yield* fs.makeDirectory(cwd);
+            const fixtureStarted = yield* Deferred.make<number>();
+            const fixtureClosed = yield* Deferred.make<void>();
+            const sockets = new Set<NodeNet.Socket>();
+            let starts = 0;
+            const server = NodeNet.createServer((socket) => {
+              sockets.add(socket);
+              socket.on("error", () => socket.destroy());
+              let contents = "";
+              socket.on("data", (chunk) => {
+                contents += String(chunk);
+                if (!contents.includes("\n")) return;
+                starts += 1;
+                Deferred.doneUnsafe(fixtureStarted, Effect.succeed(Number(contents.trim())));
+              });
+              socket.once("close", () => {
+                sockets.delete(socket);
+                Deferred.doneUnsafe(fixtureClosed, Effect.void);
+              });
+            });
+            yield* Effect.acquireRelease(
+              Effect.callback<void>((resume) => {
+                server.listen(0, "127.0.0.1", () => resume(Effect.void));
+              }),
+              () =>
+                Effect.promise(
+                  () =>
+                    new Promise<void>((resolve) => {
+                      for (const socket of sockets) socket.destroy();
+                      server.close(() => resolve());
+                    }),
+                ),
+            );
+            const executable = path.join(root, platform === "win32" ? "runner-fixture.cjs" : "vp");
+            yield* fs.writeFileString(
+              executable,
+              `#!${process.execPath}
+const net = require("node:net");
+const socket = net.createConnection({ host: "127.0.0.1", port: Number(process.env.RUNNER_FIXTURE_PORT) }, () => socket.write(String(process.pid) + "\\n"));
+socket.on("close", () => process.exit(0));
+process.on("SIGTERM", () => socket.end());
+`,
+            );
+            yield* fs.chmod(executable, 0o700);
+            if (platform === "win32")
+              yield* fs.writeFileString(
+                path.join(root, "vp.cmd"),
+                `@"${process.execPath}" "%~dp0runner-fixture.cjs" %*\r\n`,
+              );
+            const launch = Effect.fn("test.launchTaskRunner")(function* (selection = "a") {
+              const child = yield* Effect.acquireRelease(
+                Effect.sync(() =>
+                  NodeChildProcess.fork(
+                    path.join(import.meta.dirname, "dev-runner.ts"),
+                    [
+                      "dev:server",
+                      ...(home === "explicit" ? ["--home-dir", path.join(root, "state")] : []),
+                      "--port",
+                      "13773",
+                      "--no-seed",
+                    ],
+                    {
+                      cwd,
+                      execArgv: [],
+                      env: {
+                        ...process.env,
+                        PATH: `${root}${NodePath.delimiter}${process.env.PATH ?? ""}`,
+                        T3CODE_THREAD_ID: "real-runner-owner",
+                        T3CODE_DEV_HOME: path.join(root, `dev-home-${selection}`),
+                        T3CODE_HOME: path.join(
+                          root,
+                          home === "environment" ? "ignored-home" : `ignored-home-${selection}`,
+                        ),
+                        RUNNER_FIXTURE_PORT: String((server.address() as NodeNet.AddressInfo).port),
+                      },
+                      stdio: ["ignore", "ignore", "ignore", "ipc"],
+                    },
+                  ),
+                ),
+                (child) =>
+                  Effect.sync(() => {
+                    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+                  }),
+              );
+              const exit = onceWorkerEvent(child, "exit");
+              const ready = yield* Effect.promise(async () => {
+                const [raw] = await Promise.race([
+                  onceWorkerEvent(child, "message"),
+                  exit.then(() => {
+                    throw new Error("Runner exited before its ready receipt");
+                  }),
+                ]);
+                return decodeReady(raw);
+              });
+              return { child, exit, ready };
+            });
+            const first = yield* launch();
+            assert.isFalse(first.ready.reused);
+            assert.strictEqual(
+              first.ready.connection.baseDir,
+              home === "worktree"
+                ? path.join(workspacePath, ".t3")
+                : path.join(root, home === "explicit" ? "state" : "dev-home-a"),
+            );
+            const childPid = yield* Deferred.await(fixtureStarted);
+            const directory = path.join(workspacePath, ".t3", "dev-runners");
+            const [receiptName] = yield* fs.readDirectory(directory);
+            assert(receiptName !== undefined);
+            const receiptPath = path.join(directory, receiptName);
+            const original = yield* fs.readFileString(receiptPath);
+            const receipt = decodeReceipt(original);
+            if (platform !== "win32") assert.strictEqual(receipt.child.pid, childPid);
+            else assert.notStrictEqual(receipt.child.pid, receipt.owner.pid);
+            assert.notStrictEqual(receipt.owner.pid, first.child.pid);
+            first.child.kill(signal);
+            yield* Effect.promise(() => first.exit);
+            assert.strictEqual(yield* fs.readFileString(receiptPath), original);
+            const second = yield* launch();
+            assert.isTrue(second.ready.reused);
+            assert.strictEqual(second.ready.outputPath, first.ready.outputPath);
+            assert.deepEqual(yield* Effect.promise(() => second.exit), [0, null]);
+            assert.strictEqual(starts, 1);
+            const changed = yield* launch("b");
+            assert.strictEqual(changed.ready.reused, home !== "environment");
+            assert.strictEqual(
+              changed.ready.connection.baseDir,
+              home === "environment"
+                ? path.join(root, "dev-home-b")
+                : first.ready.connection.baseDir,
+            );
+            if (home === "environment") {
+              assert.notStrictEqual(changed.ready.outputPath, first.ready.outputPath);
+              changed.child.kill(signal);
+              yield* Effect.promise(() => changed.exit);
+            } else assert.deepEqual(yield* Effect.promise(() => changed.exit), [0, null]);
+            assert.isFalse(
+              yield* stopDevRunners({
+                threadId: "real-runner-owner",
+                workspacePath,
+                canStop: Effect.succeed(false),
+              }),
+            );
+            assert.strictEqual(yield* fs.readFileString(receiptPath), original);
+            const outputRemoved = yield* Deferred.make<void>();
+            yield* Effect.acquireRelease(
+              Effect.sync(() =>
+                NodeFS.watch(path.dirname(first.ready.outputPath), (_event, name) => {
+                  if (
+                    String(name) === path.basename(first.ready.outputPath) &&
+                    !NodeFS.existsSync(first.ready.outputPath)
+                  )
+                    Deferred.doneUnsafe(outputRemoved, Effect.void);
+                }),
+              ),
+              (watcher) => Effect.sync(() => watcher.close()),
+            );
+            assert.isTrue(
+              yield* stopDevRunners({
+                threadId: "real-runner-owner",
+                workspacePath,
+                canStop: Effect.succeed(true),
+              }),
+            );
+            yield* Deferred.await(fixtureClosed);
+            yield* Deferred.await(outputRemoved);
+            assert.deepEqual(yield* fs.readDirectory(directory), []);
+          }),
+        ).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect.each(["manual", "settlement", "unconfirmed exit"] as const)(
+      "preserves the distinction between %s and a normal child exit",
+      (kind) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const workspacePath = yield* fs.makeTempDirectoryScoped();
+            yield* fs.writeFileString(
+              path.join(workspacePath, ".git"),
+              "gitdir: /repo/.git/worktrees/task\n",
+            );
+            const spawned = yield* Deferred.make<void>();
+            const exited = yield* Deferred.make<
+              ChildProcessSpawner.ExitCode,
+              PlatformError.PlatformError
+            >();
+            let running = true;
+            let kills = 0;
+            const spawnerLayer = Layer.succeed(
+              ChildProcessSpawner.ChildProcessSpawner,
+              ChildProcessSpawner.make(() =>
+                Deferred.succeed(spawned, undefined).pipe(
+                  Effect.as(
+                    ChildProcessSpawner.makeHandle({
+                      ...mockProcess(0),
+                      exitCode: Deferred.await(exited),
+                      isRunning: Effect.sync(() => running),
+                      kill: () =>
+                        Effect.sync(() => {
+                          kills += 1;
+                          if (kind !== "unconfirmed exit") running = false;
+                        }).pipe(
+                          Effect.andThen(
+                            Deferred.fail(
+                              exited,
+                              PlatformError.systemError({
+                                _tag: "Unknown",
+                                module: "ChildProcess",
+                                method: "exitCode",
+                                description: "SIGTERM",
+                              }),
+                            ),
+                          ),
+                          Effect.asVoid,
+                        ),
+                    }),
+                  ),
+                ),
+              ),
+            );
+            const runner = yield* runDevRunnerWithInput({ ...devServerInput, seed: false }).pipe(
+              Effect.scoped,
+              Effect.provide([emptyConfigLayer, netServiceLayer, spawnerLayer]),
+              Effect.provideService(HostProcess.WorkingDirectory, workspacePath),
+              Effect.provideService(
+                HostProcess.Environment,
+                kind === "manual" ? {} : { T3CODE_THREAD_ID: "task-owner" },
+              ),
+              Effect.provideService(HostProcess.Platform, "linux"),
+              Effect.exit,
+              Effect.forkChild,
+            );
+            yield* Deferred.await(spawned);
+            const directory = path.join(workspacePath, ".t3", "dev-runners");
+            if (kind === "manual") {
+              assert.isFalse(yield* fs.exists(directory));
+              running = false;
+              yield* Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0));
+              assert.strictEqual((yield* Fiber.join(runner))._tag, "Success");
+              assert.strictEqual(kills, 0);
+              return;
+            }
+            assert.lengthOf(yield* fs.readDirectory(directory), 1);
+            const stopped = yield* stopDevRunners({
+              threadId: "task-owner",
+              workspacePath,
+              canStop: Effect.succeed(true),
+            });
+            assert.strictEqual(stopped, kind === "settlement");
+            const result = yield* Fiber.join(runner);
+            assert.strictEqual(result._tag, kind === "settlement" ? "Success" : "Failure");
+            assert.strictEqual(kills, 1);
+            assert.lengthOf(yield* fs.readDirectory(directory), running ? 1 : 0);
+          }),
+        ),
+    );
+
     it.effect("preserves process spawn context and the exact platform cause", () => {
       const cause = PlatformError.systemError({
         _tag: "NotFound",
@@ -483,11 +1065,29 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         readonly ambientBundledDev?: string | undefined;
         readonly built?: boolean;
         readonly host?: string;
+        readonly reuse?: boolean;
+        readonly stopUnconfirmed?: boolean;
+        readonly naturalExit?: boolean;
+        readonly spawnFailure?: boolean;
+        readonly clearedFalse?: boolean;
       }) =>
         Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const workspacePath = yield* fs.makeTempDirectoryScoped();
+          yield* fs.writeFileString(
+            path.join(workspacePath, ".git"),
+            "gitdir: /repo/.git/worktrees/task\n",
+          );
+          const ready = yield* Deferred.make<void>();
+          const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+          const teardownEntered = yield* Deferred.make<void>();
+          const teardownRelease = yield* Deferred.make<void>();
           let captured: Record<string, string | undefined> | undefined;
           let vpArgs: ReadonlyArray<string> = [];
+          let vpStarts = 0;
           const tailscaleCalls: Array<ReadonlyArray<string>> = [];
+          let currentRoute: { port: string; proxy: string } | undefined;
           const spawnerLayer = Layer.succeed(
             ChildProcessSpawner.ChildProcessSpawner,
             ChildProcessSpawner.make((command) => {
@@ -497,15 +1097,69 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
                 readonly options?: { readonly env?: Record<string, string | undefined> };
               };
               if (spawned.command === "vp") {
+                vpStarts += 1;
                 captured = spawned.options?.env;
                 vpArgs = spawned.args;
-                return Effect.succeed(mockProcess(0));
+                if (input.spawnFailure) {
+                  return Deferred.succeed(ready, undefined).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        PlatformError.systemError({
+                          _tag: "Unknown",
+                          module: "ChildProcess",
+                          method: "spawn",
+                          description: "Resource temporarily unavailable",
+                        }),
+                      ),
+                    ),
+                  );
+                }
+                return Effect.succeed(
+                  input.reuse
+                    ? ChildProcessSpawner.makeHandle({
+                        ...mockProcess(0),
+                        isRunning: Effect.succeed(input.stopUnconfirmed ?? false),
+                        exitCode: Deferred.succeed(ready, undefined).pipe(
+                          Effect.andThen(Deferred.await(exited)),
+                        ),
+                      })
+                    : mockProcess(0),
+                );
               }
               tailscaleCalls.push(spawned.args);
+              const offFails =
+                input.clearedFalse &&
+                spawned.args.includes("off") &&
+                tailscaleCalls.filter((args) => args.includes("off")).length === 2;
+              if (spawned.args.includes("off") && !offFails) currentRoute = undefined;
+              if (spawned.args.includes("--bg"))
+                currentRoute = {
+                  port: spawned.args.find((arg) => arg.startsWith("--https="))!.slice(8),
+                  proxy: spawned.args.at(-1)!,
+                };
+              const routeStatus =
+                currentRoute === undefined
+                  ? "null"
+                  : JSON.stringify({
+                      TCP: { [currentRoute.port]: { HTTPS: true } },
+                      Web: {
+                        [`host.example.ts.net:${currentRoute.port}`]: {
+                          Handlers: { "/": { Proxy: currentRoute.proxy } },
+                        },
+                      },
+                    });
               return Effect.succeed(
                 ChildProcessSpawner.makeHandle({
                   pid: ChildProcessSpawner.ProcessId(2),
-                  exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+                  exitCode: Effect.succeed(
+                    ChildProcessSpawner.ExitCode(
+                      input.clearedFalse &&
+                        spawned.args.includes("off") &&
+                        tailscaleCalls.filter((args) => args.includes("off")).length === 2
+                        ? 1
+                        : 0,
+                    ),
+                  ),
                   isRunning: Effect.succeed(false),
                   kill: () => Effect.void,
                   unref: Effect.succeed(Effect.void),
@@ -513,7 +1167,9 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
                   stdout: spawned.args.includes("status")
                     ? Stream.make(
                         new TextEncoder().encode(
-                          JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }),
+                          spawned.args[0] === "serve"
+                            ? routeStatus
+                            : JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }),
                         ),
                       )
                     : Stream.empty,
@@ -522,30 +1178,156 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
                   getInputFd: () => Sink.drain,
                   getOutputFd: () => Stream.empty,
                 }),
+              ).pipe(
+                Effect.tap(() =>
+                  input.reuse &&
+                  !input.stopUnconfirmed &&
+                  spawned.args.includes("off") &&
+                  tailscaleCalls.filter((args) => args.includes("off")).length === 2
+                    ? Deferred.succeed(teardownEntered, undefined).pipe(
+                        Effect.andThen(Deferred.await(teardownRelease)),
+                      )
+                    : Effect.void,
+                ),
               );
             }),
           );
 
-          yield* runDevRunnerWithInput({
+          const run = runDevRunnerWithInput({
             ...devServerInput,
             mode: "dev",
-            port: undefined,
+            port: input.reuse ? 13773 : undefined,
             share: true,
             built: input.built ?? false,
             host: input.host,
           }).pipe(
             Effect.provide(Layer.mergeAll(emptyConfigLayer, netServiceLayer, spawnerLayer)),
             Effect.provideService(HostProcess.Platform, "linux"),
-            Effect.provideService(
-              HostProcess.Environment,
-              input.ambientBundledDev === undefined
+            Effect.provideService(HostProcess.Environment, {
+              ...(input.ambientBundledDev === undefined
                 ? {}
-                : { T3CODE_BUNDLED_DEV: input.ambientBundledDev },
-            ),
+                : { T3CODE_BUNDLED_DEV: input.ambientBundledDev }),
+              ...(input.reuse ? { T3CODE_THREAD_ID: "share-owner" } : {}),
+            }),
+            Effect.provideService(HostProcess.WorkingDirectory, workspacePath),
+            Effect.provideService(HostProcess.HomeDirectory, workspacePath),
           );
+          if (input.reuse) {
+            const first = yield* run.pipe(Effect.scoped, Effect.exit, Effect.forkChild);
+            yield* Deferred.await(ready);
+            if (input.spawnFailure) {
+              yield* Effect.gen(function* () {
+                yield* Deferred.await(teardownEntered);
+                assert.lengthOf(
+                  yield* fs.readDirectory(path.join(workspacePath, ".t3", "dev-runners")),
+                  1,
+                );
+                assert.strictEqual((yield* run.pipe(Effect.scoped, Effect.exit))._tag, "Failure");
+                assert.strictEqual(vpStarts, 1);
+              }).pipe(Effect.ensuring(Deferred.succeed(teardownRelease, undefined)));
+              assert.strictEqual((yield* Fiber.join(first))._tag, "Failure");
+              assert.lengthOf(
+                yield* fs.readDirectory(path.join(workspacePath, ".t3", "dev-runners")),
+                input.clearedFalse ? 1 : 0,
+              );
+              return { env: captured, vpArgs, tailscaleCalls };
+            }
+            const originalCalls = [...tailscaleCalls];
+            const initialOffCount = originalCalls.filter((args) => args.includes("off")).length;
+            const messages: string[] = [];
+            yield* run.pipe(
+              Effect.scoped,
+              Effect.provide(
+                Logger.layer([
+                  Logger.make((options) => {
+                    messages.push(String(options.message));
+                  }),
+                ]),
+              ),
+            );
+            assert.strictEqual(vpStarts, 1);
+            assert.deepEqual(tailscaleCalls, originalCalls);
+            assert.isTrue(
+              messages.some((message) =>
+                message.includes(`serverPort=${captured?.T3CODE_PORT} webPort=${captured?.PORT}`),
+              ),
+            );
+            assert.isTrue(
+              messages.some((message) => message.includes("https://host.example.ts.net")),
+            );
+            assert.isFalse(messages.some((message) => message.includes("selectedOffset")));
+            if (input.stopUnconfirmed) {
+              assert.isFalse(
+                yield* stopDevRunners({
+                  threadId: "share-owner",
+                  workspacePath,
+                  canStop: Effect.succeed(true),
+                }),
+              );
+              assert.strictEqual((yield* Fiber.join(first))._tag, "Failure");
+              assert.lengthOf(
+                tailscaleCalls.filter((args) => args.includes("off")),
+                initialOffCount,
+              );
+              assert.lengthOf(
+                yield* fs.readDirectory(path.join(workspacePath, ".t3", "dev-runners")),
+                1,
+              );
+            } else {
+              const stopping = yield* (
+                input.naturalExit
+                  ? Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0)).pipe(Effect.as(true))
+                  : stopDevRunners({
+                      threadId: "share-owner",
+                      workspacePath,
+                      canStop: Effect.succeed(true),
+                    })
+              ).pipe(Effect.forkChild);
+              yield* Effect.gen(function* () {
+                yield* Deferred.await(teardownEntered);
+                assert.lengthOf(
+                  yield* fs.readDirectory(path.join(workspacePath, ".t3", "dev-runners")),
+                  1,
+                );
+                assert.strictEqual((yield* run.pipe(Effect.scoped, Effect.exit))._tag, "Failure");
+                assert.strictEqual(vpStarts, 1);
+              }).pipe(Effect.ensuring(Deferred.succeed(teardownRelease, undefined)));
+              assert.strictEqual(
+                yield* Fiber.join(stopping),
+                input.naturalExit || !input.clearedFalse,
+              );
+              assert.strictEqual(
+                (yield* Fiber.join(first))._tag,
+                input.clearedFalse ? "Failure" : "Success",
+              );
+              assert.lengthOf(
+                tailscaleCalls.filter((args) => args.includes("off")),
+                initialOffCount + 1,
+              );
+              assert.lengthOf(
+                yield* fs.readDirectory(path.join(workspacePath, ".t3", "dev-runners")),
+                input.clearedFalse ? 1 : 0,
+              );
+            }
+          } else {
+            yield* run;
+          }
 
           return { env: captured, vpArgs, tailscaleCalls };
         });
+
+      it.effect.each([
+        { stopUnconfirmed: false, naturalExit: false, spawnFailure: false },
+        { stopUnconfirmed: true, naturalExit: false, spawnFailure: false },
+        { stopUnconfirmed: false, naturalExit: true, spawnFailure: false },
+        { stopUnconfirmed: false, naturalExit: false, spawnFailure: true },
+        { stopUnconfirmed: false, naturalExit: false, spawnFailure: false, clearedFalse: true },
+        { stopUnconfirmed: false, naturalExit: true, spawnFailure: false, clearedFalse: true },
+        { stopUnconfirmed: false, naturalExit: false, spawnFailure: true, clearedFalse: true },
+      ])(
+        "keeps shared runner ownership through teardown: unconfirmed=$stopUnconfirmed natural=$naturalExit spawn=$spawnFailure clearedFalse=$clearedFalse",
+        (ending) => Effect.scoped(shareSpawned({ built: true, reuse: true, ...ending })),
+      );
 
       it.effect("keeps an explicit T3CODE_BUNDLED_DEV=0 opt-out", () =>
         Effect.gen(function* () {
@@ -616,32 +1398,49 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
       });
     });
 
-    it.effect("reports non-zero exits without manufacturing a cause", () => {
-      const spawnerLayer = Layer.succeed(
-        ChildProcessSpawner.ChildProcessSpawner,
-        ChildProcessSpawner.make(() => Effect.succeed(mockProcess(17))),
-      );
-
-      return Effect.gen(function* () {
-        const error = yield* runDevRunnerWithInput(devServerInput).pipe(
-          Effect.provide(Layer.mergeAll(emptyConfigLayer, netServiceLayer, spawnerLayer)),
-          Effect.provideService(HostProcess.Platform, "linux"),
-          Effect.flip,
+    it.effect.each([false, true])(
+      "reports non-zero exits without losing diagnostics with a held output=%s",
+      (held) => {
+        const outputReceived = Deferred.makeUnsafe<void>();
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.succeed({
+              ...mockProcess(17),
+              stdout: held ? Stream.never : Stream.empty,
+              stderr: Stream.make(new TextEncoder().encode("failure diagnostic")),
+            }),
+          ),
         );
 
-        if (error._tag !== "DevRunnerProcessExitError") {
-          assert.fail(`Unexpected error: ${error._tag}`);
-        }
-        assert.equal(error.mode, "dev:server");
-        assert.equal(error.executable, "vp");
-        assert.equal(error.argumentCount, 5);
-        assert.equal(error.shell, false);
-        assert.equal(error.exitCode, 17);
-        assert.ok(!("cause" in error));
-        assert.notProperty(error, "args");
-        assert.notInclude(error.message, "secret-token-value");
-      });
-    });
+        return Effect.gen(function* () {
+          const result = yield* runDevRunnerWithInput(devServerInput, undefined, () => {
+            Deferred.doneUnsafe(outputReceived, Effect.void);
+          }).pipe(
+            Effect.provide(Layer.mergeAll(emptyConfigLayer, netServiceLayer, spawnerLayer)),
+            Effect.provideService(HostProcess.Platform, "linux"),
+            Effect.flip,
+            Effect.forkChild,
+          );
+          yield* Deferred.await(outputReceived);
+          yield* TestClock.adjust("2 seconds");
+          assert.isDefined(result.pollUnsafe());
+          const error = yield* Fiber.join(result);
+
+          if (error._tag !== "DevRunnerProcessExitError") {
+            assert.fail(`Unexpected error: ${error._tag}`);
+          }
+          assert.equal(error.mode, "dev:server");
+          assert.equal(error.executable, "vp");
+          assert.equal(error.argumentCount, 5);
+          assert.equal(error.shell, false);
+          assert.equal(error.exitCode, 17);
+          assert.ok(!("cause" in error));
+          assert.notProperty(error, "args");
+          assert.notInclude(error.message, "secret-token-value");
+        }).pipe(Effect.provide(TestClock.layer()));
+      },
+    );
 
     describe("t3 home precedence", () => {
       const makeWorktree = Effect.acquireRelease(

@@ -71,6 +71,11 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     messageId: MessageId,
   }),
   Schema.Struct({
+    type: Schema.Literal("steering-delivery.settle"),
+    providerTurnId: ProviderTurnId,
+    messageId: MessageId,
+  }),
+  Schema.Struct({
     type: Schema.Literal("provider-turn.restart"),
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
@@ -135,6 +140,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
 export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
 
 export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
+  "steering-delivery.settle",
   "privileged-command.cleanup",
   "provider-runtime.continue",
   "provider-session.detach",
@@ -215,6 +221,12 @@ export interface EffectOutboxV2Shape {
   readonly enqueue: (
     effects: ReadonlyArray<PendingOrchestrationEffectV2>,
   ) => Effect.Effect<void, EffectOutboxError>;
+  readonly recordSteeringAcceptance: (input: {
+    readonly effectId: string;
+    readonly workerId: string;
+    readonly messageId: MessageId;
+    readonly providerTurnId: ProviderTurnId;
+  }) => Effect.Effect<boolean, EffectOutboxError>;
   readonly get: (
     effectId: string,
   ) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
@@ -446,6 +458,49 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         },
         Effect.mapError((cause) => new EffectOutboxError({ operation: "enqueue", cause })),
       ),
+      recordSteeringAcceptance: Effect.fn("EffectOutbox.recordSteeringAcceptance")(
+        function* ({ effectId, workerId, messageId, providerTurnId }) {
+          const now = DateTime.formatIso(yield* DateTime.now);
+          const request = { type: "steering-delivery.settle", messageId, providerTurnId } as const;
+          // Keep the native effect id so receipt replay cannot enqueue its provider call again.
+          const rows = yield* sql<{ readonly effect_id: string }>`
+            UPDATE orchestration_v2_effect_outbox
+            SET effect_type = ${request.type},
+                payload_json = ${encodeRequest(request)},
+                status = 'pending',
+                attempt_count = 0,
+                lease_owner = NULL,
+                available_at = ${now},
+                completed_at = NULL,
+                updated_at = ${now},
+                last_error = NULL
+            WHERE effect_id = ${effectId}
+              AND effect_type = 'provider-turn.steer'
+              AND json_extract(payload_json, '$.messageId') = ${messageId}
+              AND json_extract(payload_json, '$.providerTurnId') = ${providerTurnId}
+              AND ((status = 'running' AND lease_owner = ${workerId}) OR status = 'cancelled')
+            RETURNING effect_id
+          `;
+          if (rows.length === 1) {
+            cancellationSignals.delete(effectId);
+            yield* notifyAvailable(1);
+            return true;
+          }
+          return Option.exists(
+            yield* service.get(effectId),
+            (effect) =>
+              effect.request.type === request.type &&
+              effect.request.messageId === messageId &&
+              effect.request.providerTurnId === providerTurnId,
+          );
+        },
+        (effect, { effectId }) =>
+          effect.pipe(
+            Effect.mapError(
+              (cause) => new EffectOutboxError({ operation: "enqueue", effectId, cause }),
+            ),
+          ),
+      ),
       get: (effectId) =>
         sql<EffectRow>`
           SELECT *
@@ -491,6 +546,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               last_error = ${reason}
             WHERE thread_id = ${threadId}
               AND status IN ('pending', 'running')
+              AND effect_type != 'steering-delivery.settle'
               AND effect_type IN ${sql.in(effectTypes)}
               ${
                 privilegedRequestIds === undefined

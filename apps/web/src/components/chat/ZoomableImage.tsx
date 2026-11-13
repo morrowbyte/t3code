@@ -54,6 +54,7 @@ export function ZoomableImage({
   onError,
   ref,
   overlay,
+  drawing: drawingProp,
   reservedHeight = 160,
 }: {
   src: string;
@@ -62,8 +63,10 @@ export function ZoomableImage({
   onError: () => void;
   ref?: Ref<ZoomableImageHandle>;
   overlay?: ReactNode;
+  drawing?: boolean;
   reservedHeight?: number;
 }) {
+  const drawing = drawingProp ?? overlay !== undefined;
   const viewportRef = useRef<HTMLDivElement>(null);
   const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
   const viewerSize = useSyncExternalStore(subscribeViewerSize, getViewerSize);
@@ -178,9 +181,11 @@ export function ZoomableImage({
         role="region"
         aria-label={`${name}, zoomable image`}
         aria-description={
-          overlay
+          drawing
             ? "Draw on the image. Scroll, plus or minus to zoom, and 0 to fit."
-            : "Click to zoom in or return to fit. Scroll to zoom, drag to pan. Use Enter to toggle zoom, plus or minus to zoom, and 0 to fit."
+            : overlay
+              ? "Drag or use arrow keys to pan. Scroll, plus or minus to zoom, and 0 to fit."
+              : "Click to zoom in or return to fit. Scroll to zoom, drag to pan. Use Enter to toggle zoom, plus or minus to zoom, and 0 to fit."
         }
         tabIndex={0}
         className="max-w-[var(--media-width)] overflow-auto overscroll-contain rounded-lg bg-background shadow-2xl ring-1 ring-border/70 outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:-outline-offset-2 focus-visible:outline-ring"
@@ -188,7 +193,8 @@ export function ZoomableImage({
           width: width || undefined,
           height: height || undefined,
           maxHeight,
-          cursor: overlay ? "crosshair" : zoom > 1 ? (dragging ? "grabbing" : "grab") : "zoom-in",
+          cursor: drawing ? "crosshair" : zoom > 1 ? (dragging ? "grabbing" : "grab") : "zoom-in",
+          touchAction: overlay ? "none" : undefined,
         }}
         onClick={(event) => {
           // Pointer capture emits a click after dragging; preserve zoom.
@@ -197,6 +203,15 @@ export function ZoomableImage({
         }}
         onKeyDown={(event) => {
           if (event.ctrlKey || event.metaKey || event.altKey) return;
+          if (overlay && !drawing && zoom > 1 && event.key.startsWith("Arrow")) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.currentTarget.scrollLeft +=
+              event.key === "ArrowLeft" ? -40 : event.key === "ArrowRight" ? 40 : 0;
+            event.currentTarget.scrollTop +=
+              event.key === "ArrowUp" ? -40 : event.key === "ArrowDown" ? 40 : 0;
+            return;
+          }
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
             if (!event.repeat) changeZoom(zoom > 1 ? 1 : 2);
@@ -212,9 +227,10 @@ export function ZoomableImage({
           }
         }}
         onPointerDown={(event) => {
-          if (overlay || event.defaultPrevented || dragRef.current) return;
+          if (drawing || event.defaultPrevented || dragRef.current) return;
           suppressClickRef.current = false;
-          if (event.pointerType !== "mouse" || event.button !== 0 || zoom <= 1) return;
+          if ((!overlay && event.pointerType !== "mouse") || event.button !== 0 || zoom <= 1)
+            return;
           const viewport = event.currentTarget;
           const bounds = viewport.getBoundingClientRect();
           if (

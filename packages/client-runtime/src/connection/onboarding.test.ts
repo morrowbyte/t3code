@@ -578,7 +578,7 @@ describe("connection onboarding", () => {
         input: {
           environmentId,
           label: "  Renamed environment  ",
-          httpBaseUrl: "http://100.65.180.100:3773/path",
+          httpBaseUrl: "http://192.0.2.10:3773/path",
         },
         entry: Option.some({
           target: new BearerConnectionTarget({
@@ -609,8 +609,8 @@ describe("connection onboarding", () => {
         profile: {
           environmentId,
           label: "Renamed environment",
-          httpBaseUrl: "http://100.65.180.100:3773/",
-          wsBaseUrl: "ws://100.65.180.100:3773/",
+          httpBaseUrl: "http://192.0.2.10:3773/",
+          wsBaseUrl: "ws://192.0.2.10:3773/",
         },
         credential: { token: "bearer-token" },
       });

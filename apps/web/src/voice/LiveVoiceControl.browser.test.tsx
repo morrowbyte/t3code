@@ -6,6 +6,7 @@ import {
   liveVoicePublicErrorMessage,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
   type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
@@ -76,7 +77,9 @@ import {
   resolveLiveVoiceInstanceSettings,
   resolveLiveVoiceControlGate,
   createLiveVoiceDiagnosticProducer,
+  createLiveVoiceBinding,
 } from "./LiveVoiceControl";
+import { BrowserVoiceAudio } from "./BrowserVoiceAudio";
 import { WebLiveVoiceSessionProvider, useWebLiveVoiceControlsHost } from "./sessionContext";
 import { VoiceActivityBubbles } from "./VoiceActivityBubbles";
 import { TooltipProvider } from "~/components/ui/tooltip";
@@ -617,6 +620,90 @@ function expectPassive() {
   expect(getUserMedia).not.toHaveBeenCalled();
   expect(peer).not.toHaveBeenCalled();
 }
+
+it("releases raw microphone capture before a delayed stop RPC completes", async () => {
+  using _environment = setupEnvironment();
+  const rawContext = new AudioContext();
+  const raw = rawContext.createMediaStreamDestination().stream;
+  const track = raw.getAudioTracks()[0]!;
+  getUserMedia.mockResolvedValue(raw);
+  let offerRequested!: () => void;
+  const requested = new Promise<void>((resolve) => {
+    offerRequested = resolve;
+  });
+  let finishOffer!: (offer: RTCSessionDescriptionInit) => void;
+  const offer = new Promise<RTCSessionDescriptionInit>((resolve) => {
+    finishOffer = resolve;
+  });
+  peer.mockImplementation(function () {
+    return {
+      connectionState: "new",
+      createDataChannel: () => ({ readyState: "connecting", close() {} }),
+      addTrack() {},
+      createOffer: () => {
+        offerRequested();
+        return offer;
+      },
+      close() {},
+    };
+  });
+  const lease = {
+    environmentId: environmentA,
+    threadId: thread,
+    provider: "codex",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    leaseId: "slow-stop",
+    generation: 1,
+    providerSessionId: ProviderSessionId.make("session"),
+    plannerNativeThreadId: "planner",
+    status: "prepared",
+  } as const;
+  let stopRequested!: () => void;
+  const stopping = new Promise<void>((resolve) => {
+    stopRequested = resolve;
+  });
+  let finishStop!: (value: typeof lease) => void;
+  const stopped = new Promise<typeof lease>((resolve) => {
+    finishStop = resolve;
+  });
+  const audio = new BrowserVoiceAudio();
+  const { controller } = createLiveVoiceBinding(
+    {
+      prepare: async () => lease,
+      subscribe: async (_, listener) => {
+        listener({ type: "status", session: lease });
+        return () => {};
+      },
+      start: async () => lease,
+      status: async () => lease,
+      stop: () => {
+        stopRequested();
+        return stopped;
+      },
+    },
+    undefined,
+    () => {},
+    () => {},
+    audio,
+  );
+  try {
+    const starting = controller.start({ ...lease });
+    await requested;
+    const ending = controller.end();
+    await stopping;
+    expect(controller.currentState.phase).toBe("stopping");
+    expect(track.readyState).toBe("ended");
+    finishStop(lease);
+    finishOffer({ type: "offer", sdp: "unused" });
+    await Promise.all([starting, ending]);
+  } finally {
+    finishStop(lease);
+    finishOffer({ type: "offer", sdp: "unused" });
+    await controller.end();
+    audio.release();
+    await rawContext.close();
+  }
+});
 
 describe("selected preview context during a call", () => {
   const selection = (id: string, comment = ""): PreviewAnnotationPayload => ({

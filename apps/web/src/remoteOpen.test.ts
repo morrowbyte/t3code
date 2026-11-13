@@ -163,7 +163,20 @@ describe("buildRemoteOpenUrl", () => {
     const targets = [
       ["vscode", true, "vscode://vscode-remote/ssh-remote+sol/tmp/my%20file.md:1:1"],
       ["cursor", true, "cursor://vscode-remote/ssh-remote+sol/tmp/my%20file.md:1:1"],
+      [
+        "vscode",
+        true,
+        "vscode://vscode-remote/ssh-remote+sol/tmp/my%20file.md:37:9",
+        { line: 37, column: 9 },
+      ],
+      ["cursor", true, "cursor://vscode-remote/ssh-remote+sol/tmp/my%20file.md:37:1", { line: 37 }],
       ["vscode", false, "vscode://vscode-remote/ssh-remote+sol/tmp/my%20file.md"],
+      [
+        "vscode",
+        false,
+        "vscode://vscode-remote/ssh-remote+sol/tmp/my%20file.md",
+        { line: 37, column: 9 },
+      ],
       ["vscode", undefined, "vscode://vscode-remote/ssh-remote+sol/tmp/my%20file.md"],
       ["zed", true, "zed://ssh/sol/tmp/my%20file.md"],
       [
@@ -173,13 +186,14 @@ describe("buildRemoteOpenUrl", () => {
       ],
     ] as const;
 
-    for (const [editor, isFile, expected] of targets) {
+    for (const [editor, isFile, expected, position] of targets) {
       expect(
         buildRemoteOpenUrl({
           editor,
           host: "sol",
           absolutePath: "/tmp/my file.md",
           ...(isFile === undefined ? {} : { isFile }),
+          ...position,
         }),
         `${editor}, isFile=${isFile}`,
       ).toBe(expected);

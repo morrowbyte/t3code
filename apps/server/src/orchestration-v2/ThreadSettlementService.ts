@@ -19,11 +19,16 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FiberSet from "effect/FiberSet";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import { ChildProcessSpawner } from "effect/process";
 
+import * as DevRunnerControl from "@t3tools/shared/node/devRunnerControl";
+import * as DevShareOwnership from "@t3tools/shared/node/devShareOwnership";
+import { disableTailscaleServe } from "@t3tools/tailscale";
 import * as GitManager from "../git/GitManager.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
@@ -262,6 +267,24 @@ function autoSettlementConfigured(settings: import("@t3tools/contracts").ServerS
   );
 }
 
+function threadAllowsWorktreeCleanup(
+  thread: OrchestrationV2ThreadShell,
+  stoppingRunner: boolean,
+): boolean {
+  return (
+    thread.settledAt !== null &&
+    thread.settledOverride !== "active" &&
+    thread.activeRunId === null &&
+    !(thread.pendingBackgroundTasks ?? []).some(
+      (task) =>
+        !(stoppingRunner && thread.settledOverride === "settled" && task.kind === "command"),
+    ) &&
+    ["idle", "completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
+      thread.status,
+    )
+  );
+}
+
 /** @internal Exported for tests. */
 export function autoSettlementSettingsKey(
   settings: import("@t3tools/contracts").ServerSettings,
@@ -298,6 +321,7 @@ export const make = Effect.gen(function* () {
   const pullRequests = yield* PullRequestService.PullRequestService;
   const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
+  const processSpawner = yield* Effect.serviceOption(ChildProcessSpawner.ChildProcessSpawner);
   // A shell merge or close sends no event, and the branch lookup caches an open pull request for
   // a minute, so these threads' next lookup reads the host fresh.
   const shellClosedThreads = new Set<ThreadId>();
@@ -584,43 +608,153 @@ export const make = Effect.gen(function* () {
       return sweepThread(threadId).pipe(FiberSet.run(threadSweeps), Effect.asVoid);
     });
 
+  const resourceRoot = Effect.fn("ThreadSettlementServiceV2.resourceRoot")(function* (
+    workspacePath: string,
+  ) {
+    return (
+      (yield* DevRunnerControl.resolveTaskWorkspace(workspacePath).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+      )) ?? (yield* fileSystem.realPath(workspacePath))
+    );
+  });
+
+  const workspaceForThread = Effect.fn("ThreadSettlementServiceV2.workspaceForThread")(function* (
+    thread: Pick<OrchestrationV2ThreadShell, "projectId" | "worktreePath">,
+  ) {
+    if (thread.worktreePath !== null)
+      return (yield* fileSystem.exists(thread.worktreePath))
+        ? yield* resourceRoot(thread.worktreePath)
+        : null;
+    const projects = yield* projectStore.listShells({ projectIds: [thread.projectId] });
+    const workspaceRoot = projects.find(
+      (project) => project.id === thread.projectId,
+    )?.workspaceRoot;
+    return workspaceRoot === undefined || !(yield* fileSystem.exists(workspaceRoot))
+      ? null
+      : yield* resourceRoot(workspaceRoot);
+  });
+
+  const workspacePeers = Effect.fn("ThreadSettlementServiceV2.workspacePeers")(function* (
+    workspacePath: string,
+  ) {
+    const canonicalPath = yield* resourceRoot(workspacePath);
+    const peers = new Set<ThreadId>();
+    const sameWorkspace = Effect.fn("ThreadSettlementServiceV2.sameWorkspace")(
+      (candidate: string) =>
+        resourceRoot(candidate).pipe(
+          Effect.map((resolved) => resolved === canonicalPath),
+          Effect.catchIf(
+            (error) => error.reason._tag === "NotFound",
+            () => Effect.succeed(false),
+          ),
+        ),
+    );
+    for (const peer of yield* projections.getThreadWorktreePaths({ includeArchived: true })) {
+      if (yield* sameWorkspace(peer.worktreePath)) peers.add(peer.threadId);
+    }
+    let projectRoot = false;
+    for (const project of yield* projectStore.listShells()) {
+      if (!(yield* sameWorkspace(project.workspaceRoot))) continue;
+      projectRoot = true;
+      for (const location of ["active", "archive"] as const) {
+        const snapshot = yield* projections.getShellSnapshot({ projectId: project.id, location });
+        for (const peer of [...snapshot.threads, ...snapshot.archivedThreads]) {
+          if (peer.worktreePath === null) peers.add(peer.id);
+        }
+      }
+    }
+    return { peers, projectRoot };
+  });
+
   // Skip settle scripts in shared checkouts where other threads may still work.
   const cleanUpSettledThread = Effect.fn("ThreadSettlementServiceV2.cleanUpSettledThread")(
     function* (threadId: ThreadId) {
       const settled = yield* projections.getThread(threadId);
       if (settled.settledOverride !== "settled") return;
       yield* terminals.closeIdle({ threadId });
-      const worktreePath = settled.worktreePath;
+      const worktreePath = yield* workspaceForThread(settled);
       if (worktreePath === null || !(yield* fileSystem.exists(worktreePath))) return;
       // Recheck after closing and worktree I/O; re-engaged threads must not be cleaned up.
       const thread = yield* projections.getThread(threadId);
       if (thread.settledOverride !== "settled") return;
-      const worktreeThreads = yield* projections.getThreadWorktreePaths({ includeArchived: true });
-      const peers = new Set([
-        threadId,
-        ...worktreeThreads
-          .filter((peer) => peer.worktreePath === worktreePath)
-          .map((peer) => peer.threadId),
-      ]);
-      for (const peerId of peers) {
-        const current = yield* projections.getThreadShell(peerId);
-        if (
-          current === null ||
-          current.settledAt === null ||
-          current.activeRunId !== null ||
-          (current.pendingBackgroundTasks?.length ?? 0) > 0 ||
-          !["idle", "completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
-            current.status,
+      const canCleanUp = Effect.fn("ThreadSettlementServiceV2.canCleanUpWorktree")(
+        function* (stoppingRunner = false) {
+          const owner = yield* projections.getThread(threadId);
+          if (
+            owner.settledOverride !== "settled" ||
+            owner.worktreePath !== thread.worktreePath ||
+            (yield* workspaceForThread(owner)) !== worktreePath ||
+            toMillis(owner.settledAt) !== toMillis(thread.settledAt)
           )
-        )
-          return;
-      }
+            return false;
+          const { peers } = yield* workspacePeers(worktreePath);
+          peers.add(threadId);
+          for (const peerId of peers) {
+            const current = yield* projections.getThreadShell(peerId);
+            if (current === null || !threadAllowsWorktreeCleanup(current, stoppingRunner))
+              return false;
+          }
+          const currentOwner = yield* projections.getThreadShell(threadId);
+          return (
+            currentOwner !== null &&
+            currentOwner.settledOverride === "settled" &&
+            currentOwner.worktreePath === thread.worktreePath &&
+            (yield* workspaceForThread(currentOwner)) === worktreePath &&
+            toMillis(currentOwner.settledAt) === toMillis(thread.settledAt) &&
+            threadAllowsWorktreeCleanup(currentOwner, stoppingRunner)
+          );
+        },
+        Effect.orElseSucceed(() => false),
+      );
+      if (!(yield* canCleanUp(true))) return;
       const settledAtMs = toMillis(thread.settledAt);
       if (settledAtMs === null || settleActionRunAt.get(threadId) === settledAtMs) return;
+      const stopRunners = DevRunnerControl.stopDevRunners({
+        threadId,
+        workspacePath: worktreePath,
+        canStop: canCleanUp(true),
+        ...(Option.isNone(processSpawner)
+          ? {}
+          : {
+              recoverShare: (
+                port: number,
+                generation: string | undefined,
+                canRecover: Effect.Effect<boolean>,
+              ) =>
+                DevShareOwnership.clear({
+                  port,
+                  generation,
+                  canClear: canRecover,
+                  remove: disableTailscaleServe({ servePort: port }).pipe(
+                    Effect.as(true),
+                    Effect.orElseSucceed(() => false),
+                  ),
+                }).pipe(
+                  Effect.provideService(
+                    ChildProcessSpawner.ChildProcessSpawner,
+                    processSpawner.value,
+                  ),
+                ),
+            }),
+      }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+      const runnersStopped = yield* Option.isSome(processSpawner)
+        ? stopRunners.pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, processSpawner.value),
+          )
+        : stopRunners;
+      if (!runnersStopped) return;
+      // Stop confirmation only covers the captured child; the prune script still checks process refs.
+      if (!(yield* canCleanUp())) return;
+      yield* terminals.closeIdle({ threadId });
+      if (!(yield* canCleanUp())) return;
+      if ((yield* workspacePeers(worktreePath)).projectRoot) {
+        settleActionRunAt.set(threadId, settledAtMs);
+        return;
+      }
       const run = yield* projectScripts.runForThread({
         threadId,
         projectId: thread.projectId,
-        worktreePath,
+        worktreePath: thread.worktreePath ?? worktreePath,
         trigger: "settle",
         observeCompletion: {},
       });
@@ -642,13 +776,44 @@ export const make = Effect.gen(function* () {
       ),
   );
 
+  const cleanUpSettledWorktree = Effect.fn("ThreadSettlementServiceV2.cleanUpSettledWorktree")(
+    function* (threadId: ThreadId) {
+      yield* cleanUpSettledThread(threadId);
+      const thread = yield* projections.getThreadShell(threadId);
+      if (thread === null || !threadAllowsWorktreeCleanup(thread, true)) return;
+      // Discover deferred owners from projections so a restart cannot lose their cleanup retry.
+      const worktreePath = yield* workspaceForThread(thread);
+      if (worktreePath === null || !(yield* fileSystem.exists(worktreePath))) return;
+      const { peers } = yield* workspacePeers(worktreePath);
+      for (const peerId of peers) {
+        if (peerId === threadId) continue;
+        const current = yield* projections.getThreadShell(peerId);
+        if (
+          current === null ||
+          current.settledOverride !== "settled" ||
+          !threadAllowsWorktreeCleanup(current, true) ||
+          settleActionRunAt.get(current.id) === toMillis(current.settledAt)
+        )
+          continue;
+        yield* cleanUpSettledThread(peerId);
+      }
+    },
+    Effect.catchCauseIf(
+      (cause) => !Cause.hasInterruptsOnly(cause),
+      (cause) =>
+        Effect.logWarning("retrying settled worktree cleanup failed", {
+          cause: Cause.pretty(cause),
+        }),
+    ),
+  );
+
   const retryCleanup = (threadId: ThreadId) =>
-    cleanUpSettledThread(threadId).pipe(Effect.andThen(enqueueThread(threadId)));
+    cleanUpSettledWorktree(threadId).pipe(Effect.andThen(enqueueThread(threadId)));
 
   const processEvent = (event: OrchestrationV2DomainEvent) => {
     switch (event.type) {
       case "thread.settled":
-        return cleanUpSettledThread(event.threadId);
+        return cleanUpSettledWorktree(event.threadId);
       case "thread.pull-request-link-updated":
       case "thread.pull-request-synced":
         return enqueueThread(event.threadId);

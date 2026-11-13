@@ -416,7 +416,14 @@ import {
   ProviderConsumeResetCreditInput,
   ProviderConsumeResetCreditResult,
 } from "./providerUsageLimits.ts";
-import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
+import {
+  ExecutionUsageInput,
+  ExecutionUsageSummary,
+  UsagePricing,
+  UsageReadError,
+  UsageSummary,
+  UsageSummaryInput,
+} from "./usage.ts";
 import {
   StorageCleanupReport,
   DatabaseStorageStatus,
@@ -671,6 +678,7 @@ export const WS_METHODS = {
   boatTransfer: "boat.transfer",
   boatSetup: "boat.setup",
   serverGetUsageSummary: "server.getUsageSummary",
+  serverGetExecutionUsage: "server.getExecutionUsage",
   serverRefreshUsageRates: "server.refreshUsageRates",
 
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
@@ -1163,6 +1171,12 @@ const BoatTransferRpc = Rpc.make(WS_METHODS.boatTransfer, {
 const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSummary, {
   payload: UsageSummaryInput,
   success: UsageSummary,
+  error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
+});
+
+const WsServerGetExecutionUsageRpc = Rpc.make(WS_METHODS.serverGetExecutionUsage, {
+  payload: ExecutionUsageInput,
+  success: ExecutionUsageSummary,
   error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
 });
 
@@ -2502,6 +2516,7 @@ export const WsRpcGroup = RpcGroup.make(
   BoatTransferRpc,
   BoatSetupRpc,
   WsServerGetUsageSummaryRpc,
+  WsServerGetExecutionUsageRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
   WsScheduledTasksSubscribeRpc,

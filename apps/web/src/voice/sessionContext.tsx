@@ -4,6 +4,7 @@ import type { ScopedThreadRef } from "@t3tools/contracts";
 import type { LiveVoiceRecording, CallRecordingState } from "./LiveVoiceRecording";
 import type { createVoiceEventBridge } from "./LiveVoiceControl";
 import { useStableCallback } from "../hooks/useStableCallback";
+import { BrowserVoiceAudio } from "./BrowserVoiceAudio";
 
 type Binding = {
   readonly bridge: ReturnType<typeof createVoiceEventBridge>;
@@ -15,6 +16,7 @@ type ControlsHost = {
 };
 const SessionContext = createContext<{
   readonly owner: LiveVoiceSessionOwner<Binding>;
+  readonly audio: BrowserVoiceAudio;
   readonly recordingState: CallRecordingState;
   readonly setRecordingState: (state: CallRecordingState) => void;
   readonly controlsContainer: HTMLDivElement | null;
@@ -23,6 +25,7 @@ const SessionContext = createContext<{
 
 export function WebLiveVoiceSessionProvider({ children }: { readonly children: ReactNode }) {
   const [owner] = useState(() => new LiveVoiceSessionOwner<Binding>());
+  const [audio] = useState(() => new BrowserVoiceAudio());
   const [recordingState, setRecordingState] = useState<CallRecordingState>({ status: "off" });
   const [hosts, setHosts] = useState<ReadonlyArray<ControlsHost>>([]);
   const { target } = useSyncExternalStore(owner.subscribe, owner.getSnapshot);
@@ -40,7 +43,14 @@ export function WebLiveVoiceSessionProvider({ children }: { readonly children: R
     null;
   return (
     <SessionContext
-      value={{ owner, recordingState, setRecordingState, controlsContainer, registerControlsHost }}
+      value={{
+        owner,
+        audio,
+        recordingState,
+        setRecordingState,
+        controlsContainer,
+        registerControlsHost,
+      }}
     >
       {children}
     </SessionContext>

@@ -1,7 +1,15 @@
 import { describe, expect, it } from "@effect/vitest";
-import { type AssetCreateUrlResult, EnvironmentId, WS_METHODS } from "@t3tools/contracts";
+import {
+  AssetWorkspaceAssetNotFoundError,
+  type AssetCreateUrlResult,
+  type AssetResource,
+  EnvironmentId,
+  ThreadId,
+  WS_METHODS,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -64,6 +72,7 @@ describe("project favicon URL cache", () => {
  */
 const makeAssetUrlHarness = Effect.fn("TestAssetUrl.makeHarness")(function* (
   environmentIds: ReadonlyArray<EnvironmentId>,
+  missingEnvironment?: EnvironmentId,
 ) {
   const started = yield* Queue.unbounded<EnvironmentId>();
   const inFlight = new Map<EnvironmentId, number>();
@@ -80,13 +89,16 @@ const makeAssetUrlHarness = Effect.fn("TestAssetUrl.makeHarness")(function* (
   const makeSession = (environmentId: EnvironmentId) =>
     ({
       client: {
-        [WS_METHODS.assetsCreateUrl]: () =>
+        [WS_METHODS.assetsCreateUrl]: (input: { readonly resource: AssetResource }) =>
           Effect.gen(function* () {
             const now = (inFlight.get(environmentId) ?? 0) + 1;
             inFlight.set(environmentId, now);
             maxInFlight.set(environmentId, Math.max(maxInFlight.get(environmentId) ?? 0, now));
             yield* Queue.offer(started, environmentId);
-            yield* Queue.take(releases.get(environmentId)!);
+            if (missingEnvironment !== undefined) {
+              if (environmentId === missingEnvironment)
+                return yield* new AssetWorkspaceAssetNotFoundError({ resource: input.resource });
+            } else yield* Queue.take(releases.get(environmentId)!);
             return { relativeUrl: "/api/assets/token/image.png", expiresAt: 4_000_000_000_000 };
           }).pipe(
             Effect.ensuring(
@@ -147,11 +159,35 @@ const makeAssetUrlHarness = Effect.fn("TestAssetUrl.makeHarness")(function* (
   } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]);
   const registry = AtomRegistry.make();
   yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
-  const atoms = createAssetEnvironmentAtoms(
+  // Supply the former fallback argument so restoring that implementation fails this regression.
+  const atoms = Reflect.apply(createAssetEnvironmentAtoms, undefined, [
     Atom.runtime(Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry)),
-  );
+    Atom.make(
+      missingEnvironment === undefined
+        ? null
+        : {
+            environmentId: environmentIds.find((id) => id !== missingEnvironment)!,
+            httpBaseUrl: "https://primary.example.test",
+          },
+    ),
+  ]) as ReturnType<typeof createAssetEnvironmentAtoms<never, never>>;
   return {
     started,
+    read: (environmentId: EnvironmentId) =>
+      AtomRegistry.getResult(
+        registry,
+        atoms.createUrl({
+          environmentId,
+          input: {
+            resource: {
+              _tag: "media-file",
+              threadId: ThreadId.make("thread"),
+              path: "/tmp/result.png",
+            },
+          },
+        }),
+        { suspendOnWaiting: true },
+      ),
     inFlight: (environmentId: EnvironmentId) => inFlight.get(environmentId) ?? 0,
     maxInFlight: (environmentId: EnvironmentId) => maxInFlight.get(environmentId) ?? 0,
     release: (environmentId: EnvironmentId) => Queue.offer(releases.get(environmentId)!, undefined),
@@ -174,58 +210,63 @@ describe("asset URL requests", () => {
   const remote = EnvironmentId.make("asset-remote");
   const other = EnvironmentId.make("asset-other");
 
+  it.effect("does not substitute a primary environment file for a missing remote file", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeAssetUrlHarness([remote, other], remote);
+      const result = yield* harness.read(remote).pipe(Effect.exit);
+      expect(Exit.isFailure(result)).toBe(true);
+      if (Exit.isFailure(result))
+        expect(Cause.pretty(result.cause)).toContain("AssetWorkspaceAssetNotFoundError");
+      expect(harness.maxInFlight(other)).toBe(0);
+    }),
+  );
+
   it.effect("keeps a thread of images from flooding one environment with requests", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const harness = yield* makeAssetUrlHarness([remote]);
-        const total = ASSET_URL_MAX_IN_FLIGHT * 3;
-        harness.mountImages(remote, total);
+    Effect.gen(function* () {
+      const harness = yield* makeAssetUrlHarness([remote]);
+      const total = ASSET_URL_MAX_IN_FLIGHT * 3;
+      harness.mountImages(remote, total);
 
-        for (let call = 0; call < ASSET_URL_MAX_IN_FLIGHT; call += 1) {
-          yield* Queue.take(harness.started);
-        }
-        expect(harness.inFlight(remote)).toBe(ASSET_URL_MAX_IN_FLIGHT);
+      for (let call = 0; call < ASSET_URL_MAX_IN_FLIGHT; call += 1) {
+        yield* Queue.take(harness.started);
+      }
+      expect(harness.inFlight(remote)).toBe(ASSET_URL_MAX_IN_FLIGHT);
 
-        // Each answer admits the next waiting request.
-        for (let call = 0; call < total; call += 1) {
-          yield* harness.release(remote);
-          if (call < total - ASSET_URL_MAX_IN_FLIGHT) yield* Queue.take(harness.started);
-        }
-        expect(harness.maxInFlight(remote)).toBe(ASSET_URL_MAX_IN_FLIGHT);
-      }),
-    ),
+      // Each answer admits the next waiting request.
+      for (let call = 0; call < total; call += 1) {
+        yield* harness.release(remote);
+        if (call < total - ASSET_URL_MAX_IN_FLIGHT) yield* Queue.take(harness.started);
+      }
+      expect(harness.maxInFlight(remote)).toBe(ASSET_URL_MAX_IN_FLIGHT);
+    }),
   );
 
   it.effect("limits each environment on its own", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const harness = yield* makeAssetUrlHarness([remote, other]);
-        harness.mountImages(remote, ASSET_URL_MAX_IN_FLIGHT + 2);
-        for (let call = 0; call < ASSET_URL_MAX_IN_FLIGHT; call += 1) {
-          yield* Queue.take(harness.started);
-        }
-        harness.mountImages(other, 1);
-        expect(yield* Queue.take(harness.started)).toBe(other);
-        expect(harness.inFlight(remote)).toBe(ASSET_URL_MAX_IN_FLIGHT);
-      }),
-    ),
+    Effect.gen(function* () {
+      const harness = yield* makeAssetUrlHarness([remote, other]);
+      harness.mountImages(remote, ASSET_URL_MAX_IN_FLIGHT + 2);
+      for (let call = 0; call < ASSET_URL_MAX_IN_FLIGHT; call += 1) {
+        yield* Queue.take(harness.started);
+      }
+      harness.mountImages(other, 1);
+      expect(yield* Queue.take(harness.started)).toBe(other);
+      expect(harness.inFlight(remote)).toBe(ASSET_URL_MAX_IN_FLIGHT);
+    }),
   );
 
   it.effect("frees the limit when the session behind the requests is replaced", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const harness = yield* makeAssetUrlHarness([remote]);
-        harness.mountImages(remote, ASSET_URL_MAX_IN_FLIGHT * 2);
-        for (let call = 0; call < ASSET_URL_MAX_IN_FLIGHT; call += 1) {
-          yield* Queue.take(harness.started);
-        }
+    Effect.gen(function* () {
+      const harness = yield* makeAssetUrlHarness([remote]);
+      harness.mountImages(remote, ASSET_URL_MAX_IN_FLIGHT * 2);
+      for (let call = 0; call < ASSET_URL_MAX_IN_FLIGHT; call += 1) {
+        yield* Queue.take(harness.started);
+      }
 
-        yield* harness.replaceSession(remote);
-        for (let call = 0; call < ASSET_URL_MAX_IN_FLIGHT; call += 1) {
-          yield* Queue.take(harness.started);
-        }
-        expect(harness.maxInFlight(remote)).toBe(ASSET_URL_MAX_IN_FLIGHT);
-      }),
-    ),
+      yield* harness.replaceSession(remote);
+      for (let call = 0; call < ASSET_URL_MAX_IN_FLIGHT; call += 1) {
+        yield* Queue.take(harness.started);
+      }
+      expect(harness.maxInFlight(remote)).toBe(ASSET_URL_MAX_IN_FLIGHT);
+    }),
   );
 });

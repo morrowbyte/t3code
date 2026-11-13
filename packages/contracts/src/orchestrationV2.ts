@@ -1328,9 +1328,16 @@ export const OrchestrationV2RemoteSender = Schema.Struct({
 });
 export type OrchestrationV2RemoteSender = typeof OrchestrationV2RemoteSender.Type;
 
+const OrchestrationV2ReplyTo = Schema.Struct({
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  messageId: MessageId,
+});
+
 const OrchestrationV2SendRequest = Schema.Struct({
   mode: Schema.Literals(["auto", "queue", "steer", "restart"]),
   text: Schema.String,
+  replyTo: Schema.optional(OrchestrationV2ReplyTo),
 });
 
 /** Why T3 Code compacted a thread on its own, on the `/compact` it sent. */
@@ -1344,6 +1351,7 @@ export const OrchestrationV2ConversationMessage = Schema.Struct({
   scheduledTaskId: Schema.optional(ScheduledTaskId),
   senderThreadId: Schema.optional(ThreadId),
   remoteSender: Schema.optional(OrchestrationV2RemoteSender),
+  replyTo: Schema.optional(OrchestrationV2ReplyTo),
   sendRequest: Schema.optional(OrchestrationV2SendRequest),
   idleCompaction: Schema.optional(OrchestrationV2IdleCompaction),
   /**
@@ -1661,6 +1669,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     senderThreadId: Schema.optional(ThreadId),
     remoteSender: Schema.optional(OrchestrationV2RemoteSender),
+    replyTo: Schema.optional(OrchestrationV2ReplyTo),
     sendRequest: Schema.optional(OrchestrationV2SendRequest),
     idleCompaction: Schema.optional(OrchestrationV2IdleCompaction),
     workflowScript: OrchestrationV2ConversationMessage.fields.workflowScript,
@@ -2117,12 +2126,22 @@ export type OrchestrationV2ShellThreadStatus = typeof OrchestrationV2ShellThread
 export const OrchestrationV2PendingRuntimeRequestSummary = Schema.Struct({
   id: RuntimeRequestId,
   kind: OrchestrationV2RuntimeRequest.fields.kind,
+  label: Schema.optional(Schema.String),
   createdAt: Schema.DateTimeUtc,
   /** False for async questions the run keeps working past. Absent from older servers. */
   blocking: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2PendingRuntimeRequestSummary =
   typeof OrchestrationV2PendingRuntimeRequestSummary.Type;
+
+export const OrchestrationV2RequestDeliveryFailureSummary = Schema.Struct({
+  requestId: RuntimeRequestId,
+  itemId: TurnItemId,
+  message: Schema.String,
+  occurredAt: Schema.DateTimeUtc,
+});
+export type OrchestrationV2RequestDeliveryFailureSummary =
+  typeof OrchestrationV2RequestDeliveryFailureSummary.Type;
 
 export const OrchestrationV2LatestVisibleMessageSummary = Schema.Struct({
   id: MessageId,
@@ -2171,6 +2190,10 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   lastErrorCode: Schema.optional(Schema.NullOr(Schema.String)),
   usageLimitResetAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   pendingRuntimeRequest: Schema.NullOr(OrchestrationV2PendingRuntimeRequestSummary),
+  pendingRuntimeRequests: Schema.optional(
+    Schema.Array(OrchestrationV2PendingRuntimeRequestSummary),
+  ),
+  requestDeliveryFailure: Schema.optional(OrchestrationV2RequestDeliveryFailureSummary),
   /** Guest messages waiting for the owner to send or dismiss. Absent from older servers. */
   pendingGuestMessageCount: Schema.optional(NonNegativeInt),
   latestVisibleMessage: Schema.NullOr(OrchestrationV2LatestVisibleMessageSummary),
@@ -2511,6 +2534,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     senderThreadId: Schema.optional(ThreadId),
     remoteSender: Schema.optional(OrchestrationV2RemoteSender),
+    replyTo: Schema.optional(OrchestrationV2ReplyTo),
     sendRequest: Schema.optional(OrchestrationV2SendRequest),
     idleCompaction: Schema.optional(OrchestrationV2IdleCompaction),
     workflowScript: OrchestrationV2ConversationMessage.fields.workflowScript,
@@ -2768,6 +2792,14 @@ export const OrchestrationV2PendingRuntimeRequestSummaryJson =
 export type OrchestrationV2PendingRuntimeRequestSummaryJson =
   typeof OrchestrationV2PendingRuntimeRequestSummaryJson.Type;
 
+export const OrchestrationV2RequestDeliveryFailureSummaryJson =
+  OrchestrationV2RequestDeliveryFailureSummary.mapFields((fields) => ({
+    ...fields,
+    occurredAt: Schema.DateTimeUtcFromString,
+  }));
+export type OrchestrationV2RequestDeliveryFailureSummaryJson =
+  typeof OrchestrationV2RequestDeliveryFailureSummaryJson.Type;
+
 export const OrchestrationV2LatestVisibleMessageSummaryJson =
   OrchestrationV2LatestVisibleMessageSummary.mapFields((fields) => ({
     ...fields,
@@ -2783,6 +2815,10 @@ export const OrchestrationV2ThreadShellJson = OrchestrationV2ThreadShell.mapFiel
   latestRunCompletedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   activityRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   pendingRuntimeRequest: Schema.NullOr(OrchestrationV2PendingRuntimeRequestSummaryJson),
+  pendingRuntimeRequests: Schema.optional(
+    Schema.Array(OrchestrationV2PendingRuntimeRequestSummaryJson),
+  ),
+  requestDeliveryFailure: Schema.optional(OrchestrationV2RequestDeliveryFailureSummaryJson),
   latestVisibleMessage: Schema.NullOr(OrchestrationV2LatestVisibleMessageSummaryJson),
   latestUserMessageAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   latestUserAuthoredMessageAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
@@ -3223,6 +3259,7 @@ export const OrchestrationV2Command = Schema.Union([
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     senderThreadId: Schema.optional(ThreadId),
     remoteSender: Schema.optional(OrchestrationV2RemoteSender),
+    replyTo: Schema.optional(OrchestrationV2ReplyTo),
     sendRequest: Schema.optional(OrchestrationV2SendRequest),
     idleCompaction: Schema.optional(OrchestrationV2IdleCompaction),
     commandId: CommandId,
@@ -3655,6 +3692,14 @@ const OrchestrationV2InternalCommand = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     requestId: RuntimeRequestId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("message.steering.settle"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    messageId: MessageId,
+    providerTurnId: ProviderTurnId,
+    status: Schema.Literals(["completed", "failed"]),
   }),
   /** The provider did not confirm a Stop of this turn in time. */
   Schema.Struct({

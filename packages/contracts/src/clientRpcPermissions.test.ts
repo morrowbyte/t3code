@@ -42,6 +42,9 @@ it("requires read access for Windows CUA state on the destination environment", 
 });
 
 it("uses existing read and operate scopes for native author reconciliation and mutations", () => {
+  expect(clientRpcRequiredScopes(WS_METHODS.serverGetExecutionUsage, {})).toEqual([
+    AuthOrchestrationReadScope,
+  ]);
   expect(clientRpcRequiredScopes(WS_METHODS.nativeAuthorRead, {})).toEqual([
     AuthOrchestrationReadScope,
   ]);

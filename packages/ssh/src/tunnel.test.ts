@@ -328,20 +328,20 @@ describe("ssh tunnel scripts", () => {
     {
       name: "does not ask for a password when the agent cannot sign an accepted key",
       stderr:
-        'sign_and_send_pubkey: signing failed for ED25519 "/home/julius/.ssh/id_ed25519" from agent: communication with agent failed\r\n' +
-        "julius@devbox: Permission denied (publickey,password).\r\n",
+        'sign_and_send_pubkey: signing failed for ED25519 "/home/developer/.ssh/id_ed25519" from agent: communication with agent failed\r\n' +
+        "developer@devbox: Permission denied (publickey,password).\r\n",
       expectedPromptAttempts: [],
     },
     {
       name: "asks for a password when signing failure has no agent provenance",
       stderr:
         'sign_and_send_pubkey: signing failed for ED25519-CERT "key-cert.pub": agent refused operation\n' +
-        "julius@devbox: Permission denied (publickey,password).\n",
+        "developer@devbox: Permission denied (publickey,password).\n",
       expectedPromptAttempts: [1],
     },
     {
       name: "asks for a password when the server rejects every key",
-      stderr: "julius@devbox: Permission denied (publickey,password).\r\n",
+      stderr: "developer@devbox: Permission denied (publickey,password).\r\n",
       expectedPromptAttempts: [1],
     },
   ])("$name", ({ stderr, expectedPromptAttempts }) =>

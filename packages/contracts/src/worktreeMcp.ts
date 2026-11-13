@@ -51,7 +51,7 @@ export type WorktreeMcpSetupScriptStatus = typeof WorktreeMcpSetupScriptStatus.T
 export const WorktreeMcpContinuationStatus = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("scheduled"),
-    delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
+    delivery: Schema.Literals(["accepted", "started", "queued", "steered", "restarted", "failed"]),
   }),
   Schema.Struct({
     status: Schema.Literal("skipped"),

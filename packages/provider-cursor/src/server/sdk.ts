@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- The SDK must load from disk beside its Webpack chunks.
 import * as NodeModule from "node:module";
+import { CursorSdkRemoteError } from "./CursorSdkErrors.ts";
 
 // createRequire preserves adjacent Webpack chunks and native modules in bundled/SEA builds.
 const requireCursorSdk = NodeModule.createRequire(import.meta.url);
@@ -29,6 +30,12 @@ export function loadCursorSqlite(): typeof import("@cursor/sdk/sqlite") {
 // Error classification must not initialize the SDK when the load itself failed.
 export function isCursorSdkError<
   K extends "AuthenticationError" | "ConfigurationError" | "CursorSdkError",
->(cause: unknown, kind: K): cause is InstanceType<(typeof import("@cursor/sdk"))[K]> {
-  return sdk !== undefined && cause instanceof sdk[kind];
+>(
+  cause: unknown,
+  kind: K,
+): cause is InstanceType<(typeof import("@cursor/sdk"))[K]> | CursorSdkRemoteError {
+  return (
+    (cause instanceof CursorSdkRemoteError && cause.kinds.includes(kind)) ||
+    (sdk !== undefined && cause instanceof sdk[kind])
+  );
 }
