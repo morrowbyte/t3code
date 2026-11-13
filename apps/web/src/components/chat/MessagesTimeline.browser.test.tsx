@@ -2122,7 +2122,7 @@ it.each([
     await using screen = await renderTimeline(entries);
     const fold = screen.buttons(/Worked for/)[0];
     if (fold?.getAttribute("aria-expanded") === "false") await click(fold);
-    const row = screen.container.querySelector('[data-v2-item-type="reasoning"]');
+    const row = screen.container.querySelector<HTMLElement>('[data-v2-item-type="reasoning"]');
     if (details) {
       expect(row?.getAttribute("role")).toBe("button");
       await click(row!);
