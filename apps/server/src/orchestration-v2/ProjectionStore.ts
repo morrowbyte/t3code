@@ -6965,7 +6965,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           ...runtimeRequestSummaries,
           ...waitingCards.flatMap((item) => secretRequestAsPendingInput(item) ?? []),
         ];
-        let pendingRuntimeRequest = runtimeRequestSummaries[0] ?? null;
+        let pendingRuntimeRequest: OrchestrationV2PendingRuntimeRequestSummary | null =
+          runtimeRequestSummaries[0] ?? null;
         if (pendingRuntimeRequest === null || pendingRuntimeRequest.blocking === false) {
           pendingRuntimeRequest =
             secretRequestAsPendingInput(waitingCards[0] ?? null) ?? pendingRuntimeRequest;
