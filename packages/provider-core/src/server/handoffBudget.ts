@@ -228,6 +228,7 @@ export function selectHistory(input: {
   readonly coverage: string;
   readonly omittedItems?: number;
   readonly budget: number;
+  readonly requireHumanRequests?: boolean;
 }) {
   const messages = input.messages;
   const isUserRequest = (message: OrchestrationV2HistoricalMessage) =>
@@ -237,7 +238,7 @@ export function selectHistory(input: {
   const required = new Set<number>();
   const lastByThread = new Map<string, number>();
   messages.forEach((message, index) => {
-    if (!isUserRequest(message)) return;
+    if (input.requireHumanRequests === false || !isUserRequest(message)) return;
     if (!lastByThread.has(message.threadId)) required.add(index);
     lastByThread.set(message.threadId, index);
   });
@@ -276,6 +277,8 @@ export function selectHistory(input: {
     selected.add(index);
     remaining -= cost;
   };
+  tryAdd(messages.findLastIndex(isUserRequest));
+  tryAdd(messages.findIndex(isUserRequest));
   tryAdd(messages.findLastIndex((message) => message.role === "assistant"));
   for (let index = messages.length - 1; index >= 0; index--) tryAdd(index);
   if (messages.length > 0 && selected.size === 0) throw new ContextHandoffBudgetError();

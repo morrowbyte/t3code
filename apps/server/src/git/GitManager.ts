@@ -703,6 +703,7 @@ export const make = Effect.gen(function* () {
         ),
         coverage: "Digest of the thread that made this change, oldest first.",
         budget: PR_THREAD_CONTEXT_BYTES,
+        requireHumanRequests: false,
       });
       return selected.messages.length === 0
         ? undefined
