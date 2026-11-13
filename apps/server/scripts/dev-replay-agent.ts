@@ -289,13 +289,15 @@ function runAgent(): void {
       restarted: boolean;
       interrupted: boolean;
       cancel: (() => void) | undefined;
-      playback?: {
-        frame: number;
-        chunk: number;
-        emittedChunks: number;
-        paused?: Promise<void>;
-        resume?: () => void;
-      };
+      playback?:
+        | {
+            frame: number;
+            chunk: number;
+            emittedChunks: number;
+            paused?: Promise<void> | undefined;
+            resume?: (() => void) | undefined;
+          }
+        | undefined;
     }
   >();
   const cleanupControl = startReplayControl(
