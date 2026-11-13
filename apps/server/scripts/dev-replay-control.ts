@@ -4,6 +4,7 @@ import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as DateTime from "effect/DateTime";
 
 interface ControlRequest {
   readonly action: "status" | "pause" | "resume";
@@ -47,7 +48,7 @@ export function startReplayControl(
     JSON.stringify({
       pid: process.pid,
       cwd: process.cwd(),
-      startedAt: new Date().toISOString(),
+      startedAt: DateTime.formatIso(DateTime.nowUnsafe()),
     }),
     { mode: 0o600 },
   );

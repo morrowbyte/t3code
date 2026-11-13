@@ -141,6 +141,7 @@ export interface ThreadFeedMessage {
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly senderThreadId?: ThreadId;
   readonly remoteSender?: import("@t3tools/contracts").OrchestrationV2RemoteSender;
+  readonly replyTo?: import("@t3tools/contracts").OrchestrationV2ConversationMessage["replyTo"];
   readonly idleCompaction?: import("@t3tools/contracts").OrchestrationV2IdleCompaction;
   readonly visibility: OrchestrationV2ProjectedTurnItem["visibility"];
   readonly sourceThreadId: ThreadId;
