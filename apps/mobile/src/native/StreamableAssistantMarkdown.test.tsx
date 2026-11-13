@@ -302,7 +302,7 @@ describe("native assistant streaming visuals", () => {
     render(prefix + partial, true);
     expect(host.textContent).toContain("Queue depth42jobs");
     expect(host.querySelector('[aria-label="Reading: -2.5"]')).not.toBeNull();
-    expect(host.querySelector('[aria-label="Note: —"]')).not.toBeNull();
+    expect(host.querySelector('[aria-label="Note: N/A"]')).not.toBeNull();
     expect(host.querySelectorAll("circle")).toHaveLength(1);
     expect(Number(host.querySelector("circle")?.getAttribute("cx"))).toBeGreaterThan(0);
     expect(host.textContent).toContain("Receiving visual data…");

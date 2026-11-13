@@ -10,6 +10,8 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeReadline from "node:readline";
 
+import { runReplayControl, startReplayControl } from "./dev-replay-control.ts";
+
 interface LogicalFrame {
   readonly kind: "notification" | "request" | "response";
   readonly method: string;
@@ -44,8 +46,18 @@ const FIXTURES = "../src/orchestration-v2/testkit/fixtures";
 // Use acpRegistry transcripts: vendor transcripts carry state in frames this agent drops.
 export const SCENARIOS = [
   { id: "showcase", name: "Showcase", file: "./dev-replay/showcase_transcript.ndjson" },
+  {
+    id: "recorded-answers",
+    name: "Recorded answers (2 turns)",
+    file: "./dev-replay/answers_transcript.ndjson",
+  },
   { id: "thinking", name: "Thinking", file: "./dev-replay/thinking_transcript.ndjson" },
   { id: "form", name: "Mixed form", file: "./dev-replay/form_transcript.ndjson" },
+  {
+    id: "visual",
+    name: "Energy comparison (2 turns)",
+    file: "./dev-replay/visual_transcript.ndjson",
+  },
   {
     id: "todo-list",
     name: "Plan and reads",
@@ -142,9 +154,20 @@ export function streamChunks(text: string): ReadonlyArray<string> {
 /** Fills the live session, workspace, and per-prompt tool ids, so repeated turns add rows. */
 function materialize(
   value: unknown,
-  live: { readonly sessionId: string; readonly workspace: string; readonly turnKey: string },
+  live: {
+    readonly sessionId: string;
+    readonly workspace: string;
+    readonly turnKey: string;
+    readonly resultKey: string;
+    readonly formResponse: string;
+  },
 ): unknown {
-  if (typeof value === "string") return value.replaceAll("<workspace>", live.workspace);
+  if (typeof value === "string") {
+    return value
+      .replaceAll("<workspace>", live.workspace)
+      .replaceAll("<result-id>", live.resultKey)
+      .replaceAll("<form-response>", () => live.formResponse);
+  }
   if (Array.isArray(value)) return value.map((entry) => materialize(entry, live));
   if (typeof value !== "object" || value === null) return value;
   return Object.fromEntries(
@@ -157,6 +180,76 @@ function materialize(
           : materialize(entry, live),
     ]),
   );
+}
+
+interface FormProperty {
+  readonly type?: string;
+  readonly enum?: ReadonlyArray<unknown>;
+  readonly minLength?: number;
+  readonly maxLength?: number;
+  readonly minimum?: number;
+  readonly maximum?: number;
+  readonly minItems?: number;
+  readonly maxItems?: number;
+  readonly items?: FormProperty;
+}
+
+function validFormValue(value: unknown, property: FormProperty): boolean {
+  if (property.enum !== undefined && !property.enum.includes(value)) return false;
+  switch (property.type) {
+    case "string":
+      return (
+        typeof value === "string" &&
+        Array.from(value).length >= (property.minLength ?? 0) &&
+        Array.from(value).length <= (property.maxLength ?? Infinity)
+      );
+    case "number":
+    case "integer":
+      return (
+        typeof value === "number" &&
+        Number.isFinite(value) &&
+        (property.type !== "integer" || Number.isInteger(value)) &&
+        value >= (property.minimum ?? -Infinity) &&
+        value <= (property.maximum ?? Infinity)
+      );
+    case "boolean":
+      return typeof value === "boolean";
+    case "array":
+      return (
+        Array.isArray(value) &&
+        value.length >= (property.minItems ?? 0) &&
+        value.length <= (property.maxItems ?? Infinity) &&
+        property.items !== undefined &&
+        value.every((item) => validFormValue(item, property.items!))
+      );
+    default:
+      return false;
+  }
+}
+
+// This replay supports the primitive form fields its transcripts request, not arbitrary JSON Schema.
+function formResponseError(request: LogicalFrame, content: unknown): string | undefined {
+  if (typeof content !== "object" || content === null || Array.isArray(content)) {
+    return "Expected typed content.";
+  }
+  const schema = (
+    request.params as {
+      requestedSchema?: {
+        properties?: Record<string, FormProperty>;
+        required?: ReadonlyArray<string>;
+      };
+    }
+  ).requestedSchema;
+  if (schema?.properties === undefined) return "Unsupported form schema.";
+  const values = content as Record<string, unknown>;
+  for (const key of schema.required ?? []) {
+    if (!Object.hasOwn(values, key)) return `Missing ${key}.`;
+  }
+  for (const [key, value] of Object.entries(values)) {
+    const property = schema.properties[key];
+    if (property === undefined || !validFormValue(value, property)) return `Invalid ${key}.`;
+  }
+  return undefined;
 }
 
 /** The tool call a permission answer rejected, if the user declined or cancelled. */
@@ -188,13 +281,82 @@ function runAgent(): void {
 
   const sessions = new Map<
     string,
-    { cwd: string; model: string; promptCount: number; cancel: (() => void) | undefined }
+    {
+      cwd: string;
+      model: string;
+      promptCount: number;
+      resultKey: string;
+      restarted: boolean;
+      interrupted: boolean;
+      cancel: (() => void) | undefined;
+      playback?: {
+        frame: number;
+        chunk: number;
+        emittedChunks: number;
+        paused?: Promise<void>;
+        resume?: () => void;
+      };
+    }
   >();
+  const cleanupControl = startReplayControl(
+    ({ action, sessionId }) => {
+      if (action !== "status" && typeof sessionId !== "string")
+        throw new Error("Select one replay session.");
+      const entries =
+        sessionId === undefined
+          ? [...sessions.entries()]
+          : [[sessionId, sessions.get(sessionId)] as const];
+      return entries.map(([id, session]) => {
+        if (session === undefined) throw new Error(`Unknown replay session ${id}.`);
+        const playback = session.playback;
+        if (action !== "status") {
+          if (playback === undefined) throw new Error("No replay turn is running.");
+          if (action === "pause" && playback.paused === undefined) {
+            playback.paused = new Promise<void>((resolve) => {
+              playback.resume = resolve;
+            });
+          } else if (action === "resume") {
+            playback.resume?.();
+            playback.paused = undefined;
+            playback.resume = undefined;
+          }
+        }
+        return {
+          sessionId: id,
+          model: session.model,
+          cwd: session.cwd,
+          turn: session.promptCount,
+          state:
+            playback === undefined
+              ? session.promptCount >= loadTurns(session.model).length
+                ? "complete"
+                : "idle"
+              : playback.paused === undefined
+                ? "playing"
+                : "paused",
+          frame: playback?.frame ?? 0,
+          chunk: playback?.chunk ?? 0,
+          emittedChunks: playback?.emittedChunks ?? 0,
+        };
+      });
+    },
+    () => {
+      for (const session of sessions.values()) session.cancel?.();
+    },
+  );
   const pendingAgentRequests = new Map<string, (result: unknown) => void>();
   let nextAgentRequestId = 1;
 
   const send = (message: JsonRpcMessage) =>
     process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
+  const say = (sessionId: string, text: string) =>
+    send({
+      method: "session/update",
+      params: {
+        sessionId,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+      },
+    });
   // Resolves when `promise` settles or the turn is cancelled, whichever comes first.
   const untilAbort = (promise: Promise<unknown>, signal: AbortSignal) =>
     new Promise<void>((resolve) => {
@@ -216,14 +378,24 @@ function runAgent(): void {
     sessionId: string,
     turn: ReplayTurn,
     signal: AbortSignal,
-  ): Promise<"cancelled" | undefined> => {
+  ): Promise<"cancelled" | "incomplete" | undefined> => {
     const session = sessions.get(sessionId)!;
     // Random, so a session loaded after a restart cannot reuse earlier tool rows.
-    const live = { sessionId, workspace: session.cwd, turnKey: NodeCrypto.randomUUID() };
-    for (const recorded of turn.frames) {
+    const live = {
+      sessionId,
+      workspace: session.cwd,
+      turnKey: NodeCrypto.randomUUID(),
+      resultKey: session.resultKey,
+      formResponse: "",
+    };
+    const playback = session.playback!;
+    for (const [frameIndex, recorded] of turn.frames.entries()) {
+      playback.frame = frameIndex;
+      playback.chunk = 0;
       const frame = materialize(recorded.frame, live) as LogicalFrame;
       if (frame.kind === "request") {
         await sleep(recorded.afterMs ?? FRAME_DELAY_MS, signal);
+        await playback.paused;
         if (signal.aborted) return;
         const id = nextAgentRequestId++;
         let answer: unknown;
@@ -236,21 +408,23 @@ function runAgent(): void {
         // The client answers "cancelled" when the user stops the turn mid-request.
         const outcome = (answer as { outcome?: { outcome?: string } } | undefined)?.outcome;
         if (signal.aborted || outcome?.outcome === "cancelled") return "cancelled";
-        if (
-          frame.method === "elicitation/create" &&
-          (answer as { action?: string } | undefined)?.action !== "accept"
-        ) {
-          send({
-            method: "session/update",
-            params: {
+        await playback.paused;
+        if (signal.aborted) return "cancelled";
+        if (frame.method === "elicitation/create") {
+          const response = answer as { action?: string; content?: unknown } | undefined;
+          if (response?.action !== "accept") {
+            say(sessionId, response?.action === "decline" ? "Form declined." : "Form cancelled.");
+            return "incomplete";
+          }
+          const error = formResponseError(frame, response.content);
+          if (error !== undefined) {
+            say(
               sessionId,
-              update: {
-                sessionUpdate: "agent_message_chunk",
-                content: { type: "text", text: "Form cancelled." },
-              },
-            },
-          });
-          return;
+              `Form response invalid: ${error} Send another prompt to retry this turn.`,
+            );
+            return "incomplete";
+          }
+          live.formResponse = JSON.stringify(response.content, null, 2);
         }
         const toolCallId = permissionRejectedToolCallId(frame, answer);
         if (toolCallId === undefined) continue;
@@ -277,6 +451,7 @@ function runAgent(): void {
       const chunks = text === undefined ? [undefined] : streamChunks(text);
       for (const [index, chunk] of chunks.entries()) {
         await sleep(index === 0 ? firstDelay : CHUNK_DELAY_MS, signal);
+        await playback.paused;
         if (signal.aborted) return;
         send({
           method: frame.method,
@@ -285,8 +460,13 @@ function runAgent(): void {
               ? params
               : { ...params, update: { ...params.update, content: { ...content, text: chunk } } },
         });
+        playback.chunk = index + 1;
+        if (text !== undefined) playback.emittedChunks += 1;
       }
     }
+    playback.frame = turn.frames.length;
+    playback.chunk = 0;
+    await playback.paused;
   };
 
   const handleRequest = async (message: JsonRpcMessage): Promise<unknown> => {
@@ -305,11 +485,18 @@ function runAgent(): void {
       case "session/new":
       case "session/load": {
         // T3 starts one agent process per thread, so ids must be unique across processes.
-        // Loading after a restart keeps the thread usable; T3 already holds its history.
         const sessionId =
           message.method === "session/load" ? String(params.sessionId) : NodeCrypto.randomUUID();
         const cwd = typeof params.cwd === "string" ? params.cwd : process.cwd();
-        sessions.set(sessionId, { cwd, model: SCENARIOS[0].id, promptCount: 0, cancel: undefined });
+        sessions.set(sessionId, {
+          cwd,
+          model: SCENARIOS[0].id,
+          promptCount: 0,
+          resultKey: NodeCrypto.randomUUID(),
+          restarted: message.method === "session/load",
+          interrupted: false,
+          cancel: undefined,
+        });
         return {
           ...(message.method === "session/new" ? { sessionId } : {}),
           models: {
@@ -331,6 +518,8 @@ function runAgent(): void {
         if (session !== undefined && session.model !== params.modelId) {
           session.model = String(params.modelId);
           session.promptCount = 0;
+          session.resultKey = NodeCrypto.randomUUID();
+          session.interrupted = false;
         }
         return {};
       }
@@ -338,23 +527,48 @@ function runAgent(): void {
         const sessionId = String(params.sessionId);
         const session = sessions.get(sessionId);
         if (session === undefined) throw new Error(`Unknown session ${sessionId}`);
+        if (session.cancel !== undefined) throw new Error("Replay turn is already running.");
+        if (session.restarted) {
+          say(sessionId, "Replay restarted after reload; recorded progress was not restored.\n\n");
+          session.restarted = false;
+        } else if (session.interrupted) {
+          say(sessionId, "Replay restarts the interrupted turn from the beginning.\n\n");
+          session.interrupted = false;
+        }
         const turns = loadTurns(session.model);
-        const turn = turns[session.promptCount % Math.max(turns.length, 1)];
-        session.promptCount += 1;
+        const turn = turns[session.promptCount];
+        if (turn === undefined) {
+          say(sessionId, "Replay complete. Start a new replay thread to play this scenario again.");
+          return { stopReason: "end_turn" };
+        }
         const controller = new AbortController();
-        session.cancel = () => controller.abort();
-        let ended: "cancelled" | undefined;
+        const playback = {
+          frame: 0,
+          chunk: 0,
+          emittedChunks: 0,
+          paused: undefined as Promise<void> | undefined,
+          resume: undefined as (() => void) | undefined,
+        };
+        session.playback = playback;
+        session.cancel = () => {
+          controller.abort();
+          playback.resume?.();
+          playback.paused = undefined;
+        };
+        let ended: "cancelled" | "incomplete" | undefined;
         try {
-          if (turn !== undefined) ended = await playTurn(sessionId, turn, controller.signal);
+          ended = await playTurn(sessionId, turn, controller.signal);
         } finally {
           session.cancel = undefined;
+          session.playback = undefined;
         }
-        return {
-          stopReason:
-            controller.signal.aborted || ended === "cancelled"
-              ? "cancelled"
-              : (turn?.stopReason ?? "end_turn"),
-        };
+        if (controller.signal.aborted || ended === "cancelled") {
+          session.interrupted = true;
+          say(sessionId, "\n\nReplay cancelled. The next prompt restarts this turn.");
+          return { stopReason: "cancelled" };
+        }
+        if (ended === undefined) session.promptCount += 1;
+        return { stopReason: turn.stopReason };
       }
       case "session/close":
         sessions.get(String(params.sessionId))?.cancel?.();
@@ -369,6 +583,7 @@ function runAgent(): void {
   };
 
   const input = NodeReadline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+  input.once("close", cleanupControl);
   input.on("line", (line) => {
     if (line.trim().length === 0) return;
     let message: JsonRpcMessage;
@@ -399,4 +614,13 @@ function runAgent(): void {
   });
 }
 
-if (import.meta.main) runAgent();
+if (import.meta.main) {
+  if (process.argv[2] === "--control") {
+    runReplayControl(process.argv.slice(2)).catch((error: Error) => {
+      process.stderr.write(`${error.message}\n`);
+      process.exitCode = 1;
+    });
+  } else {
+    runAgent();
+  }
+}

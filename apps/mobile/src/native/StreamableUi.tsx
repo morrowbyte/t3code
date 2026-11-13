@@ -10,6 +10,7 @@ import {
 import type { EnvironmentId } from "@t3tools/contracts";
 import { AppText as Text } from "../components/ui/AppText";
 import { RichChart, RichVisualBody } from "./StreamableUiRich";
+import { VisualInteractionScope } from "./useVisualInteraction";
 
 function Sources({
   sources,
@@ -59,11 +60,11 @@ function DataTable({ title, columns, rows }: Pick<VisualTable, "title" | "column
               <Text
                 key={index}
                 selectable
-                accessibilityLabel={`${columns[index]}: ${cell === null ? "—" : cell}`}
+                accessibilityLabel={`${columns[index]}: ${cell === null ? "N/A" : cell}`}
                 className="px-3 py-2 text-sm tabular-nums"
                 style={{ width: 136 }}
               >
-                {cell === null ? "—" : cell}
+                {cell === null ? "N/A" : cell}
               </Text>
             ))}
           </View>
@@ -103,60 +104,64 @@ export const NativeStreamableUi = memo(function NativeStreamableUi({
   isStreaming,
   environmentId = null,
   onLinkPress,
+  scope,
 }: {
   code: string;
   isStreaming: boolean;
   environmentId?: EnvironmentId | null | undefined;
   onLinkPress?: ((href: string) => void) | undefined;
+  scope?: string | undefined;
 }) {
   const parsed = useMemo(() => parseStreamableUi(code, isStreaming), [code, isStreaming]);
   const { fontScale } = useWindowDimensions();
   return (
-    <View className="my-3 min-w-0 gap-3">
-      {parsed.components.map((component) => (
-        <View
-          key={component.id}
-          className="min-w-0 gap-3 rounded-lg border border-border bg-card p-4"
-        >
-          {component.type === "metric" ? (
-            <View className="gap-1">
-              <Text className="text-xs text-foreground-muted">{component.label}</Text>
-              <Text selectable className="font-t3-bold text-2xl tabular-nums">
-                {component.value}
-              </Text>
-              {component.detail ? (
-                <Text className="text-xs text-foreground-muted">{component.detail}</Text>
-              ) : null}
-            </View>
-          ) : (
-            <>
-              <Text accessibilityRole="header" className="font-t3-bold text-sm">
-                {component.title}
-              </Text>
-              {component.type === "table" ? (
-                <DataTable {...component} />
-              ) : component.type === "chart" ? (
-                <RichChart chart={component} isStreaming={isStreaming} />
-              ) : (
-                <RichVisualBody
-                  component={component}
-                  environmentId={environmentId}
-                  isStreaming={isStreaming}
-                />
-              )}
-            </>
-          )}
-          <Sources sources={component.sources} onLinkPress={onLinkPress} />
+    <VisualInteractionScope value={scope}>
+      <View className="my-3 min-w-0 gap-3">
+        {parsed.components.map((component) => (
+          <View
+            key={component.id}
+            className="min-w-0 gap-3 rounded-lg border border-border bg-card p-4"
+          >
+            {component.type === "metric" ? (
+              <View className="gap-1">
+                <Text className="text-xs text-foreground-muted">{component.label}</Text>
+                <Text selectable className="font-t3-bold text-2xl tabular-nums">
+                  {component.value}
+                </Text>
+                {component.detail ? (
+                  <Text className="text-xs text-foreground-muted">{component.detail}</Text>
+                ) : null}
+              </View>
+            ) : (
+              <>
+                <Text accessibilityRole="header" className="font-t3-bold text-sm">
+                  {component.title}
+                </Text>
+                {component.type === "table" ? (
+                  <DataTable {...component} />
+                ) : component.type === "chart" ? (
+                  <RichChart chart={component} isStreaming={isStreaming} />
+                ) : (
+                  <RichVisualBody
+                    component={component}
+                    environmentId={environmentId}
+                    isStreaming={isStreaming}
+                  />
+                )}
+              </>
+            )}
+            <Sources sources={component.sources} onLinkPress={onLinkPress} />
+          </View>
+        ))}
+        <View style={{ minHeight: 20 * Math.max(1, fontScale) }}>
+          {parsed.pending ? (
+            <Text accessibilityLiveRegion="polite" className="text-xs text-foreground-muted">
+              Receiving visual data…
+            </Text>
+          ) : null}
         </View>
-      ))}
-      <View style={{ minHeight: 20 * Math.max(1, fontScale) }}>
-        {parsed.pending ? (
-          <Text accessibilityLiveRegion="polite" className="text-xs text-foreground-muted">
-            Receiving visual data…
-          </Text>
-        ) : null}
+        {parsed.error ? <SourceError code={code} error={parsed.error} /> : null}
       </View>
-      {parsed.error ? <SourceError code={code} error={parsed.error} /> : null}
-    </View>
+    </VisualInteractionScope>
   );
 });
