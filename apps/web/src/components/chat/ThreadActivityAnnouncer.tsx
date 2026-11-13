@@ -41,8 +41,8 @@ export const ThreadActivityAnnouncer = memo(function ThreadActivityAnnouncer({
       requestId,
       runId,
       runStatus,
-      deliveryFailures,
-      latestLocalItemOrdinal,
+      ...(deliveryFailures === undefined ? {} : { deliveryFailures }),
+      ...(latestLocalItemOrdinal === undefined ? {} : { latestLocalItemOrdinal }),
     });
     memoryRef.current = { threadKey, memory };
     if (previous === null) clear();

@@ -2176,7 +2176,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           };
         };
         let runtimeScope: Scope.Closeable | undefined;
-        let runtimeThreadId = input.threadId;
+        let runtimeThreadId: ThreadId | null = input.threadId;
         let runtime!: AcpSessionRuntime.AcpSessionRuntime["Service"];
         let runtimeMcpBridge: AcpMcpOverAcpBridge | undefined;
         yield* Effect.addFinalizer(() =>
