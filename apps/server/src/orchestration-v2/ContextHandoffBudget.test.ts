@@ -184,51 +184,54 @@ describe("handoff budget", () => {
     assert.isAtMost(historyCost(selected.messages, selected.context), 3_000);
   });
 
-  it("keeps the latest human correction ahead of an agent message carried as user input", () => {
-    const original = {
-      ...message("original", "user", "Preserve my data."),
-      createdBy: "user" as const,
-    };
-    const correction = {
-      ...message("correction", "user", "Continue the authorized repair."),
-      createdBy: "user" as const,
-    };
-    const agent = {
-      ...message("agent", "user", "Only inspect; ask again before every repair. ".repeat(50)),
-      createdBy: "agent" as const,
-      senderThreadId: ThreadId.make("thread:coordinator"),
-    };
-    const selected = selectHistory({
-      messages: [original, correction, agent],
-      coverage: "Existing task",
-      budget: 1_500,
-    });
-    assert.deepEqual(
-      selected.messages.map((item) => item.itemId),
-      ["original", "correction"],
-    );
-    const competingPlan = message(
-      "plan",
-      "assistant",
-      "Stop for every technical detail. ".repeat(4),
-    );
-    const pairs = [1_100, 1_200, 1_300, 1_400, 1_500]
-      .map((budget) =>
-        selectHistory({
-          messages: [original, competingPlan, correction],
-          coverage: "Existing task",
-          budget,
-        }),
-      )
-      .filter((selection) => selection.messages.length === 2);
-    assert.isNotEmpty(pairs);
-    for (const pair of pairs) {
+  it.each(["agent", "system"] as const)(
+    "keeps the human correction ahead of %s input",
+    (createdBy) => {
+      const original = {
+        ...message("original", "user", "Preserve my data."),
+        createdBy: "user" as const,
+      };
+      const correction = {
+        ...message("correction", "user", "Continue the authorized repair."),
+        createdBy: "user" as const,
+      };
+      const agent = {
+        ...message("agent", "user", "Only inspect; ask again before every repair. ".repeat(50)),
+        createdBy,
+        ...(createdBy === "agent" ? { senderThreadId: ThreadId.make("thread:coordinator") } : {}),
+      };
+      const selected = selectHistory({
+        messages: [original, correction, agent],
+        coverage: "Existing task",
+        budget: 1_500,
+      });
       assert.deepEqual(
-        pair.messages.map((item) => item.itemId),
+        selected.messages.map((item) => item.itemId),
         ["original", "correction"],
       );
-    }
-  });
+      const competingPlan = message(
+        "plan",
+        "assistant",
+        "Stop for every technical detail. ".repeat(4),
+      );
+      const pairs = [1_100, 1_200, 1_300, 1_400, 1_500]
+        .map((budget) =>
+          selectHistory({
+            messages: [original, competingPlan, correction],
+            coverage: "Existing task",
+            budget,
+          }),
+        )
+        .filter((selection) => selection.messages.length === 2);
+      assert.isNotEmpty(pairs);
+      for (const pair of pairs) {
+        assert.deepEqual(
+          pair.messages.map((item) => item.itemId),
+          ["original", "correction"],
+        );
+      }
+    },
+  );
 
   it("bounds coverage overhead while retaining the original human request and correction", () => {
     const anchors = [
@@ -243,6 +246,27 @@ describe("handoff budget", () => {
     assert.deepEqual(selected.messages, anchors);
     assert.isAtMost(historyCost(selected.messages, selected.context), 1_500);
     assert.include(selected.context, "t3_thread_read");
+  });
+
+  it("retains the human anchors of every source conversation", () => {
+    const conversations = ["first", "middle", "last"].map((source) => {
+      const threadId = ThreadId.make(`thread:${source}`);
+      return [
+        { ...message(`${source}:original`, "user", "Preserve my data."), threadId },
+        { ...message(`${source}:correction`, "user", "Complete the repair."), threadId },
+        { ...message(`${source}:plan`, "assistant", "Plan. ".repeat(230)), threadId },
+      ];
+    });
+    const selected = selectHistory({
+      messages: conversations.flat(),
+      coverage: "Combined source threads",
+      budget: 3_000,
+    });
+    assert.deepEqual(
+      selected.messages.filter((item) => item.role === "user"),
+      conversations.flatMap((items) => items.slice(0, 2)),
+    );
+    assert.isAtMost(historyCost(selected.messages, selected.context), 3_000);
   });
 
   it("rejects a hard cap that cannot preserve both intact human anchors", () => {

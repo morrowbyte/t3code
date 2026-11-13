@@ -229,13 +229,16 @@ export function selectHistory(input: {
   const messages = input.messages;
   const isUserRequest = (message: OrchestrationV2HistoricalMessage) =>
     message.role === "user" &&
-    message.createdBy !== "agent" &&
+    (message.createdBy === "user" || message.createdBy === undefined) &&
     message.senderThreadId === undefined;
-  const required = new Set([
-    messages.findIndex(isUserRequest),
-    messages.findLastIndex(isUserRequest),
-  ]);
-  required.delete(-1);
+  const required = new Set<number>();
+  const lastByThread = new Map<string, number>();
+  messages.forEach((message, index) => {
+    if (!isUserRequest(message)) return;
+    if (!lastByThread.has(message.threadId)) required.add(index);
+    lastByThread.set(message.threadId, index);
+  });
+  for (const index of lastByThread.values()) required.add(index);
   const messageCost = (message: OrchestrationV2HistoricalMessage) =>
     Math.max(
       Buffer.byteLength(JSON.stringify(historyResponseItems([message], "")[1])) + 1,

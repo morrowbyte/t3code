@@ -81,9 +81,7 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       coverage: fullCoverage,
       omittedItems: pending.reduce((sum, handoff) => sum + (handoff.history?.omittedItems ?? 0), 0),
       budget,
-    }).pipe(
-      Effect.catch((cause) => (input.deferInline ? Effect.succeed(undefined) : Effect.fail(cause))),
-    );
+    }).pipe(Effect.catch((cause) => (input.deferInline ? Effect.void : Effect.fail(cause))));
     if (selected === undefined) return { context: "", delivered: Effect.void, unsent: Effect.void };
     if (historyCost(selected.messages, selected.context) > budget) {
       if (input.deferInline) return { context: "", delivered: Effect.void, unsent: Effect.void };
