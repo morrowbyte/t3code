@@ -9452,7 +9452,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             });
           }
           const text = typeof answer === "string" ? answer : answer.join(", ");
-          replies.push(`${question.question}\n${text.trim()}`);
+          replies.push(`Agent question:\n${question.question}\n\nUser answer:\n${text.trim()}`);
         }
         if (replies.length === 0) {
           return yield* new OrchestratorDispatchError({

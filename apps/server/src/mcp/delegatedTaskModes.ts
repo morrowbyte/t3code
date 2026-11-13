@@ -30,8 +30,8 @@ export function interactionModeRank(mode: ProviderInteractionMode): number {
 
 /**
  * The mode a child runs at: the one asked for, never broader than its parent's.
- * An inherited mode the target provider does not offer steps down to the
- * broadest one it does; an explicitly requested one is refused instead.
+ * A provider must support that exact mode; unsupported inheritance must not
+ * silently introduce approval requirements.
  */
 export function resolveRuntimeMode(
   parentMode: RuntimeMode,
@@ -55,19 +55,11 @@ export function resolveRuntimeMode(
   if (supported === undefined || supported.length === 0 || supported.includes(resolved)) {
     return Effect.succeed(resolved);
   }
-  if (!inherited) {
-    return Effect.fail(
-      new OrchestratorMcpFailure({
-        code: "invalid_request",
-        message: `Provider ${target?.modelSelection.instanceId} does not offer runtime mode ${resolved}, so it would run as approval-required. Use one of: ${supported.join(", ")}.`,
-      }),
-    );
-  }
-  return Effect.succeed(
-    supported
-      .filter((mode) => runtimeModeRank(mode) <= runtimeModeRank(resolved))
-      .toSorted((left, right) => runtimeModeRank(right) - runtimeModeRank(left))[0] ??
-      "approval-required",
+  return Effect.fail(
+    new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message: `Provider ${target?.modelSelection.instanceId} does not offer ${inherited ? "inherited" : "requested"} runtime mode ${resolved}. Choose a provider supporting it or explicitly request one of: ${supported.join(", ")}.`,
+    }),
   );
 }
 

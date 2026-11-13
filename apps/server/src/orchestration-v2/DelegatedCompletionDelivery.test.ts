@@ -2252,7 +2252,14 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
           yield* Fiber.join(answer);
         }).pipe(Effect.ensuring(Effect.sync(() => spy.mockRestore())));
 
-        const answerRun = (yield* orchestrator.getThreadProjection(child.childThreadId)).runs.find(
+        const childProjection = yield* orchestrator.getThreadProjection(child.childThreadId);
+        assert.equal(
+          childProjection.messages.find(
+            (message) => message.id === MessageId.make(`async-answer:${requestId}`),
+          )?.text,
+          "Agent question:\nWhich color?\n\nUser answer:\nBlue",
+        );
+        const answerRun = childProjection.runs.find(
           (run) => run.userMessageId === MessageId.make(`async-answer:${requestId}`),
         );
         assert.isDefined(answerRun?.delegatedTaskId);

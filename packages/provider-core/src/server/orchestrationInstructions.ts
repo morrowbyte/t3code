@@ -1,4 +1,5 @@
 import type { ProviderInteractionMode } from "@t3tools/contracts";
+import { TASK_AUTHORIZATION_INSTRUCTIONS } from "./taskAuthorizationInstructions.ts";
 
 export const T3_CODE_THREAD_REFERENCE_INSTRUCTIONS = `In user-facing responses and thread-to-thread handoffs, name a specific other agent or chat with its actual thread title and the returned canonical \`link\` verbatim. Returned autolinks display the current thread title in the app. Do not substitute internal aliases such as U or V or raw IDs as the reader-facing name. If only a thread ID is known, use one bounded \`t3_thread_read\` to obtain its title and link; do not guess either. Ordinary code variables are unaffected. Do not rewrite stored messages to change references.`;
 
@@ -171,6 +172,7 @@ export function t3AcpPromptWithInstructions(input: {
     input.state.interactionMode === "plan"
       ? T3_CODE_ACP_PLAN_MODE_INSTRUCTIONS
       : T3_CODE_ACP_DEFAULT_MODE_INSTRUCTIONS,
+    TASK_AUTHORIZATION_INSTRUCTIONS,
     ...(input.state.hasT3Mcp
       ? [
           T3_CODE_BROWSER_TOOL_INSTRUCTIONS.trim(),
@@ -185,8 +187,8 @@ export function t3AcpPromptWithInstructions(input: {
 
 const orchestrationInstructions = (hasDeviceTools: boolean) =>
   hasDeviceTools
-    ? `${T3_CODE_ORCHESTRATION_INSTRUCTIONS}\n${T3_CODE_DEVICE_TOOL_INSTRUCTIONS}\n`
-    : T3_CODE_ORCHESTRATION_INSTRUCTIONS;
+    ? `${TASK_AUTHORIZATION_INSTRUCTIONS}\n${T3_CODE_ORCHESTRATION_INSTRUCTIONS}\n${T3_CODE_DEVICE_TOOL_INSTRUCTIONS}\n`
+    : `${TASK_AUTHORIZATION_INSTRUCTIONS}\n${T3_CODE_ORCHESTRATION_INSTRUCTIONS}`;
 
 function prependT3OrchestrationInstructions(prompt: string, instructions: string): string {
   return `<t3_code_orchestration_instructions>${instructions.trim()}</t3_code_orchestration_instructions>\n\n<user_request>\n${prompt}\n</user_request>`;

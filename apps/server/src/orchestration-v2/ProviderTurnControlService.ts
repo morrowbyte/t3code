@@ -1,4 +1,5 @@
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
+import { providerMessageText } from "@t3tools/provider-core/server/messageProvenance";
 import { hasSpeechTranscription } from "@t3tools/shared/speechTranscription";
 import {
   MessageId,
@@ -381,10 +382,13 @@ export const layer: Layer.Layer<
                 )
                   ? { containsSpeechTranscription: true as const }
                   : {}),
-                text: projectComposerContextForProvider({
-                  text: message.text,
-                  records: message.context?.records ?? [],
-                }),
+                text: providerMessageText(
+                  message,
+                  projectComposerContextForProvider({
+                    text: message.text,
+                    records: message.context?.records ?? [],
+                  }),
+                ),
                 attachments: message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,
