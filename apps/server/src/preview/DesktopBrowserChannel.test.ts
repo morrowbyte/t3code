@@ -16,6 +16,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -199,6 +200,7 @@ effectIt.live(
           expect((yield* fs.stat(descriptorPath)).mode & 0o777).toBe(0o600);
         }
         const attached = yield* channel.attached.pipe(Stream.rechunk(1), Stream.toPull);
+        const firstAttachment = yield* attached.pipe(Effect.forkScoped({ startImmediately: true }));
         const restoration = {
           desktopHostId: "native-host",
           url: "https://example.com/current",
@@ -228,7 +230,7 @@ effectIt.live(
         });
         expect(yield* channel.awaitAttached(privateTarget, "5 seconds")).toBe(true);
         expect(channel.available).toBe(true);
-        expect(yield* attached).toEqual([
+        expect(yield* Fiber.join(firstAttachment)).toEqual([
           {
             threadId: privateTarget.threadId,
             tabId: privateTarget.tabId,

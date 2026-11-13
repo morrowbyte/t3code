@@ -821,14 +821,19 @@ it.live.each(["desktop" as const, undefined])(
           ...(runtime === undefined ? {} : { runtime }),
         });
         desktopTabs.add(local.tabId);
-        const boundEvents = yield* manager.subscribeEvents;
-        const bound = yield* Stream.fromSubscription(boundEvents).pipe(
-          Stream.filter(
-            (event) => "snapshot" in event && event.snapshot.desktopHostId === "native-host",
-          ),
-          Stream.take(1),
-          Stream.toPull,
-        );
+        const bound = yield* Deferred.make<void>();
+        const bindDesktopTab = manager.bindDesktopTab;
+        using _bind = vi
+          .spyOn(manager, "bindDesktopTab")
+          .mockImplementation((input) =>
+            bindDesktopTab(input).pipe(
+              Effect.tap(() =>
+                input.threadId === scope.thread.threadId && input.tabId === local.tabId
+                  ? Deferred.succeed(bound, undefined)
+                  : Effect.void,
+              ),
+            ),
+          );
         desktopDetaches.emit("attach", {
           threadId: scope.thread.threadId,
           tabId: local.tabId,
@@ -841,7 +846,7 @@ it.live.each(["desktop" as const, undefined])(
             profileId: "default",
           },
         });
-        yield* bound;
+        yield* Deferred.await(bound);
         expect(
           (yield* manager.list({ threadId: scope.thread.threadId })).sessions.find(
             (session) => session.tabId === local.tabId,

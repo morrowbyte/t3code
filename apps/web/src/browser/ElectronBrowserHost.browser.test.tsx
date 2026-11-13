@@ -257,6 +257,8 @@ describe("ElectronBrowserHost", () => {
           environmentId: threadRef.environmentId,
           threadId: threadRef.threadId,
           tabId: "legacy",
+          profileId: "default",
+          viewport: { _tag: "fill" },
         },
       }),
     );
@@ -272,6 +274,8 @@ describe("ElectronBrowserHost", () => {
           environmentId: threadRef.environmentId,
           threadId: threadRef.threadId,
           tabId: native.tabId,
+          profileId: "default",
+          viewport: { _tag: "fill" },
         },
       }),
     );
@@ -468,7 +472,12 @@ describe("ElectronBrowserHost", () => {
       expect(mocks.createTab).toHaveBeenCalledWith(
         "offscreen",
         expect.objectContaining({
-          serverTab: { threadId: threadRef.threadId, tabId: "offscreen" },
+          serverTab: {
+            threadId: threadRef.threadId,
+            tabId: "offscreen",
+            profileId: "default",
+            viewport: { _tag: "freeform", width: 1440, height: 1700 },
+          },
         }),
       );
     },
