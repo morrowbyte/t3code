@@ -1413,11 +1413,23 @@ jobs:
           cache: false
           run-install: false
 
-      - name: Setup Python for node-gyp
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.13"
-          architecture: x64
+      - name: Ensure Python 3 for node-gyp
+        shell: powershell
+        env:
+          CONTROL_SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git fetch --no-tags origin $env:CONTROL_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch the Python bootstrap control revision.' }
+          $contents = git show "$($env:CONTROL_SHA):.github/scripts/setup-windows-python.ps1"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read the Python bootstrap from the control revision.' }
+          $helper = Join-Path $env:RUNNER_TEMP ("morrowbyte-python-helper-" + [Guid]::NewGuid().ToString('N') + '.ps1')
+          try {
+            [IO.File]::WriteAllText($helper, ($contents -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+            & $helper
+          } finally {
+            if (Test-Path -LiteralPath $helper) { Remove-Item -LiteralPath $helper }
+          }
 
       - name: Install Windows build dependencies
         uses: ./.github/actions/windows-storage-guard
