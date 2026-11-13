@@ -743,6 +743,7 @@ const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const previewBrowser = yield* PreviewBrowser.PreviewBrowser;
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
+  const serviceScope = yield* Scope.Scope;
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
@@ -1085,7 +1086,7 @@ const make = Effect.gen(function* () {
       : Promise.resolve(false);
 
   const connectDesktop = async (snapshot: PreviewSessionSnapshot) => {
-    const scope = await runPromise(Scope.make());
+    const scope = await runPromise(Scope.fork(serviceScope));
     try {
       const endpoint = await runPromise(
         desktopChannel
@@ -1096,8 +1097,11 @@ const make = Effect.gen(function* () {
       return {
         page: connected.page,
         close: async () => {
-          await connected.browser.close().catch(constVoid);
-          await runPromise(Scope.close(scope, Exit.void));
+          try {
+            await runPromise(Scope.close(scope, Exit.void));
+          } finally {
+            await connected.browser.close().catch(constVoid);
+          }
         },
       };
     } catch (cause) {

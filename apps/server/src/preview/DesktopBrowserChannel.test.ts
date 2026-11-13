@@ -381,6 +381,8 @@ effectIt.live(
           threadId: other.threadId,
           active: false,
         });
+        yield* close;
+        expect(yield* second.next.pipe(Effect.exit, Effect.map(Exit.isFailure))).toBe(true);
         yield* second.close;
         expect(yield* detached).toEqual([
           { threadId: replacement.threadId, tabId: replacement.tabId },
@@ -388,7 +390,6 @@ effectIt.live(
         expect(yield* Queue.take(invalidated)).toBe(replacement.attachmentId);
         expect(channel.available).toBe(false);
         expect(yield* channel.isAttached(replacement)).toBe(false);
-        yield* close;
         expect(yield* fs.exists(descriptorPath)).toBe(false);
       }).pipe(Effect.provide(NodeServices.layer)),
     ),

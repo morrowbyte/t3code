@@ -2642,8 +2642,11 @@ it.live("a desktop page that comes back reconnects without waiting for a viewer"
       yield* Effect.promise(() => reconnected);
       yield* Effect.promise(() => desktopConnections[1]!.context.registered);
       expect(desktopConnections).toHaveLength(2);
-    }),
-  ).pipe(Effect.provide(layer)),
+      return opened.tabId;
+    }).pipe(Effect.provide(layer)),
+  ).pipe(
+    Effect.tap((tabId) => Effect.sync(() => expect(releasedDesktopTabs).toEqual([tabId, tabId]))),
+  ),
 );
 
 it.live.each(["none", "key", "mouse"] as const)(
