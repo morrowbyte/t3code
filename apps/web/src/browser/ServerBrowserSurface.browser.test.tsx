@@ -39,9 +39,10 @@ vi.mock(import("@t3tools/client-runtime/preview/server-browser-stream"), async (
   },
 }));
 
-vi.mock(import("~/state/previewStream"), async (original) => ({
-  ...(await original()),
+vi.mock(import("~/state/previewStream"), () => ({
   usePreviewStreamAccess: () => mocks.access as never,
+  refreshPreviewStreamAccess: () => undefined,
+  readPreviewStreamAccess: async () => mocks.access as never,
 }));
 
 vi.mock(import("~/components/preview/previewBridge"), () => ({
