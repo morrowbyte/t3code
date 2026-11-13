@@ -379,7 +379,8 @@ export function applyServerSettingsPatch(
                     agentPreferences: agentPreferenceReplacements(
                       mergeAgentPreferences(
                         current.agentPreferences,
-                        current.projectSettingsOverrides[projectId]?.agentPreferences ?? [],
+                        current.projectSettingsOverrides[projectId as ProjectId]
+                          ?.agentPreferences ?? [],
                       ),
                       overrides.agentPreferences,
                     ),

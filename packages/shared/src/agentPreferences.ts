@@ -7,7 +7,6 @@ import {
 import * as Schema from "effect/Schema";
 import { parseThreadLinkHref } from "./threadLinks.ts";
 
-const decodeAgentPreference = Schema.decodeUnknownSync(AgentPreference);
 const isAgentPreference = Schema.is(AgentPreference);
 
 export function mergeAgentPreferences(
@@ -55,10 +54,6 @@ function normalizeAgentPreferenceDraft(entry: AgentPreferenceDraft) {
             threadId: parseThreadLinkHref(taskRef)?.threadId ?? taskRef,
           },
   };
-}
-
-export function normalizeAgentPreference(entry: AgentPreference): AgentPreference {
-  return decodeAgentPreference(normalizeAgentPreferenceDraft(entry));
 }
 
 export function parseAgentPreferenceDraft(entry: AgentPreferenceDraft): AgentPreference | null {
