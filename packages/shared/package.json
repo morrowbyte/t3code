@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./orchestrationV2ThreadSnooze": {
+      "types": "./src/orchestrationV2ThreadSnooze.ts",
+      "import": "./src/orchestrationV2ThreadSnooze.ts"
+    },
     "./desktopRestore": {
       "types": "./src/desktopRestore.ts",
       "import": "./src/desktopRestore.ts"

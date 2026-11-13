@@ -1043,6 +1043,7 @@ function timelineItem(input: {
     creationSource: message?.creationSource ?? null,
     ...(message?.senderThreadId === undefined ? {} : { senderThreadId: message.senderThreadId }),
     ...(message?.remoteSender === undefined ? {} : { remoteSender: message.remoteSender }),
+    ...(message?.replyTo === undefined ? {} : { replyTo: message.replyTo }),
     type: input.row.item.type,
     status: input.row.item.status,
     title: input.row.item.title,
@@ -2649,6 +2650,9 @@ const make = Effect.gen(function* () {
         admission?.delegationAdmission?.requestJson !==
           encodeConversationRequest(input.delegation) ||
         message?.text !== input.message ||
+        message.replyTo?.environmentId !== input.replyTo?.environmentId ||
+        message.replyTo?.threadId !== input.replyTo?.threadId ||
+        message.replyTo?.messageId !== input.replyTo?.messageId ||
         message.createdBy !== "agent" ||
         message.creationSource !== "mcp" ||
         message.senderThreadId !== scope.thread?.threadId ||
@@ -3554,6 +3558,19 @@ const make = Effect.gen(function* () {
         threads: page.map((shell) => listItemFromShell(scope, shell, nowMs)),
         nextCursor,
         total: filtered.length,
+        coverage: {
+          environmentId: scope.environmentId,
+          includesSubagents: input.includeSubagents !== false,
+          includesArchived: false,
+          includesSideChats: false,
+          linkedEnvironments: "not_read",
+          filters: {
+            statuses: statuses === null ? null : [...statuses],
+            settled: input.settled ?? null,
+            snoozed: input.snoozed ?? null,
+            titleContains: input.titleContains ?? null,
+          },
+        },
       } satisfies OrchestratorMcpThreadListResult;
     }),
     readThread: Effect.fn("OrchestratorMcpService.readThread")(function* (scope, input) {
@@ -3671,6 +3688,19 @@ const make = Effect.gen(function* () {
       if (Option.isSome(replayed)) return replayed.value;
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
+      if (input.replyTo !== undefined) {
+        const reply = input.replyTo;
+        if (reply.environmentId === scope.environmentId) {
+          const source = yield* threadManagement
+            .getThreadRecords(reply.threadId, ["messages"], { messageIds: [reply.messageId] })
+            .pipe(Effect.mapError(threadManagementFailure));
+          if (!source.messages.some((message) => message.id === reply.messageId))
+            return yield* failure(
+              "invalid_request",
+              "The replied-to message is unavailable in the referenced thread.",
+            );
+        }
+      }
       yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
       yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);
 
@@ -3820,6 +3850,7 @@ const make = Effect.gen(function* () {
             threadId: input.threadId,
             messageId,
             text: input.message,
+            ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
             createdBy: "agent",
             creationSource: "mcp",
             ...(parent === undefined ? {} : { senderThreadId: parent.thread.id }),
@@ -3859,6 +3890,7 @@ const make = Effect.gen(function* () {
           ...(scope.remoteSender === undefined ? {} : { remoteSender: scope.remoteSender }),
           messageId,
           text: input.message,
+          ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
           attachments: [],
           mode,
           createdBy: "agent",

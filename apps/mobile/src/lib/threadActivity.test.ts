@@ -1,4 +1,5 @@
 import {
+  EnvironmentId,
   MessageId,
   CheckpointId,
   CheckpointRef,
@@ -430,6 +431,11 @@ describe("buildThreadFeed", () => {
       ...userMessage(),
       id: TurnItemId.make("answer"),
       messageId: MessageId.make(`async-answer:${requestId}`),
+      replyTo: {
+        environmentId: EnvironmentId.make("reply-environment"),
+        threadId: ThreadId.make("reply-thread"),
+        messageId: MessageId.make("reply-message"),
+      },
     };
     const feed = buildThreadFeed([projected(question, 0), projected(reply, 1)]);
     expect(feed).toHaveLength(1);
@@ -437,7 +443,10 @@ describe("buildThreadFeed", () => {
       type: "activity-group",
       activities: [{ workEntry: { questionAnswer: question.questionAnswer } }],
     });
-    expect(buildThreadFeed([projected(reply, 0)])[0]?.type).toBe("message");
+    expect(buildThreadFeed([projected(reply, 0)])[0]).toMatchObject({
+      type: "message",
+      message: { replyTo: reply.replyTo },
+    });
   });
 
   it.each([false, true])(
@@ -1743,11 +1752,12 @@ describe("buildThreadFeed", () => {
     });
   });
 
-  it("keeps outgoing messages visible outside compact work groups and settled run folds", () => {
-    const rows = [
-      projected(command("2026-06-20T00:00:01.000Z"), 0),
-      ...["mcp__t3-code__t3_thread_send", "t3_code.t3_thread_send", "t3_thread_send"].map(
-        (toolName, index) =>
+  it.each(["t3_thread_send", "t3_connected_thread_send"])(
+    "keeps %s visible outside compact work groups and settled run folds",
+    (tool) => {
+      const rows = [
+        projected(command("2026-06-20T00:00:01.000Z"), 0),
+        ...[`mcp__t3-code__${tool}`, `t3_code.${tool}`, tool].map((toolName, index) =>
           projected(
             {
               ...base(`item-send-${index}`, `2026-06-20T00:00:0${index + 2}.000Z`, index + 2),
@@ -1758,43 +1768,44 @@ describe("buildThreadFeed", () => {
             },
             index + 1,
           ),
-      ),
-      projected(
-        {
-          ...command("2026-06-20T00:00:06.000Z"),
-          id: TurnItemId.make("item-command-2"),
-          ordinal: 6,
-        },
-        4,
-      ),
-    ];
+        ),
+        projected(
+          {
+            ...command("2026-06-20T00:00:06.000Z"),
+            id: TurnItemId.make("item-command-2"),
+            ordinal: 6,
+          },
+          4,
+        ),
+      ];
 
-    const presented = deriveThreadFeedPresentation(
-      buildThreadFeed(rows),
-      { runId, status: "running", startedAt: null, completedAt: null },
-      new Set(),
-    );
+      const presented = deriveThreadFeedPresentation(
+        buildThreadFeed(rows),
+        { runId, status: "running", startedAt: null, completedAt: null },
+        new Set(),
+      );
 
-    expect(presented.filter((entry) => entry.type === "agent-send")).toHaveLength(3);
-    expect(presented.map((entry) => entry.type)).toEqual([
-      "activity-group",
-      "agent-send",
-      "agent-send",
-      "agent-send",
-      "activity-group",
-    ]);
-    const settled = deriveThreadFeedPresentation(
-      buildThreadFeed([
-        projected(userMessage(), 0),
-        ...rows,
-        projected(assistantMessage("2026-06-20T00:00:08.000Z"), 6),
-      ]),
-      { runId, status: "completed", startedAt: null, completedAt: null },
-      new Set(),
-    );
-    expect(settled.filter((entry) => entry.type === "agent-send")).toHaveLength(3);
-    expect(settled.filter((entry) => entry.type === "message")).toHaveLength(2);
-  });
+      expect(presented.filter((entry) => entry.type === "agent-send")).toHaveLength(3);
+      expect(presented.map((entry) => entry.type)).toEqual([
+        "activity-group",
+        "agent-send",
+        "agent-send",
+        "agent-send",
+        "activity-group",
+      ]);
+      const settled = deriveThreadFeedPresentation(
+        buildThreadFeed([
+          projected(userMessage(), 0),
+          ...rows,
+          projected(assistantMessage("2026-06-20T00:00:08.000Z"), 6),
+        ]),
+        { runId, status: "completed", startedAt: null, completedAt: null },
+        new Set(),
+      );
+      expect(settled.filter((entry) => entry.type === "agent-send")).toHaveLength(3);
+      expect(settled.filter((entry) => entry.type === "message")).toHaveLength(2);
+    },
+  );
 
   it("presents project calls and summarizes successful clones through the mobile feed", () => {
     const items: OrchestrationV2TurnItem[] = [

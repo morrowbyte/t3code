@@ -7,7 +7,12 @@ import {
   turnItemDetailRevision,
   turnItemNeedsDetailFetch,
 } from "@t3tools/client-runtime/work-log/item-detail";
-import { readAgentSend } from "./agentMessagePresentation";
+import {
+  agentDelegationText,
+  collapsedAgentMessageSummary,
+  type readAgentReply,
+  readAgentSend,
+} from "./agentMessagePresentation";
 import { AgentMessageRow } from "./AgentMessageRow";
 import { V2ItemInspector } from "./V2ItemInspector";
 import { useRightPanelStore } from "../../rightPanelStore";
@@ -17,14 +22,14 @@ import { InlineAudioPreview } from "../files/InlineAudioPreview";
 import { filePreviewKind } from "@t3tools/shared/filePreview";
 import { findRevealRef } from "./markdownFindContext";
 import {
-  type EnvironmentId,
+  EnvironmentId,
   type MessageId,
   type ScheduledTaskId,
   type ServerProviderSkill,
   ThreadId,
 } from "@t3tools/contracts";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
-import { Link } from "@tanstack/react-router";
+import { Link, useLocation } from "@tanstack/react-router";
 import { useQuietThreadShell } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
@@ -52,7 +57,7 @@ import {
   PencilIcon,
 } from "lucide-react";
 import { Link as LinkIconNode } from "lucide";
-import { Button, InlineButton } from "../ui/button";
+import { Button } from "../ui/button";
 import { useAssetUrlRefresh, useAssetUrls, useAssetUrlState } from "../../assets/assetUrls";
 import { AttachmentImage } from "../media/AttachmentImage";
 import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
@@ -112,6 +117,42 @@ const MEDIA_EDGE_CLASS_NAME =
 const BUBBLE_CHIP_CLASS_NAME =
   "[&_[data-slot=context-chip]]:[--context-chip-ink:var(--context-chip-message,var(--context-chip-accent))]";
 
+function AgentReplyReference({ reply }: { reply: NonNullable<ReturnType<typeof readAgentReply>> }) {
+  const origin = use(TimelineRowCtx).threadRef;
+  const hasThreadReturn = useLocation({
+    select: (location) => location.state.threadLinkOrigin === true,
+  });
+  const sameThread =
+    origin?.environmentId === reply.environmentId && origin.threadId === reply.threadId;
+  const threadRef = scopeThreadRef(
+    EnvironmentId.make(reply.environmentId),
+    ThreadId.make(reply.threadId),
+  );
+  const thread = useThreadShell(threadRef);
+  const messageText = useAtomValue(
+    environmentThreadDetails.threadAtom(threadRef),
+    (detail) =>
+      detail?.projection.messages.find((message) => message.id === reply.messageId)?.text ?? null,
+  );
+  return (
+    <div className="mb-3 min-w-0 border-l-2 border-border pl-3 text-sm text-muted-foreground">
+      <span>Antwort auf </span>
+      <Link
+        to="/$environmentId/$threadId"
+        params={threadRef}
+        search={{ messageId: reply.messageId }}
+        resetScroll={false}
+        replace={sameThread && hasThreadReturn}
+        state={{ threadLinkOrigin: origin !== null && (!sameThread || hasThreadReturn) }}
+        title={`${thread?.title ?? reply.threadId} · ${reply.messageId}`}
+        className="rounded-sm text-foreground/85 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring [overflow-wrap:anywhere]"
+      >
+        {messageText ? collapsedAgentMessageSummary(messageText) : `Nachricht ${reply.messageId}`}
+      </Link>
+    </div>
+  );
+}
+
 export function OutgoingAgentTimelineRow({
   row,
 }: {
@@ -120,8 +161,13 @@ export function OutgoingAgentTimelineRow({
   const ctx = use(TimelineRowCtx);
   const [requested, setRequested] = useState(false);
   const wireItem = row.projectedItem.item;
+  const needsDetail =
+    turnItemNeedsDetailFetch(wireItem) ||
+    (wireItem.type === "subagent" &&
+      wireItem.delegationMessage !== undefined &&
+      agentDelegationText(wireItem) === null);
   const detail = useTurnItemDetail(
-    requested && turnItemNeedsDetailFetch(wireItem)
+    requested && needsDetail
       ? {
           environmentId: ctx.activeThreadEnvironmentId,
           threadId: row.projectedItem.sourceThreadId,
@@ -136,6 +182,7 @@ export function OutgoingAgentTimelineRow({
     fetchedItem?.type === wireItem.type && fetchedItem.id === wireItem.id ? fetchedItem : wireItem;
   const send = item.type === "dynamic_tool" ? readAgentSend(item) : null;
   const delegation = item.type === "subagent" ? item.delegationMessage : undefined;
+  const originalText = item.type === "subagent" ? agentDelegationText(item) : (send?.text ?? null);
   const liveTask = useAtomValue(
     environmentThreadDetails.threadAtom(
       scopeThreadRef(ctx.activeThreadEnvironmentId, row.projectedItem.sourceThreadId),
@@ -153,11 +200,13 @@ export function OutgoingAgentTimelineRow({
   const targetEnvironmentId =
     item.type === "subagent" && localChildThreadId === null && remoteChild
       ? remoteChild.environmentId
-      : ctx.activeThreadEnvironmentId;
+      : send?.targetEnvironmentId
+        ? EnvironmentId.make(send.targetEnvironmentId)
+        : ctx.activeThreadEnvironmentId;
   const targetThreadId =
     item.type === "subagent"
       ? (localChildThreadId ?? remoteChild?.threadId)
-      : send?.targetThreadId
+      : send?.targetScope !== "unknown" && send?.targetThreadId
         ? ThreadId.make(send.targetThreadId)
         : undefined;
   const target = useThreadShell(
@@ -179,8 +228,10 @@ export function OutgoingAgentTimelineRow({
   return (
     <AgentMessageRow
       messageId={row.id}
-      text={delegation?.firstParagraph ?? send?.text ?? null}
+      workGroupViewState={ctx.workGroupViewState}
+      text={originalText}
       previewText={delegation?.firstParagraph}
+      attachments={send?.replyTo ? <AgentReplyReference reply={send.replyTo} /> : undefined}
       peerThreadId={targetThreadId}
       peerTitle={target?.title ?? null}
       attribution="agent"
@@ -193,12 +244,13 @@ export function OutgoingAgentTimelineRow({
       delivery={
         <span className={send?.failed || taskStatus?.failed ? "text-destructive" : undefined}>
           {receipt}
+          {send?.targetScope === "unknown" ? " · Zielumgebung unbekannt" : null}
         </span>
       }
-      loading={requested && send?.text === null && detail.isPending}
+      loading={requested && needsDetail && originalText === null && detail.isPending}
       error={
-        requested && item === wireItem && turnItemNeedsDetailFetch(wireItem)
-          ? (detail.error ?? (detail.data?.item === null ? "Original nicht mehr verfügbar." : null))
+        requested && originalText === null && !detail.isPending
+          ? (detail.error ?? "Original nicht verfügbar.")
           : null
       }
       onRequestText={() => setRequested(true)}
@@ -918,9 +970,16 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       )}
     >
       {folded && senderThreadId ? (
-        <InlineButton onClick={() => ctx.onOpenThread(senderThreadId)} tone="muted">
+        <Link
+          to="/$environmentId/$threadId"
+          params={{
+            environmentId: senderRef?.environmentId ?? ctx.activeThreadEnvironmentId,
+            threadId: senderThreadId,
+          }}
+          className="rounded-sm text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+        >
           Open thread
-        </InlineButton>
+        </Link>
       ) : null}
       <Tooltip>
         <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>
@@ -1068,6 +1127,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         <MessageAuthorHeading>{unknownMcpSender ? "MCP" : senderLabel}</MessageAuthorHeading>
         <AgentMessageRow
           messageId={row.message.id}
+          workGroupViewState={ctx.workGroupViewState}
           text={row.message.text}
           peerThreadId={senderThreadId}
           peerTitle={sender?.title ?? null}
@@ -1077,7 +1137,12 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           timestamp={formatDayAwareTimestamp(row.message.createdAt, ctx.timestampFormat)}
           timestampTitle={formatChatTimestampTooltip(row.message.createdAt, ctx.timestampFormat)}
           streaming={row.message.streaming}
-          attachments={messageAttachments}
+          attachments={
+            <>
+              {row.message.replyTo ? <AgentReplyReference reply={row.message.replyTo} /> : null}
+              {messageAttachments}
+            </>
+          }
           delivery={
             <>
               {row.message.inputIntent === "steer" ||

@@ -1,4 +1,5 @@
 import { ChildThreadApprovals } from "./ChildThreadApprovals";
+import { ThreadTaskProgress } from "./ThreadTaskProgress";
 import type { ImageAnnotationDraft, SendImageAnnotation } from "../../lib/imageAnnotation";
 import { useOpenThreadInspector } from "./thread-inspector-navigation";
 import { useSidebarWorkspaceTabs } from "../workspace/useSystemWorkspaceTabBar";
@@ -68,7 +69,6 @@ import {
   type BackgroundWorkStopRequest,
   isBackgroundWorkStopPending,
   presentPendingBackgroundWork,
-  presentProviderGoal,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { resolveSubagentPillSegment } from "@t3tools/client-runtime/state/thread-subagents";
 import {
@@ -856,14 +856,6 @@ function ThreadDetailBody(
         },
       };
     }
-    if (props.selectedThread.goal !== null && contentPresentationKind === "ready") {
-      const goal = presentProviderGoal(props.selectedThread.goal, false);
-      return {
-        kind: "goal",
-        label: goal.title,
-        accessibilityLabel: `${goal.title}: ${goal.objective}`,
-      };
-    }
     return null;
   })();
   const showWorkingControl = floatingStatus !== null;
@@ -899,6 +891,12 @@ function ThreadDetailBody(
     if (historyForJump?.loading) return;
     if (!historyForJump?.hasMoreHistory || historyForJump.error !== null) {
       finishThreadMessageJump(selectedThreadKey);
+      Dialog.alert(
+        historyForJump?.error != null
+          ? "Could not load original message"
+          : "Original message unavailable",
+        historyForJump?.error ?? "The original message is not available in this thread's history.",
+      );
       return;
     }
     loadEarlierForJump();
@@ -1597,6 +1595,38 @@ function ThreadDetailBody(
                       });
                     }}
                   />
+                  {contentPresentationKind === "ready" &&
+                    props.selectedThreadDetailRef !== null && (
+                      <ThreadTaskProgress
+                        key={selectedThreadKey}
+                        threadRef={props.selectedThreadDetailRef}
+                        goal={props.selectedThread.goal}
+                        working={
+                          props.activeWorkStartedAt !== null || props.runlessWorkActive === true
+                        }
+                        canOperate={
+                          props.canOperateThread &&
+                          props.composerDraftKey !== null &&
+                          props.queuedRunEdit === null
+                        }
+                        onPrepareResume={() => {
+                          const draft =
+                            props.composerDraftKey === null
+                              ? null
+                              : getComposerDraftSnapshot(props.composerDraftKey);
+                          if (draft === null) return;
+                          if (draft.text.trim() || draft.attachments.length > 0) {
+                            Dialog.alert(
+                              "Draft already has content",
+                              "Send or clear the draft, then send /goal resume to continue.",
+                            );
+                            return;
+                          }
+                          props.onChangeDraftMessage("/goal resume");
+                          composerEditorRef.current?.focus();
+                        }}
+                      />
+                    )}
                   <ComposerPanels
                     className="w-full"
                     style={Platform.OS === "android" ? composerPanelsHeightStyle : undefined}

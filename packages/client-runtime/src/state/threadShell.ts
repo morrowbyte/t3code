@@ -11,7 +11,7 @@ import * as Schema from "effect/Schema";
 import { Atom } from "effect/reactivity";
 
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
-import { presentThreadShell, threadRuntimeIsActive } from "./models.ts";
+import { presentThreadShell, threadAttentionRequests, threadRuntimeIsActive } from "./models.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import {
   arrayElementsEqual,
@@ -72,7 +72,8 @@ export function isShownUnderParent(
 /** Provider-native
     subagents ask on their parent, so they are skipped. */
 function subagentRequest(thread: OrchestrationV2ThreadShell): PendingSubagentRequest | null {
-  const kind = thread.pendingRuntimeRequest?.kind;
+  const requests = threadAttentionRequests(thread);
+  const kind = requests.find((request) => request.kind !== "user_input")?.kind ?? requests[0]?.kind;
   if (
     thread.settledOverride === "settled" ||
     thread.archivedAt !== null ||
@@ -90,7 +91,8 @@ function subagentRequest(thread: OrchestrationV2ThreadShell): PendingSubagentReq
 
 /** A side chat asks its user directly, so questions roll up to the parent as well as approvals. */
 function sideChatRequest(thread: OrchestrationV2ThreadShell): PendingSubagentRequest | null {
-  const kind = thread.pendingRuntimeRequest?.kind;
+  const requests = threadAttentionRequests(thread);
+  const kind = requests.find((request) => request.kind !== "user_input")?.kind ?? requests[0]?.kind;
   if (
     thread.settledOverride === "settled" ||
     thread.archivedAt !== null ||

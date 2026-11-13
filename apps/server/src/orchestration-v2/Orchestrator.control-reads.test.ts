@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
   CommandId,
+  EnvironmentId,
   MessageId,
   EventId,
   NodeId,
@@ -69,6 +70,86 @@ const layerTest = Layer.mergeAll(
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
     { databaseLayer: layerDatabase, runEffectWorker: false },
   ),
+);
+
+it.effect("persists an A to B to A reply against the actual question thread", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const first = ThreadId.make("thread:reply-a");
+    const second = ThreadId.make("thread:reply-b");
+    for (const threadId of [first, second]) {
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${threadId}`),
+        threadId,
+        projectId: ProjectId.make("project:reply"),
+        title: threadId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    const questionId = MessageId.make("message:question-only-in-b");
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("command:question-a-to-b"),
+      threadId: second,
+      senderThreadId: first,
+      messageId: questionId,
+      text: "Which check remains?",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    const replyTo = {
+      environmentId: EnvironmentId.make("environment:reply"),
+      threadId: second,
+      messageId: questionId,
+    };
+    const answer = {
+      type: "message.dispatch" as const,
+      commandId: CommandId.make("command:reply-b-to-a"),
+      threadId: first,
+      senderThreadId: second,
+      messageId: MessageId.make("message:reply-only-in-a"),
+      text: "The runtime check remains.",
+      replyTo,
+      sendRequest: { text: "The runtime check remains.", mode: "auto" as const },
+      attachments: [],
+      dispatchMode: { type: "start_immediately" as const },
+      createdBy: "agent" as const,
+      creationSource: "mcp" as const,
+    };
+    yield* orchestrator.dispatch(answer);
+    const stored = yield* projections.getThreadProjection(first);
+    assert.equal(
+      stored.messages.some((message) => message.id === questionId),
+      false,
+    );
+    assert.deepEqual(
+      stored.messages.find((message) => message.id === answer.messageId)?.replyTo,
+      replyTo,
+    );
+    const item = stored.turnItems.find(
+      (item) => item.type === "user_message" && item.messageId === answer.messageId,
+    );
+    assert.ok(item?.type === "user_message");
+    assert.deepEqual(item.replyTo, replyTo);
+    assert.equal(
+      (yield* orchestrator.dispatch({ ...answer, replyTo: { ...replyTo } })).replayed,
+      true,
+    );
+    const conflict = yield* orchestrator
+      .dispatch({ ...answer, replyTo: { ...replyTo, threadId: first } })
+      .pipe(Effect.flip);
+    assert.equal(conflict._tag, "OrchestratorDispatchError");
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect.each([false, true])(

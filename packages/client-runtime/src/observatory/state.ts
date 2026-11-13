@@ -1,5 +1,9 @@
 import type { OrchestrationV2ThreadShell, ScopedThreadRef } from "@t3tools/contracts";
 import { Atom, type AtomRegistry } from "effect/reactivity";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
+import { deadlineStore } from "../clock.ts";
 import type { EnvironmentThreadState } from "../state/threads.ts";
 import { createObservatoryAuthoredProjector, observedObservatoryOwner } from "./authored.ts";
 import { projectObservatoryTask } from "./tasks.ts";
@@ -30,6 +34,22 @@ export function createObservatoryViewAtoms(input: {
   readonly taskCards?: boolean;
 }) {
   const queryAtom = Atom.make<ObservatoryQuery>(EMPTY_OBSERVATORY_QUERY);
+  const observationTimeAtom = Atom.make((get) => {
+    const nowMs = Clock.Clock.defaultValue().currentTimeMillisUnsafe();
+    let nextWake = Infinity;
+    for (const source of get(input.sourcesAtom)) {
+      const snapshot = source.shell === null ? null : Option.getOrNull(source.shell.snapshot);
+      for (const thread of snapshot?.threads ?? []) {
+        if (thread.snoozedUntil == null) continue;
+        const wake = DateTime.toEpochMillis(thread.snoozedUntil);
+        if (wake > nowMs) nextWake = Math.min(nextWake, wake);
+      }
+    }
+    if (Number.isFinite(nextWake)) {
+      get.addFinalizer(deadlineStore(nextWake).subscribe(() => get.refreshSelf()));
+    }
+    return nowMs;
+  });
   // Retire the current selection intent when its authorized live shell disappears.
   const invalidatedSelection = new WeakMap<AtomRegistry.AtomRegistry, ScopedThreadRef>();
   const authored = new WeakMap<
@@ -97,7 +117,7 @@ export function createObservatoryViewAtoms(input: {
       source,
       detail,
       visual,
-      task: projectObservatoryTask(node, related, detail),
+      task: projectObservatoryTask(node, related, detail, get(observationTimeAtom)),
     };
   });
   const snapshotAtom = Atom.make((get) => {
@@ -118,6 +138,7 @@ export function createObservatoryViewAtoms(input: {
       get(queryAtom),
       input.taskCards ? 12 : undefined,
       input.taskCards,
+      get(observationTimeAtom),
     );
     const related = new Map(graph.nodes.map((node) => [node.key, node]));
     if (input.familyAtom) {
@@ -137,7 +158,15 @@ export function createObservatoryViewAtoms(input: {
           : selection?.node.key === node.key
             ? selection.detail
             : null;
-        return { ...node, task: projectObservatoryTask(node, [...related.values()], detail) };
+        return {
+          ...node,
+          task: projectObservatoryTask(
+            node,
+            [...related.values()],
+            detail,
+            get(observationTimeAtom),
+          ),
+        };
       }),
       catalogReady: get(input.catalogReadyAtom),
       selection,

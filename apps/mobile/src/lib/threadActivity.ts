@@ -2180,7 +2180,10 @@ export function buildThreadFeed(
     }
     const createdAt = DateTime.formatIso(item.startedAt ?? item.updatedAt);
     if (
-      (item.type === "dynamic_tool" && resolveT3McpToolId(item.toolName) === "t3_thread_send") ||
+      (item.type === "dynamic_tool" &&
+        ["t3_thread_send", "t3_connected_thread_send"].includes(
+          resolveT3McpToolId(item.toolName) ?? "",
+        )) ||
       (item.type === "subagent" && item.delegationMessage !== undefined)
     ) {
       const entry: RawThreadFeedEntry = {
@@ -2252,6 +2255,7 @@ export function buildThreadFeed(
                 ...(item.scheduledTaskId ? { scheduledTaskId: item.scheduledTaskId } : {}),
                 ...(item.senderThreadId ? { senderThreadId: item.senderThreadId } : {}),
                 ...(item.remoteSender ? { remoteSender: item.remoteSender } : {}),
+                ...(item.replyTo ? { replyTo: item.replyTo } : {}),
                 ...(item.idleCompaction ? { idleCompaction: item.idleCompaction } : {}),
               }
             : {}),

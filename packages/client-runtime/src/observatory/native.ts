@@ -7,6 +7,7 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import * as Clock from "effect/Clock";
 import type { EnvironmentShellState } from "../state/shell.ts";
 import type { EnvironmentThreadState } from "../state/threads.ts";
 import { observatoryTaskPriority } from "./tasks.ts";
@@ -109,6 +110,7 @@ export function projectObservatoryPage<Node extends ObservatoryNode>(
   query: ObservatoryQuery,
   pageSize = OBSERVATORY_PAGE_SIZE,
   prioritizeTasks = false,
+  nowMs = Clock.Clock.defaultValue().currentTimeMillisUnsafe(),
 ) {
   const search = query.search.slice(0, 200).trim().toLowerCase();
   const labels = new Map(graph.sources.map((source) => [source.environmentId, source.label]));
@@ -118,8 +120,9 @@ export function projectObservatoryPage<Node extends ObservatoryNode>(
         (query.environmentId === null || query.environmentId === node.ref.environmentId) &&
         (query.taskFilter === undefined ||
           query.taskFilter === "all" ||
-          (query.taskFilter === "needs_input" && observatoryTaskPriority(node.shell) === 0) ||
-          (query.taskFilter === "active" && observatoryTaskPriority(node.shell) === 1) ||
+          (query.taskFilter === "needs_input" &&
+            observatoryTaskPriority(node.shell, nowMs) === 0) ||
+          (query.taskFilter === "active" && observatoryTaskPriority(node.shell, nowMs) === 1) ||
           (query.taskFilter === "complete" && node.shell.goal?.status === "complete")) &&
         (search === "" ||
           `${node.title} ${node.ref.threadId} ${node.ref.environmentId} ${labels.get(node.ref.environmentId) ?? ""} ${node.shell.archivedAt === null ? "" : "archived"}`
@@ -129,7 +132,7 @@ export function projectObservatoryPage<Node extends ObservatoryNode>(
     .sort(
       (a, b) =>
         (prioritizeTasks
-          ? observatoryTaskPriority(a.shell) - observatoryTaskPriority(b.shell)
+          ? observatoryTaskPriority(a.shell, nowMs) - observatoryTaskPriority(b.shell, nowMs)
           : 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
     );
   const anchorIndex =
