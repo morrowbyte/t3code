@@ -1186,7 +1186,14 @@ const make = Effect.gen(function* () {
           .catch(constVoid);
       },
       isolatedContext,
-      desktop: desktop === null ? null : { close: desktop.close },
+      desktop:
+        desktop === null
+          ? null
+          : {
+              close: desktop.close,
+              closed: desktop.closed,
+              isConnected: desktop.isConnected,
+            },
       profileId: snapshot.profileId,
       openerTabId: adopted?.openerTabId,
       downloads: [],
