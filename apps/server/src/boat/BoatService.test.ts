@@ -2643,10 +2643,10 @@ it.effect.each(["ready", "failed"] as const)(
   },
 );
 
-it.effect("keeps a process installed while an older usage read is suspended", () =>
+it.effect("keeps newer process and period usage when older reads finish", () =>
   Effect.gen(function* () {
-    const entered = yield* Deferred.make<void>();
-    const release = yield* Deferred.make<void>();
+    let entered = yield* Deferred.make<void>();
+    let release = yield* Deferred.make<void>();
     let hold = false;
     const test = setup((path) =>
       path.includes("/usage") && hold
@@ -2658,6 +2658,7 @@ it.effect("keeps a process installed while an older usage read is suspended", ()
         : Effect.void,
     );
     yield* Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-11-01T00:00:00Z"));
       const boat = yield* make;
       yield* boat.connect(Redacted.make("boat_fixture_private"));
       yield* boat.configure(projectId, {
@@ -2672,6 +2673,28 @@ it.effect("keeps a process installed while an older usage read is suspended", ()
       yield* boat.operate({ action: "prepare", projectId, requestId: "first" });
       yield* Deferred.succeed(release, undefined);
       assert.equal((yield* Fiber.join(reading)).instances[0]?.processId, 123);
+
+      entered = yield* Deferred.make<void>();
+      release = yield* Deferred.make<void>();
+      test.setCost(0.02);
+      hold = true;
+      const olderUsage = yield* boat.read(projectId).pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      test.setCost(0.03);
+      assert.equal((yield* boat.read(projectId)).instances[0]?.costUsd, 0.03);
+      yield* Deferred.succeed(release, undefined);
+      assert.equal((yield* Fiber.join(olderUsage)).instances[0]?.costUsd, 0.03);
+
+      entered = yield* Deferred.make<void>();
+      release = yield* Deferred.make<void>();
+      hold = true;
+      const previousPeriod = yield* boat.read(projectId).pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      yield* TestClock.setTime(Date.parse("2026-12-01T00:00:00Z"));
+      test.setCost(0.005);
+      assert.equal((yield* boat.read(projectId)).instances[0]?.costUsd, 0.005);
+      yield* Deferred.succeed(release, undefined);
+      assert.equal((yield* Fiber.join(previousPeriod)).instances[0]?.costUsd, 0.005);
     }).pipe(Effect.scoped, Effect.provide(test.services));
   }),
 );
