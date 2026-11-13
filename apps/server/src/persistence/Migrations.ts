@@ -86,6 +86,7 @@ import Migration0079 from "./Migrations/079_SubagentDeliveryState.ts";
 import Migration0080 from "./Migrations/080_ProjectionProjectsPinArchive.ts";
 import Migration0081 from "./Migrations/081_PrivilegedRecoveryIndexes.ts";
 import Migration0082 from "./Migrations/082_ExecutionUsageIndexes.ts";
+import Migration0083 from "./Migrations/083_RepairExecutionHistoryIndex.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -171,6 +172,7 @@ const migrationEntries = [
   [80, "ProjectionProjectsPinArchive", Migration0080],
   [81, "PrivilegedRecoveryIndexes", Migration0081],
   [82, "ExecutionUsageIndexes", Migration0082],
+  [83, "RepairExecutionHistoryIndex", Migration0083],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

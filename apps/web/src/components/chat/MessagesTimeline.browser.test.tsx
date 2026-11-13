@@ -34,10 +34,11 @@ import { userEvent } from "vite-plus/test/browser";
 import "~/index.css";
 
 import { environmentThreadDetails } from "../../state/threads";
+import { environmentCatalog } from "../../connection/catalog";
 import { act, fakeTimers, render, stubGlobal } from "../../../test/render";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { MessagesTimeline } from "./MessagesTimeline";
-import { makeStreamingTimelineFixture } from "../../test-fixtures";
+import { makeStreamingTimelineFixture, makeThreadProjectionFixture } from "../../test-fixtures";
 import {
   type PendingApproval,
   deriveTimelineEntriesFromVisibleTurnItems,
@@ -52,6 +53,8 @@ import { toastManager } from "../ui/toast";
 import type { CitedHistory } from "./citationProcedure";
 import type { TimelineNavigation } from "./timelineViewport";
 import { rememberTimelinePosition } from "./timelineScrollAnchoring";
+import { useTimelineFollow } from "./useTimelineFollow";
+import { ThreadLinkBackButton } from "./ThreadLinkBackButton";
 import {
   COMPOSER_CONTEXT_CLIPBOARD_MIME,
   decodeComposerContextFragment,
@@ -799,6 +802,293 @@ const CITATION_REQUEST = {
 } satisfies NonNullable<TimelineProps["citationRequest"]>;
 
 describe("MessagesTimeline citations", () => {
+  it.each([
+    ["reply", false],
+    ["reply", true],
+    ["citation", false],
+  ] as const)(
+    "gives an explicit %s target priority over passive restore and keeps the return position (compact: %s)",
+    async (kind, compact) => {
+      setup();
+      const base = baseProps();
+      const sourceThreadId = ThreadId.make(base.routeThreadKey.slice(ENVIRONMENT_ID.length + 1));
+      const targetEnvironmentId = compact
+        ? EnvironmentId.make("environment-reply-target")
+        : ENVIRONMENT_ID;
+      const targetThreadId = compact ? sourceThreadId : ThreadId.make(`target-${kind}-restore`);
+      const targetKey = `${targetEnvironmentId}:${targetThreadId}`;
+      const targetId = MessageId.make("original-message");
+      const replyTo = {
+        environmentId: targetEnvironmentId,
+        threadId: targetThreadId,
+        messageId: targetId,
+      };
+      const projected = makeStreamingTimelineFixture().visibleTurnItems.find(
+        (row) => row.item.type === (kind === "reply" ? "user_message" : "assistant_message"),
+      );
+      if (
+        !projected ||
+        (projected.item.type !== "user_message" && projected.item.type !== "assistant_message")
+      ) {
+        throw new Error("Expected an original conversation message");
+      }
+      const original = {
+        ...projected,
+        sourceThreadId: targetThreadId,
+        item: {
+          ...projected.item,
+          threadId: targetThreadId,
+          messageId: targetId,
+          text: kind === "reply" ? "" : "the cited answer",
+        },
+      };
+      const projection = makeThreadProjectionFixture();
+      const thread = {
+        environmentId: targetEnvironmentId,
+        projection: {
+          ...projection,
+          thread: {
+            ...projection.thread,
+            id: targetThreadId,
+            lineage: { ...projection.thread.lineage, rootThreadId: targetThreadId },
+          },
+          turnItems: [original.item],
+          visibleTurnItems: [original],
+        },
+      } satisfies NonNullable<
+        Atom.Type<ReturnType<typeof environmentThreadDetails.quietThreadAtom>>
+      >;
+      using _thread = vi
+        .spyOn(environmentThreadDetails, "quietThreadAtom")
+        .mockReturnValue(Atom.make(thread));
+      using _history = vi.spyOn(environmentThreadDetails, "historyAtom").mockReturnValue(
+        Atom.make({
+          historyCursor: null,
+          hasMoreHistory: false,
+          loading: false,
+          error: null,
+          expanded: false,
+          latestLocalTurnOrdinal: null,
+        }),
+      );
+      using _status = vi
+        .spyOn(environmentThreadDetails, "statusAtom")
+        .mockReturnValue(Atom.make("live"));
+      using _error = vi
+        .spyOn(environmentThreadDetails, "errorAtom")
+        .mockReturnValue(Atom.make(null));
+      using _connection = vi
+        .spyOn(environmentCatalog, "stateAtom")
+        .mockReturnValue(Atom.make(AsyncResult.initial<never, never>()));
+      const sourceEntries = Array.from({ length: 40 }, (_, index) =>
+        message(
+          `${kind === "reply" && index === 20 ? "Kurz: " : ""}Source ${index}\n\n${"line\n\n".repeat(8)}${kind === "reply" && index === 20 ? "\n\nTechnik:\n- Technischer Kontext für den Reply-Rückweg" : ""}`,
+          kind === "reply" && index === 20
+            ? { createdBy: "agent", creationSource: "mcp", senderThreadId: targetThreadId, replyTo }
+            : {},
+          `source-${index}`,
+        ),
+      );
+      const targetEntries = Array.from({ length: compact ? 7 : 40 }, (_, index) =>
+        index === (compact ? 0 : 5)
+          ? {
+              ...message(
+                kind === "reply" ? "" : "the cited answer",
+                { role: kind === "reply" ? "user" : "assistant" },
+                targetId,
+              ),
+              projectedItem: original,
+            }
+          : message(
+              `Target ${index}\n\n${"line\n\n".repeat(compact ? 2 : 8)}`,
+              compact && index === 1
+                ? {
+                    createdBy: "agent",
+                    creationSource: "mcp",
+                    senderThreadId: targetThreadId,
+                    replyTo,
+                  }
+                : {},
+              `target-${index}`,
+            ),
+      );
+      rememberTimelinePosition(
+        base.routeThreadKey,
+        { rowId: "entry-source-20", offsetWithinRow: 0, scrollOffset: 0, atEnd: false },
+        false,
+      );
+      rememberTimelinePosition(
+        targetKey,
+        { rowId: "entry-target-30", offsetWithinRow: 0, scrollOffset: 0, atEnd: false },
+        false,
+      );
+      const container = document.createElement("div");
+      container.style.cssText = `height: ${compact ? 734 : 1200}px; width: 900px; display: flex; flex-direction: column;`;
+      function FollowedTimeline({ timelineProps }: { timelineProps: TimelineProps }) {
+        const follow = useTimelineFollow({
+          legendListRef: base.listRef,
+          composerTimelineInset: timelineProps.contentInsetEndAdjustment,
+          routeThreadKey: timelineProps.routeThreadKey,
+          activeThreadKey: timelineProps.routeThreadKey,
+          isServerThread: true,
+          serverProjection: null,
+          threadStatus: "live",
+          activeActivityRun: null,
+          activeRunningTurnId: null,
+          timelineEntries: timelineProps.timelineEntries,
+          timelineAnchorMessageId: null,
+          setTimelineAnchor: () => {},
+        });
+        return (
+          <>
+            <div style={{ position: "absolute", zIndex: 1 }}>
+              <ThreadLinkBackButton />
+            </div>
+            <MessagesTimeline
+              {...timelineProps}
+              liveFollowEnabled={follow.timelineLiveFollowEnabled}
+              onViewportAttach={follow.attachTimelineViewport}
+              onIsAtEndChange={follow.onIsAtEndChangeStable}
+              onFooterGrow={follow.onTimelineFooterGrowStable}
+            />
+          </>
+        );
+      }
+      const source = () => (
+        <FollowedTimeline
+          timelineProps={{
+            ...base,
+            timelineEntries: sourceEntries,
+            footer: <div style={{ height: 320 }} />,
+          }}
+        />
+      );
+      const target = (entries = targetEntries) => (
+        <FollowedTimeline
+          timelineProps={{
+            ...base,
+            routeThreadKey: targetKey,
+            activeThreadEnvironmentId: targetEnvironmentId,
+            timelineEntries: entries,
+            footer: <div style={{ height: 240 }} />,
+            contentInsetEndAdjustment: compact ? 240 : 0,
+            ...(kind === "citation"
+              ? {
+                  citationRequest: {
+                    ...CITATION_REQUEST,
+                    citation: {
+                      ...CITATION_REQUEST.citation,
+                      threadId: targetThreadId,
+                      messageId: targetId,
+                    },
+                  },
+                  citationHistory: { _tag: "found" as const },
+                }
+              : {}),
+          }}
+        />
+      );
+      await using screen = await render(source(), {
+        container,
+        router: `/${ENVIRONMENT_ID}/${sourceThreadId}`,
+      });
+      const viewport = base.listRef.current!.getScrollableNode()!;
+      const expectRowAtTop = (id: string) => {
+        const row = container.querySelector(`[data-timeline-row-id="${id}"]`);
+        expect(row).not.toBeNull();
+        expect(
+          Math.abs(row!.getBoundingClientRect().top - viewport.getBoundingClientRect().top),
+        ).toBeLessThanOrEqual(2);
+      };
+      await vi.waitFor(() => expectRowAtTop("entry-source-20"));
+      using scrollToIndex = vi.spyOn(base.listRef.current!, "scrollToIndex");
+      if (kind === "reply") {
+        await screen
+          .getByRole("button", { name: /^Details öffnen: Agentennachricht: Source 20/ })
+          .click();
+        await screen.getByText("Technik", { exact: true }).click();
+        await screen.getByRole("button", { name: "Original", exact: true }).click();
+        await screen.getByRole("link", { name: `Nachricht ${targetId}`, exact: true }).click();
+        expect(screen.router!.state.location.state.threadLinkOrigin).toBe(true);
+      } else {
+        await act(() =>
+          screen.router!.navigate({
+            to: `/${targetEnvironmentId}/${targetThreadId}`,
+          }),
+        );
+      }
+      if (compact) {
+        await screen.rerender(target(targetEntries.slice(-5)));
+        await vi.waitFor(() => expect(base.listRef.current!.getState().data).toHaveLength(5));
+      }
+      await screen.rerender(target());
+      const expectOriginalInView = () => {
+        const row = container.querySelector(`[data-timeline-row-id="entry-${targetId}"]`);
+        expect(row).not.toBeNull();
+        expect(row!.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+          viewport.getBoundingClientRect().top,
+        );
+        expect(row!.getBoundingClientRect().top).toBeLessThan(
+          viewport.getBoundingClientRect().bottom,
+        );
+      };
+      await vi.waitFor(expectOriginalInView);
+      if (compact) {
+        expect(viewport.scrollHeight).toBeGreaterThan(viewport.clientHeight);
+        expect(viewport.scrollHeight - viewport.clientHeight).toBeLessThan(viewport.clientHeight);
+      }
+      const rows = base.listRef.current!.getState().data as ReadonlyArray<{ id: string }>;
+      expect(
+        scrollToIndex.mock.calls.some(([options]) => rows[options.index]?.id === "entry-target-30"),
+      ).toBe(false);
+      await screen.rerender(target([message("Older history", {}, "older"), ...targetEntries]));
+      await vi.waitFor(expectOriginalInView);
+      if (compact) {
+        const updated = targetEntries.map((entry, index) =>
+          index === 1
+            ? message(`Target ${index}\n\n${"line\n\n".repeat(5)}`, {}, `target-${index}`)
+            : entry,
+        );
+        await screen.rerender(target([message("Older history", {}, "older"), ...updated]));
+        await vi.waitFor(expectOriginalInView);
+        await screen.rerender(target([message("Older history", {}, "older"), ...targetEntries]));
+        await vi.waitFor(expectOriginalInView);
+      }
+      if (kind === "reply") {
+        if (compact) {
+          const historyLength = screen.router!.history.length;
+          await screen
+            .getByRole("button", { name: /^Details öffnen: Agentennachricht: Target 1/ })
+            .click();
+          await screen.getByRole("link", { name: `Nachricht ${targetId}`, exact: true }).click();
+          expect(screen.router!.state.location.state.threadLinkOrigin).toBe(true);
+          expect(screen.router!.history.length).toBe(historyLength);
+        }
+        await screen.getByRole("button", { name: "Back to previous thread" }).click();
+      } else {
+        await act(() => {
+          screen.router!.history.back();
+        });
+      }
+      await screen.rerender(source());
+      await vi.waitFor(() => expectRowAtTop("entry-source-20"));
+      if (kind === "reply") {
+        expect(
+          container.querySelector(
+            '[data-agent-message="source-20"] button[aria-label^="Zuklappen:"]',
+          ),
+        ).not.toBeNull();
+        await expect
+          .element(screen.getByRole("button", { name: "Original", exact: true }))
+          .toHaveAttribute("aria-expanded", "true");
+        expect(
+          container.querySelector<HTMLDetailsElement>('[data-agent-message="source-20"] details')
+            ?.open,
+        ).toBe(true);
+      }
+    },
+  );
+
   it("lands a citation present at mount under StrictMode", async () => {
     await using _screen = await renderElement(
       <StrictMode>
@@ -986,7 +1276,7 @@ describe("MessagesTimeline agent messages", () => {
     await using screen = await renderTimeline([
       message(`${opening} ${detail}`, { createdBy: "agent", senderThreadId: SENDER_THREAD_ID }),
     ]);
-    const row = screen.button("Details öffnen: Agentennachricht");
+    const row = screen.button(/^Details öffnen: Agentennachricht:/);
     expect(row.textContent).toContain(opening);
     expect(row.textContent).not.toContain("INTERNAL_TASK_DETAIL");
     expect(row.getBoundingClientRect().height).toBeLessThan(100);
@@ -1004,7 +1294,7 @@ describe("MessagesTimeline agent messages", () => {
     await using screen = await renderTimeline([
       message(AGENT_MESSAGE, { createdBy: "agent", senderThreadId: SENDER_THREAD_ID }),
     ]);
-    const row = screen.button("Details öffnen: Agentennachricht");
+    const row = screen.button(/^Details öffnen: Agentennachricht:/);
     const body = screen.container.querySelector<HTMLElement>(
       "[data-agent-message] [data-thread-find-text]",
     )!;
@@ -1023,7 +1313,7 @@ describe("MessagesTimeline agent messages", () => {
     await vi.waitFor(() => expect(body.checkVisibility()).toBe(true));
     expect(body.textContent).toContain("The migration drops the index before backfilling it.");
 
-    await click(screen.button("Zuklappen: Agentennachricht"));
+    await click(screen.button(/^Zuklappen: Agentennachricht:/));
     await vi.waitFor(() => expect(body.checkVisibility()).toBe(false));
     expect(sender.checkVisibility()).toBe(true);
   });
@@ -1033,7 +1323,7 @@ describe("MessagesTimeline agent messages", () => {
     await using screen = await renderTimeline([
       message(AGENT_MESSAGE, { createdBy: "agent", creationSource: "server" }),
     ]);
-    expect(screen.buttons("Details öffnen: Agentennachricht")).toHaveLength(0);
+    expect(screen.buttons(/^Details öffnen: Agentennachricht:/)).toHaveLength(0);
     expect(screen.text()).toContain("drops the index");
   });
 
@@ -1049,7 +1339,7 @@ describe("MessagesTimeline agent messages", () => {
       },
     );
     await vi.waitFor(() =>
-      expect(screen.button("Zuklappen: Agentennachricht").getAttribute("aria-expanded")).toBe(
+      expect(screen.button(/^Zuklappen: Agentennachricht:/).getAttribute("aria-expanded")).toBe(
         "true",
       ),
     );
@@ -1795,13 +2085,55 @@ it("keeps concurrent approvals actionable outside collapsed work and restores se
     .not.toBeInTheDocument();
   await vi.waitFor(() => expect(screen.text()).not.toContain("Waiting for approval"));
   await screen.getByRole("button", { expanded: false }).click();
-  await expect
-    .element(screen.getByRole("button", { name: approvals[0]!.detail!, exact: true }))
-    .toBeVisible();
+  const completedCommand = screen.getByRole("button", { name: "Command approval", exact: true });
+  await expect.element(completedCommand).toBeVisible();
+  await completedCommand.click();
+  await vi.waitFor(() =>
+    expect(
+      screen.container.querySelector(
+        '[data-v2-item-type="approval_request"] [aria-label="Recorded input"]',
+      )?.textContent,
+    ).toBe(approvals[0]!.detail),
+  );
   await expect
     .element(screen.getByRole("button", { name: "Open the current tab", exact: true }))
     .toBeVisible();
 });
+
+it.each([
+  { title: null, text: "Cache prüfen.", details: false },
+  { title: "Cache prüfen.", text: "Cache prüfen.", details: false },
+  { title: null, text: "Read [guide](https://example.com/guide)", details: true },
+])(
+  "only offers original short provider text when it adds content (title=$title, details=$details)",
+  async ({ title, text, details }) => {
+    using _state = setup();
+    const entries = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [
+        v2Item("reasoning", {
+          title,
+          text,
+          streaming: false,
+          updatedAt: DateTime.makeUnsafe(CREATED_AT),
+        }),
+      ],
+      optimisticMessages: [],
+    });
+    await using screen = await renderTimeline(entries);
+    const fold = screen.buttons(/Worked for/)[0];
+    if (fold?.getAttribute("aria-expanded") === "false") await click(fold);
+    const row = screen.container.querySelector('[data-v2-item-type="reasoning"]');
+    if (details) {
+      expect(row?.getAttribute("role")).toBe("button");
+      await click(row!);
+      await expect.element(screen.getByRole("link", { name: "guide" })).toBeVisible();
+    } else {
+      expect(row?.textContent).toContain(text);
+      expect(row?.getAttribute("role")).not.toBe("button");
+      expect(row?.hasAttribute("aria-expanded")).toBe(false);
+    }
+  },
+);
 
 it.each([
   { source: "inline", streaming: false },

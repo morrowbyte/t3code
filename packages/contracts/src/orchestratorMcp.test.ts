@@ -4,12 +4,9 @@ import * as Schema from "effect/Schema";
 import {
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
-  OrchestratorMcpThreadInterruptInput,
-  OrchestratorMcpThreadListInput,
-  OrchestratorMcpThreadReadInput,
+  OrchestratorMcpThreadListResult,
   OrchestratorMcpThreadSendInput,
   OrchestratorMcpThreadSendResult,
-  OrchestratorMcpThreadWaitInput,
   OrchestratorMcpExternalDelegateTaskInput,
   OrchestratorMcpExternalTaskEventsInput,
 } from "./orchestratorMcp.ts";
@@ -17,8 +14,19 @@ import { OrchestrationV2Command } from "./orchestrationV2.ts";
 
 const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
+const decodeThreadListResult = Schema.decodeUnknownSync(OrchestratorMcpThreadListResult);
 
 describe("orchestrator MCP contracts", () => {
+  it("accepts legacy inventories without claiming verified coverage", () => {
+    const result = decodeThreadListResult({
+      projectId: null,
+      currentThreadId: null,
+      threads: [],
+      nextCursor: null,
+      total: 0,
+    });
+    expect(result.coverage).toBeUndefined();
+  });
   it("keeps independent admission and actual child execution identities distinct", () => {
     const decodeInput = Schema.decodeUnknownSync(OrchestratorMcpThreadSendInput);
     const decodeResult = Schema.decodeUnknownSync(OrchestratorMcpThreadSendResult);
@@ -32,6 +40,11 @@ describe("orchestrator MCP contracts", () => {
     expect(
       decodeInput({ threadId: "conversation", message: "A direct answer" }).delegation,
     ).toBeUndefined();
+    const replyTo = { environmentId: "source", threadId: "question-thread", messageId: "question" };
+    expect(decodeInput({ ...input, replyTo }).replyTo).toEqual(replyTo);
+    for (const invalid of ["question", { messageId: "question" }, { ...replyTo, messageId: "" }]) {
+      expect(() => decodeInput({ ...input, replyTo: invalid })).toThrow();
+    }
     expect(
       decodeResult({
         threadId: "conversation",

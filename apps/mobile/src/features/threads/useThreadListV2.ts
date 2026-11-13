@@ -1,15 +1,22 @@
 import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { useAtomValue } from "@effect/atom-react";
-import type { EnvironmentId } from "@t3tools/contracts";
-import { useMemo, useSyncExternalStore } from "react";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
-import { scopedProjectKey } from "../../lib/scopedEntities";
+import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../../state/olderSettledShelf";
-import { environmentThreadShells } from "../../state/threads";
+import { environmentThreadShells, threadFamilies } from "../../state/threads";
+import { appAtomRegistry } from "../../state/atom-registry";
+import { resolveHomeThreadShelfCounts } from "../home/homeThreadList";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
+  buildThreadListV2FamilyRows,
   buildThreadListV2Items,
+  revealThreadListV2RouteAncestors,
+  toggleThreadListV2Family,
+  type ThreadListV2FamilyDisclosure,
+  type ThreadListV2FamilyListItem,
   buildThreadListV2ListItems,
   getThreadListV2OrderedSection,
   threadListInboxReturns,
@@ -30,6 +37,57 @@ function useKeySet(newlineSeparatedKeys: string): ReadonlySet<string> {
 }
 
 type LayoutInput = Parameters<typeof buildThreadListV2Items>[0];
+
+export function useThreadListV2FamilyDisclosure(
+  threads: LayoutInput["threads"],
+  routeKey: string | null,
+) {
+  const [disclosure, setDisclosure] = useState<ThreadListV2FamilyDisclosure>(() => ({
+    routeKey: null,
+    expandedKeys: new Set(),
+    closedKeys: new Set(),
+  }));
+  const familyDisclosure = revealThreadListV2RouteAncestors(disclosure, threads, routeKey);
+  if (familyDisclosure !== disclosure) setDisclosure(familyDisclosure);
+  const familyReadTargets = new Map<string, readonly [EnvironmentId, ThreadId]>();
+  for (const thread of threads) {
+    const key = scopedThreadKey(thread.environmentId, thread.id);
+    if (key !== routeKey && !familyDisclosure.expandedKeys.has(key)) continue;
+    const rootId = thread.lineage.rootThreadId;
+    familyReadTargets.set(scopedThreadKey(thread.environmentId, rootId), [
+      thread.environmentId,
+      rootId,
+    ]);
+  }
+  const familyReadKey = JSON.stringify(
+    [...familyReadTargets]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([, ref]) => ref),
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retains selected or expanded families across server shell trimming and reconnects
+  useEffect(() => {
+    const targets = JSON.parse(familyReadKey) as ReadonlyArray<readonly [EnvironmentId, ThreadId]>;
+    const releases = targets.map(([environmentId, threadId]) =>
+      threadFamilies.mount(appAtomRegistry, environmentId, threadId),
+    );
+    return () => {
+      for (const release of releases) release();
+    };
+  }, [familyReadKey]);
+  const toggleFamily = (key: string) => {
+    setDisclosure((previous) => toggleThreadListV2Family(previous, key));
+  };
+  const revealFamilyThread = (thread: LayoutInput["threads"][number]) => {
+    setDisclosure((previous) =>
+      revealThreadListV2RouteAncestors(
+        previous,
+        threads,
+        scopedThreadKey(thread.environmentId, thread.id),
+      ),
+    );
+  };
+  return { familyDisclosure, toggleFamily, revealFamilyThread };
+}
 
 /**
  * The React Compiler drops unread dependencies, so pass the expired-grace version through
@@ -267,6 +325,115 @@ export function useThreadListV2(input: {
     ],
   );
   return { layout, items, contentOnlyThreadKeys, olderSettledShelf };
+}
+
+export function useThreadListV2Families(
+  input: Parameters<typeof useThreadListV2>[0] & {
+    readonly familyDisclosure: ThreadListV2FamilyDisclosure;
+  },
+) {
+  const list = useThreadListV2({ ...input, includeSubagents: true });
+  const visible = list.layout;
+  const all = buildThreadListV2Items({
+    ...input,
+    threads: input.threads.filter((thread) => thread.archivedAt === null),
+    includeSubagents: true,
+    searchQuery: "",
+    settledLimit: Infinity,
+    workingShelfExpanded: true,
+    snoozedShelfExpanded: true,
+    settledShelfExpanded: true,
+    inboxReturnAt: threadListInboxReturns.returnedAt,
+    isWorking: threadListInboxReturns.isWorking,
+  });
+  const searching = input.searchQuery.trim().length > 0;
+  const visibleRanks = new Map(
+    visible.items.map(({ thread }, index) => [
+      scopedThreadKey(thread.environmentId, thread.id),
+      index,
+    ]),
+  );
+  const familyItems = searching
+    ? [...all.items].sort(
+        (left, right) =>
+          (visibleRanks.get(scopedThreadKey(left.thread.environmentId, left.thread.id)) ??
+            all.items.length) -
+          (visibleRanks.get(scopedThreadKey(right.thread.environmentId, right.thread.id)) ??
+            all.items.length),
+      )
+    : all.items;
+  const families = buildThreadListV2FamilyRows({
+    items: familyItems,
+    visibleKeys: new Set(visibleRanks.keys()),
+    disclosure: input.familyDisclosure,
+    workingShelfEnabled: input.workingShelfEnabled,
+    searching,
+  });
+  const familyByKey = new Map(families.map((row) => [row.key, row]));
+  const layout = (() => {
+    if (searching) return { ...visible, items: families.map((row) => row.item) };
+    const items = [];
+    const headers = { working: null, snoozed: null, settled: null } as Record<
+      "working" | "snoozed" | "settled",
+      number | null
+    >;
+    const counts = resolveHomeThreadShelfCounts(visible, families);
+    for (const section of ["pinned", "active", "working", "snoozed", "settled"] as const) {
+      const rows = families.filter((row) => row.displaySection === section);
+      if (section === "working" || section === "snoozed" || section === "settled") {
+        if (counts[section] > 0) headers[section] = items.length;
+        const expanded =
+          section === "working"
+            ? input.workingShelfExpanded
+            : section === "snoozed"
+              ? input.snoozedShelfExpanded
+              : input.settledShelfExpanded;
+        if (!expanded) {
+          const selectedRoot = rows.find((row) => row.key === input.selectedThreadKey)?.rootKey;
+          items.push(...rows.filter((row) => row.rootKey === selectedRoot).map((row) => row.item));
+          continue;
+        }
+      }
+      items.push(...rows.map((row) => row.item));
+    }
+    return {
+      ...visible,
+      items,
+      workingCount: counts.working,
+      workingShelfHeaderIndex: headers.working,
+      snoozedCount: counts.snoozed,
+      snoozedShelfHeaderIndex: headers.snoozed,
+      settledCount: counts.settled,
+      settledShelfHeaderIndex: headers.settled,
+    };
+  })();
+  const moveAvailability = new Map(
+    list.items.flatMap((item) =>
+      item.type === "v2-thread"
+        ? [[scopedThreadKey(item.item.thread.environmentId, item.item.thread.id), item] as const]
+        : [],
+    ),
+  );
+  const items = buildThreadListV2ListItems({
+    ...input,
+    ...layout,
+    pendingTasks: list.items.flatMap((item) =>
+      item.type === "v2-pending" ? [item.pendingTask] : [],
+    ),
+    snoozeLabelNow: `${input.now.slice(0, 16)}:00.000Z`,
+    moveAvailability,
+    shelfPreferencesLoading: !input.shelfPreferencesLoaded,
+  }).map((item): ThreadListV2FamilyListItem =>
+    item.type === "v2-thread"
+      ? {
+          ...item,
+          family: familyByKey.get(
+            scopedThreadKey(item.item.thread.environmentId, item.item.thread.id),
+          ),
+        }
+      : item,
+  );
+  return { ...list, layout, items };
 }
 
 /** The list's scope per environment: its projects there, or every project. */

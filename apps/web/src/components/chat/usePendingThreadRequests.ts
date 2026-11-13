@@ -53,6 +53,8 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { toastManager } from "../ui/toast";
 
+import { selectAttentionRequests } from "../attention-inbox/attentionRequestTarget";
+
 import type { ChatComposerHandle } from "./ChatComposer";
 
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
@@ -116,6 +118,8 @@ function makePendingCustomAnswerSetter(input: {
 export function usePendingThreadRequests(input: {
   readonly environmentId: EnvironmentId;
   readonly activeThreadId: ThreadId | null;
+  readonly targetRequestId?: string | null;
+  readonly targetRequestReady?: boolean;
   readonly serverProjection: ThreadStructure | null;
   readonly supportsQuestionAttachments: boolean;
   readonly composerDraftTarget: ScopedThreadRef | DraftId;
@@ -127,6 +131,8 @@ export function usePendingThreadRequests(input: {
   const {
     environmentId,
     activeThreadId,
+    targetRequestId,
+    targetRequestReady = true,
     serverProjection,
     supportsQuestionAttachments,
     composerDraftTarget,
@@ -165,7 +171,13 @@ export function usePendingThreadRequests(input: {
     pendingRequests.userInputs.length === 0
       ? NO_PENDING_USER_INPUTS
       : derivePendingUserInputs(pendingRequests.userInputs);
-  const activePendingUserInput = pendingUserInputs[0] ?? null;
+  const selectedPendingUserInputs = targetRequestReady
+    ? selectAttentionRequests(pendingUserInputs, targetRequestId)
+    : NO_PENDING_USER_INPUTS;
+  const selectedPendingApprovals = targetRequestReady
+    ? selectAttentionRequests(pendingApprovals, targetRequestId)
+    : NO_PENDING_APPROVALS;
+  const activePendingUserInput = selectedPendingUserInputs[0] ?? null;
   const activePendingRequestKey = userInputDraftKey(
     environmentId,
     activeThreadId,
@@ -258,7 +270,7 @@ export function usePendingThreadRequests(input: {
     ? activePendingUserInput.responseCapability === "not_resumable" ||
       respondingUserInputRequestIds.includes(activePendingUserInput.requestId)
     : false;
-  const activePendingApproval = pendingApprovals[0] ?? null;
+  const activePendingApproval = selectedPendingApprovals[0] ?? null;
 
   const onRespondToApproval = async (
     requestId: RuntimeRequestId,
@@ -510,6 +522,8 @@ export function usePendingThreadRequests(input: {
   );
 
   return {
+    selectedPendingApprovals,
+    selectedPendingUserInputs,
     pendingApprovals,
     pendingUserInputs,
     activePendingApproval,

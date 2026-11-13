@@ -13,11 +13,7 @@ import {
 } from "@t3tools/client-runtime/state/shell";
 import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
-import {
-  type EnvironmentId,
-  type SidebarProjectGroupingMode,
-  type ThreadId,
-} from "@t3tools/contracts";
+import { type EnvironmentId, type SidebarProjectGroupingMode } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { use, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import {
@@ -54,11 +50,12 @@ import {
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { useNativeWorkspaceColumnsSupported } from "../../native/NativeWorkspaceColumns";
 import { useThreadSearch } from "../../state/queries";
-import { appAtomRegistry } from "../../state/atom-registry";
-import { threadFamilies } from "../../state/threads";
 import { requestThreadMessageJump } from "../threads/threadMessageJump";
 import { useThreadListSearchMatches } from "../threads/useThreadListSearchMatches";
-import { useThreadListV2 } from "../threads/useThreadListV2";
+import {
+  useThreadListV2Families,
+  useThreadListV2FamilyDisclosure,
+} from "../threads/useThreadListV2";
 import { useThreadListNow } from "../threads/use-thread-list-now";
 import { useSearchScrollRestoration } from "../workspace/useSearchScrollRestoration";
 import { useThreadJumpShortcuts } from "../keyboard/threadKeyboardShortcuts";
@@ -78,25 +75,17 @@ import { useThreadRowProviderInstanceResolver } from "../threads/thread-provider
 import { useOpenThreadPullRequests } from "../threads/use-open-thread-pull-requests";
 import type { ThreadPrPresentation } from "../../state/thread-pr-presentation";
 import {
-  buildThreadListV2Items,
-  buildThreadListV2FamilyRows,
-  revealThreadListV2RouteAncestors,
-  toggleThreadListV2Family,
-  buildThreadListV2ListItems,
-  threadListInboxReturns,
-  threadListV2ListItemsAreEqual,
   THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   THREAD_LIST_V2_SETTLED_PAGE_COUNT,
   type ThreadListV2ListItem,
-  type ThreadListV2FamilyDisclosure,
-  type ThreadListV2FamilyRow,
+  type ThreadListV2FamilyListItem as HomeThreadListItem,
+  threadListV2FamilyListItemsAreEqual,
 } from "../threads/threadListV2";
 import { useThreadListV2ShelfPreferences } from "../threads/use-thread-list-v2-shelf-preferences";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
   buildHomeProjectScopes,
   findHomeProjectScope,
-  resolveHomeThreadShelfCounts,
   type HomeProjectSortOrder,
 } from "./homeThreadList";
 import { createSwipeRowActivation } from "./swipe-row-activation";
@@ -104,128 +93,6 @@ import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "./thread-sw
 import { useFabScroll } from "./FabScrollContext";
 import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
 import { ThreadListFilters } from "./ThreadListFilters";
-
-type HomeThreadListItem = ThreadListV2ListItem & { readonly family?: ThreadListV2FamilyRow };
-
-function homeThreadItemsAreEqual(previous: HomeThreadListItem, item: HomeThreadListItem) {
-  return (
-    threadListV2ListItemsAreEqual(previous, item) &&
-    previous.family?.depth === item.family?.depth &&
-    previous.family?.hasChildren === item.family?.hasChildren &&
-    previous.family?.expanded === item.family?.expanded &&
-    previous.family?.descendantCount === item.family?.descendantCount &&
-    previous.family?.activeDescendantCount === item.family?.activeDescendantCount
-  );
-}
-
-function useHomeThreadListV2(
-  input: Parameters<typeof useThreadListV2>[0] & {
-    readonly familyDisclosure: ThreadListV2FamilyDisclosure;
-  },
-) {
-  const list = useThreadListV2({ ...input, includeSubagents: true });
-  const visible = list.layout;
-  const all = buildThreadListV2Items({
-    ...input,
-    threads: input.threads.filter((thread) => thread.archivedAt === null),
-    includeSubagents: true,
-    searchQuery: "",
-    settledLimit: Infinity,
-    workingShelfExpanded: true,
-    snoozedShelfExpanded: true,
-    settledShelfExpanded: true,
-    inboxReturnAt: threadListInboxReturns.returnedAt,
-    isWorking: threadListInboxReturns.isWorking,
-  });
-  const searching = input.searchQuery.trim().length > 0;
-  const visibleRanks = new Map(
-    visible.items.map(({ thread }, index) => [
-      scopedThreadKey(thread.environmentId, thread.id),
-      index,
-    ]),
-  );
-  const familyItems = searching
-    ? [...all.items].sort(
-        (left, right) =>
-          (visibleRanks.get(scopedThreadKey(left.thread.environmentId, left.thread.id)) ??
-            all.items.length) -
-          (visibleRanks.get(scopedThreadKey(right.thread.environmentId, right.thread.id)) ??
-            all.items.length),
-      )
-    : all.items;
-  const families = buildThreadListV2FamilyRows({
-    items: familyItems,
-    visibleKeys: new Set(visibleRanks.keys()),
-    disclosure: input.familyDisclosure,
-    workingShelfEnabled: input.workingShelfEnabled,
-    searching,
-  });
-  const familyByKey = new Map(families.map((row) => [row.key, row]));
-  const layout = (() => {
-    if (searching) return { ...visible, items: families.map((row) => row.item) };
-    const items = [];
-    const headers = { working: null, snoozed: null, settled: null } as Record<
-      "working" | "snoozed" | "settled",
-      number | null
-    >;
-    const counts = resolveHomeThreadShelfCounts(visible, families);
-    for (const section of ["pinned", "active", "working", "snoozed", "settled"] as const) {
-      const rows = families.filter((row) => row.displaySection === section);
-      if (section === "working" || section === "snoozed" || section === "settled") {
-        if (counts[section] > 0) headers[section] = items.length;
-        const expanded =
-          section === "working"
-            ? input.workingShelfExpanded
-            : section === "snoozed"
-              ? input.snoozedShelfExpanded
-              : input.settledShelfExpanded;
-        if (!expanded) {
-          const selectedRoot = rows.find((row) => row.key === input.selectedThreadKey)?.rootKey;
-          items.push(...rows.filter((row) => row.rootKey === selectedRoot).map((row) => row.item));
-          continue;
-        }
-      }
-      items.push(...rows.map((row) => row.item));
-    }
-    return {
-      ...visible,
-      items,
-      workingCount: counts.working,
-      workingShelfHeaderIndex: headers.working,
-      snoozedCount: counts.snoozed,
-      snoozedShelfHeaderIndex: headers.snoozed,
-      settledCount: counts.settled,
-      settledShelfHeaderIndex: headers.settled,
-    };
-  })();
-  const moveAvailability = new Map(
-    list.items.flatMap((item) =>
-      item.type === "v2-thread"
-        ? [[scopedThreadKey(item.item.thread.environmentId, item.item.thread.id), item] as const]
-        : [],
-    ),
-  );
-  const items = buildThreadListV2ListItems({
-    ...input,
-    ...layout,
-    pendingTasks: list.items.flatMap((item) =>
-      item.type === "v2-pending" ? [item.pendingTask] : [],
-    ),
-    snoozeLabelNow: `${input.now.slice(0, 16)}:00.000Z`,
-    moveAvailability,
-    shelfPreferencesLoading: !input.shelfPreferencesLoaded,
-  }).map((item): HomeThreadListItem =>
-    item.type === "v2-thread"
-      ? {
-          ...item,
-          family: familyByKey.get(
-            scopedThreadKey(item.item.thread.environmentId, item.item.thread.id),
-          ),
-        }
-      : item,
-  );
-  return { ...list, layout, items };
-}
 
 interface HomeScreenProps {
   readonly projects: ReadonlyArray<EnvironmentProject>;
@@ -398,56 +265,13 @@ export function HomeScreen(props: HomeScreenProps) {
   const selectedThreadKey = activeNewTask
     ? null
     : (primaryColumn?.selectedThreadKey ?? lastSelectedThreadKey);
-  const [familyDisclosure, setFamilyDisclosure] = useState<ThreadListV2FamilyDisclosure>(() => ({
-    routeKey: null,
-    expandedKeys: new Set(),
-    closedKeys: new Set(),
-  }));
-  if (familyDisclosure.routeKey !== selectedThreadKey) {
-    const revealed = revealThreadListV2RouteAncestors(
-      familyDisclosure,
-      props.threads,
-      selectedThreadKey,
-    );
-    if (revealed !== familyDisclosure) setFamilyDisclosure(revealed);
-  }
-  const familyReadTargets = new Map<string, readonly [EnvironmentId, ThreadId]>();
-  for (const thread of props.threads) {
-    const key = scopedThreadKey(thread.environmentId, thread.id);
-    if (key !== selectedThreadKey && !familyDisclosure.expandedKeys.has(key)) continue;
-    const rootId = thread.lineage.rootThreadId;
-    familyReadTargets.set(scopedThreadKey(thread.environmentId, rootId), [
-      thread.environmentId,
-      rootId,
-    ]);
-  }
-  const familyReadKey = JSON.stringify(
-    [...familyReadTargets]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([, ref]) => ref),
+  const { familyDisclosure, toggleFamily, revealFamilyThread } = useThreadListV2FamilyDisclosure(
+    props.threads,
+    selectedThreadKey,
   );
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps requested families in the server-trimmed shell while selected or expanded
-  useEffect(() => {
-    const targets = JSON.parse(familyReadKey) as ReadonlyArray<readonly [EnvironmentId, ThreadId]>;
-    const releases = targets.map(([environmentId, threadId]) =>
-      threadFamilies.mount(appAtomRegistry, environmentId, threadId),
-    );
-    return () => {
-      for (const release of releases) release();
-    };
-  }, [familyReadKey]);
-  const toggleFamily = (key: string) => {
-    setFamilyDisclosure((previous) => toggleThreadListV2Family(previous, key));
-  };
   const { onSelectThread } = props;
   const selectFamilyThread = (thread: EnvironmentThreadShell) => {
-    setFamilyDisclosure((previous) =>
-      revealThreadListV2RouteAncestors(
-        previous,
-        props.threads,
-        scopedThreadKey(thread.environmentId, thread.id),
-      ),
-    );
+    revealFamilyThread(thread);
     onSelectThread(thread);
   };
   const fullSwipeWidth = primaryColumn && columnMetrics ? columnMetrics.width - 20 : undefined;
@@ -653,7 +477,7 @@ export function HomeScreen(props: HomeScreenProps) {
     items: threadListV2Items,
     contentOnlyThreadKeys,
     olderSettledShelf,
-  } = useHomeThreadListV2({
+  } = useThreadListV2Families({
     threads: props.threads,
     pendingTasks: props.pendingTasks,
     environmentId: props.selectedEnvironmentId,
@@ -996,7 +820,7 @@ export function HomeScreen(props: HomeScreenProps) {
               renderItem={renderV2Item}
               keyExtractor={v2KeyExtractor}
               getItemType={(item) => item.type}
-              itemsAreEqual={homeThreadItemsAreEqual}
+              itemsAreEqual={threadListV2FamilyListItemsAreEqual}
               estimatedItemSize={ESTIMATED_THREAD_LIST_V2_ROW_HEIGHT}
               drawDistance={THREAD_LIST_V2_DRAW_DISTANCE}
               recycleItems

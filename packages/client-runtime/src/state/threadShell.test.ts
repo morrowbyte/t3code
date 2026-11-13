@@ -116,6 +116,34 @@ describe("v2 thread shell lists", () => {
         activeRunId: RunId.make("fresh-run"),
       });
       expect(isThreadWorking(freshRun)).toBe(true);
+      const requests = [
+        reopened.pendingRuntimeRequest,
+        {
+          ...reopened.pendingRuntimeRequest,
+          id: RuntimeRequestId.make("approval"),
+          kind: "command" as const,
+        },
+        {
+          ...reopened.pendingRuntimeRequest,
+          id: RuntimeRequestId.make("question"),
+          kind: "user_input" as const,
+        },
+      ];
+      const mixed = {
+        ...reopened,
+        pendingRuntimeRequest: { ...requests[0]!, kind: "auth_refresh" as const },
+        pendingRuntimeRequests: requests,
+      };
+      expect(presentThreadShell(environmentId, mixed)).toMatchObject({
+        hasPendingApprovals: true,
+        hasPendingUserInput: true,
+      });
+      expect(
+        presentThreadShell(environmentId, { ...mixed, pendingRuntimeRequests: [] }),
+      ).toMatchObject({
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+      });
       dispose();
       registry.dispose();
     },
@@ -409,7 +437,7 @@ describe("v2 thread shell lists", () => {
       threads: [root, child, { ...grandchild, pendingRuntimeRequest: approval }],
     });
     expect(registry.get(parent)?.pendingSubagentRequest).toBe("approval");
-    expect(isThreadWorking(registry.get(parent)!)).toBe(false);
+    expect(isThreadWorking(registry.get(parent)!)).toBe(true);
     const asking = registry.get(inputs);
     expect(asking.map((thread) => thread.id)).toEqual([grandchild.id]);
     expect(childThreadInputsTitle(asking)).toBe("Subagent needs approval");

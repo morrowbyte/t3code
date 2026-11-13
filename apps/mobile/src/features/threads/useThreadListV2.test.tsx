@@ -4,19 +4,23 @@ import { RegistryContext } from "@effect/atom-react";
 import type { OlderSettledShelfEnvironment } from "@t3tools/client-runtime/state/threads";
 import { presentThreadShell } from "@t3tools/client-runtime/state/shell";
 import * as DateTime from "effect/DateTime";
-import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { Atom, AtomRegistry } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 
 import { olderSettledThreads } from "../../state/threads";
-import { makeRawThreadShell } from "../../test-fixtures";
-import { useThreadListV2 } from "./useThreadListV2";
+import { makeRawThreadShell, makeThreadShellFixture } from "../../test-fixtures";
+import {
+  useThreadListV2,
+  useThreadListV2Families,
+  useThreadListV2FamilyDisclosure,
+} from "./useThreadListV2";
 
 vi.mock("../../state/threads", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
     olderSettledThreads: { shelfAtom: vi.fn() },
-    threadFamilies: { mountRows: () => () => {} },
+    threadFamilies: { mountRows: () => () => {}, mount: () => () => {} },
     environmentThreadShells: { delegatedUnderParentAtom: Atom.make(new Set()) },
   };
 });
@@ -245,4 +249,136 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   expect(loaded.layout.items).toHaveLength(160);
   expect(loaded.olderSettledShelf.isListed(threads[150]!)).toBe(true);
   expect(loaded.items).not.toBe(loading.items);
+});
+
+it("keeps scoped asking families visible and restores the exact child after shell reconnects", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  using _globals = { [Symbol.dispose]: () => vi.unstubAllGlobals() };
+  const shelfAtom = Atom.make<ReadonlyMap<EnvironmentId, OlderSettledShelfEnvironment>>(new Map());
+  vi.mocked(olderSettledThreads.shelfAtom).mockReturnValue(shelfAtom);
+  const registry = AtomRegistry.make();
+  using _registry = { [Symbol.dispose]: () => registry.dispose() };
+  const environmentId = EnvironmentId.make("family-environment");
+  const remoteEnvironmentId = EnvironmentId.make("family-remote");
+  const now = "2026-06-02T00:00:00.000Z";
+  const running = {
+    status: "running" as const,
+    activeRunId: null,
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    providerName: "Codex",
+    lastError: null,
+    updatedAt: now,
+  };
+  const parent = makeThreadShellFixture({
+    environmentId,
+    id: ThreadId.make("family-parent"),
+    title: "Parent",
+    runtime: running,
+  });
+  const child = makeThreadShellFixture({
+    environmentId,
+    id: ThreadId.make("family-child"),
+    title: "Question",
+    runtime: running,
+    hasPendingUserInput: true,
+    lineage: {
+      parentThreadId: parent.id,
+      rootThreadId: parent.id,
+      relationshipToParent: "subagent",
+    },
+  });
+  const historical = {
+    ...child,
+    id: ThreadId.make("historical-child"),
+    runtime: null,
+    hasPendingUserInput: false,
+  };
+  const remote = { ...child, environmentId: remoteEnvironmentId };
+  const parentKey = `${environmentId}:${parent.id}`;
+  const childKey = `${environmentId}:${child.id}`;
+  const environmentIds = new Set([environmentId, remoteEnvironmentId]);
+  const input: Parameters<typeof useThreadListV2>[0] = {
+    threads: [child],
+    pendingTasks: [],
+    environmentId,
+    projectRefs: null,
+    searchQuery: "",
+    searchMatches: new Map(),
+    settlementEnvironmentIds: environmentIds,
+    snoozeEnvironmentIds: environmentIds,
+    pinReorderEnvironmentIds: environmentIds,
+    activeReorderEnvironmentIds: environmentIds,
+    queuedThreadKeys: new Set(),
+    settledLimit: 10,
+    now,
+    pendingOrder: null,
+    shelfPreferencesLoaded: true,
+    workingShelfEnabled: true,
+    workingShelfExpanded: false,
+    snoozedShelfExpanded: false,
+    settledShelfExpanded: false,
+    selectedThreadKey: childKey,
+  };
+  type FamilyResult = ReturnType<typeof useThreadListV2Families> &
+    ReturnType<typeof useThreadListV2FamilyDisclosure>;
+  const seen: FamilyResult[] = [];
+  function Probe(props: { input: typeof input }) {
+    const disclosure = useThreadListV2FamilyDisclosure(
+      props.input.threads,
+      props.input.selectedThreadKey,
+    );
+    const list = useThreadListV2Families({
+      ...props.input,
+      familyDisclosure: disclosure.familyDisclosure,
+    });
+    useLayoutEffect(() => {
+      seen.push({ ...list, ...disclosure });
+    });
+    return null;
+  }
+  const root = createRoot(document.createElement("div"));
+  using _root = { [Symbol.dispose]: () => act(() => root.unmount()) };
+  const render = (next: typeof input) =>
+    act(async () =>
+      root.render(
+        <RegistryContext value={registry}>
+          <Probe input={next} />
+        </RegistryContext>,
+      ),
+    );
+  const rows = () =>
+    seen.at(-1)!.items.flatMap((item) => (item.type === "v2-thread" ? [item] : []));
+  await render(input);
+  expect(seen.at(-1)!.familyDisclosure.routeKey).toBe(childKey);
+  expect(rows().map((item) => [item.item.thread.id, item.family?.depth])).toEqual([[child.id, 0]]);
+
+  const reconnected = { ...input, threads: [parent, child, historical, remote, remote] };
+  await render(reconnected);
+  expect(seen.at(-1)!.layout.workingCount).toBe(2);
+  expect(rows().map((item) => [item.item.thread.id, item.family?.depth])).toEqual([
+    [parent.id, 0],
+    [child.id, 1],
+  ]);
+  expect(rows().every((item) => item.family?.displaySection === "active")).toBe(true);
+  expect(seen.at(-1)!.familyDisclosure.expandedKeys.has(parentKey)).toBe(true);
+
+  await act(async () => seen.at(-1)!.toggleFamily(parentKey));
+  await render({ ...reconnected, threads: reconnected.threads.map((thread) => ({ ...thread })) });
+  expect(rows().map((item) => item.item.thread.id)).toEqual([parent.id]);
+  expect(seen.at(-1)!.layout.workingCount).toBe(2);
+  await render({ ...reconnected, selectedThreadKey: parentKey });
+  await render(reconnected);
+  expect(rows().find((item) => item.family?.key === childKey)?.family).toMatchObject({
+    depth: 1,
+    rootKey: parentKey,
+  });
+
+  await render({ ...reconnected, environmentId: null });
+  expect(seen.at(-1)!.layout.workingCount).toBe(3);
+  await render({
+    ...reconnected,
+    environmentId: null,
+    projectRefs: [{ environmentId, projectId: parent.projectId }],
+  });
+  expect(seen.at(-1)!.layout.workingCount).toBe(2);
 });

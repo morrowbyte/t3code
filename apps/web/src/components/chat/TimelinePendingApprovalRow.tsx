@@ -12,6 +12,8 @@ import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions
 import { ToolActivityIconView, type WorkEntryIconName } from "./TimelineToolActivityIcon";
 import { TimelineRowCtx } from "./timelineRowContext";
 import { WorkLogRow } from "./WorkLog";
+import { ShellCommandBlock } from "./ShellCommandBlock";
+import { authoredCodeIntent } from "@t3tools/shared/toolActivity";
 
 const APPROVAL_PRESENTATION = {
   command: { icon: "terminal", label: "Command approval", detailLabel: "Command" },
@@ -64,17 +66,35 @@ export const TimelinePendingApprovalRow = memo(function TimelinePendingApprovalR
         />
       }
       label={
-        <code
-          aria-label={presentation.detailLabel}
-          className="block max-h-40 min-w-0 overflow-auto whitespace-pre-wrap font-mono text-xs leading-5 text-foreground select-text! wrap-anywhere [scrollbar-width:thin] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
-          data-approval-detail="complete"
-          tabIndex={0}
-        >
-          {approval.detail || presentation.label}
-        </code>
+        approval.requestKind === "command" ? (
+          <span
+            aria-label={!approval.detail ? presentation.detailLabel : undefined}
+            data-approval-detail={!approval.detail ? "complete" : undefined}
+            className="text-xs font-medium"
+          >
+            {(approval.detail && authoredCodeIntent(approval.detail)) || presentation.label}
+          </span>
+        ) : (
+          <code
+            aria-label={presentation.detailLabel}
+            className="block min-w-0 whitespace-pre-wrap font-mono text-xs leading-5 text-foreground select-text! wrap-anywhere"
+            data-approval-detail="complete"
+          >
+            {approval.detail || presentation.label}
+          </code>
+        )
       }
     >
       <div className="ms-7.5 flex min-w-0 flex-col gap-1 pb-1 text-xs">
+        {approval.requestKind === "command" && approval.detail ? (
+          <div
+            aria-label={presentation.detailLabel}
+            data-approval-detail="complete"
+            className="min-w-0 select-text"
+          >
+            <ShellCommandBlock command={approval.detail} />
+          </div>
+        ) : null}
         {approval.appName ? (
           <span className="text-muted-foreground wrap-anywhere">{approval.appName}</span>
         ) : null}

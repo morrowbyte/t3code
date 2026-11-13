@@ -15,6 +15,7 @@ import {
 } from "./agentMessagePresentation";
 import { AgentIdentityLabel } from "../agent-identity/AgentIdentityLabel";
 import { handleObjectActionKey } from "./objectKeyboardActions";
+import type { WorkGroupViewState } from "./timelineRowContext";
 
 const STATUS = {
   info: { label: "Info", variant: "secondary" },
@@ -65,6 +66,7 @@ export function AgentMessageRow({
   onRequestText,
   originLabel,
   technicalDetails,
+  workGroupViewState,
   children,
 }: {
   messageId: string;
@@ -85,14 +87,39 @@ export function AgentMessageRow({
   onRequestText?: () => void;
   originLabel?: string;
   technicalDetails?: ReactNode;
+  workGroupViewState?: WorkGroupViewState;
   children: (bodyText: string) => ReactNode;
 } & (
   | { attribution: "agent" | "unknown"; principalLabel?: never }
   | { attribution: "human"; principalLabel: string }
 )) {
-  const [expanded, setExpanded] = useState(false);
-  const [originalOpen, setOriginalOpen] = useState(false);
-  const [technicalOpen, setTechnicalOpen] = useState(false);
+  const disclosureKey = `agent-message:${messageId}`;
+  const [expanded, setExpandedState] = useState(
+    () => workGroupViewState?.expandedEntries.has(`${disclosureKey}:expanded`) ?? false,
+  );
+  const [originalOpen, setOriginalOpenState] = useState(
+    () => workGroupViewState?.expandedEntries.has(`${disclosureKey}:original`) ?? false,
+  );
+  const [technicalOpen, setTechnicalOpenState] = useState(
+    () => workGroupViewState?.expandedEntries.has(`${disclosureKey}:technical`) ?? false,
+  );
+  const rememberDisclosure = (section: string, open: boolean) => {
+    const key = `${disclosureKey}:${section}`;
+    if (open) workGroupViewState?.expandedEntries.add(key);
+    else workGroupViewState?.expandedEntries.delete(key);
+  };
+  const setExpanded = (open: boolean) => {
+    rememberDisclosure("expanded", open);
+    setExpandedState(open);
+  };
+  const setOriginalOpen = (open: boolean) => {
+    rememberDisclosure("original", open);
+    setOriginalOpenState(open);
+  };
+  const setTechnicalOpen = (open: boolean) => {
+    rememberDisclosure("technical", open);
+    setTechnicalOpenState(open);
+  };
   const trigger = useRef<HTMLButtonElement>(null);
   const originalPanelId = useId();
   const human = attribution === "human";
@@ -191,7 +218,7 @@ export function AgentMessageRow({
           <CollapsibleTrigger
             ref={trigger}
             className="flex w-full items-start gap-2.5 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-ring pointer-coarse:min-h-11"
-            aria-label={`${expanded ? "Zuklappen" : "Details öffnen"}: ${human ? "Originalauftrag" : "Agentennachricht"}`}
+            aria-label={`${expanded ? "Zuklappen" : "Details öffnen"}: ${human ? "Originalauftrag" : "Agentennachricht"}: ${summary.replace(/\s+/g, " ").slice(0, 240)}`}
             data-keyboard-action="details"
             aria-keyshortcuts="D"
           >
@@ -264,6 +291,7 @@ export function AgentMessageRow({
                 {technical.length > 0 || technicalDetails ? (
                   <details
                     className="mt-3 text-sm"
+                    open={technicalOpen}
                     onToggle={(event) => setTechnicalOpen(event.currentTarget.open)}
                   >
                     <summary className="w-fit cursor-pointer rounded-sm text-xs text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring">

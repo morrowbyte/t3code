@@ -222,7 +222,9 @@ export function filterSidebarConnectedThreads<T extends { readonly environmentId
     : threads.filter((thread) => !hiddenEnvironmentIds.has(thread.environmentId));
 }
 
-export function belongsInSidebarWorkingShelf<T extends { readonly environmentId: EnvironmentId }>(
+export function belongsInSidebarWorkingShelf<
+  T extends { readonly environmentId: EnvironmentId } & Parameters<typeof isThreadAwaitingInput>[0],
+>(
   thread: T,
   input: {
     readonly enabled: boolean;
@@ -233,6 +235,7 @@ export function belongsInSidebarWorkingShelf<T extends { readonly environmentId:
   return (
     input.enabled &&
     !input.disconnectedEnvironmentIds.has(thread.environmentId) &&
+    !isThreadAwaitingInput(thread) &&
     input.isWorking(thread)
   );
 }
@@ -925,12 +928,12 @@ export function buildSidebarHierarchy(input: {
     const anchor = visible.find((key) => input.visibleKeys.has(key)) ?? root;
     groups.push({
       root,
-      section: working
-        ? input.workingShelfEnabled
-          ? "working"
-          : "active"
-        : family.some((key) => inputKeys.has(key))
-          ? "active"
+      section: family.some((key) => inputKeys.has(key))
+        ? "active"
+        : working
+          ? input.workingShelfEnabled
+            ? "working"
+            : "active"
           : (input.sectionByKey.get(anchor) ?? "active"),
       rank: Math.min(...visible.map((key) => rank.get(key)!)),
     });

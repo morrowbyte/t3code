@@ -5,6 +5,7 @@ import {
   type ReviewBundle,
 } from "@t3tools/client-runtime/approvalReview";
 import { canRespondToThreadApproval } from "@t3tools/client-runtime/state/thread-requests";
+import { commandHighlightLanguage } from "@t3tools/client-runtime/work-log/command-label";
 import type {
   EnvironmentId,
   ProviderApprovalDecision,
@@ -22,6 +23,8 @@ import {
 import { AppText as Text } from "../../components/ui/AppText";
 import type { PendingApproval } from "../../lib/threadActivity";
 import { ApprovalReviewModal } from "./ApprovalReviewModal";
+import { RecordedExecutionCode } from "./RecordedExecutionCode";
+import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 
 export interface PendingApprovalCardProps {
   readonly canOperateThread: boolean;
@@ -56,11 +59,13 @@ const modeLabels: Record<RuntimeMode, string> = {
 };
 
 export function PendingApprovalCard(props: PendingApprovalCardProps) {
+  const { themeAppearance } = useAppearancePreferences();
   const [now, setNow] = useState(Date.now);
   const [explanationOpen, setExplanationOpen] = useState(false);
   const authority = props.approval.approvalReview;
   const expiresAt = authority?.expiresAt;
   const originalExpiresAt = authority?.originalOrder?.receipt.expiresAt;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Keep mounted expiry timers aligned with request and receipt deadlines.
   useEffect(() => {
     const timers = [...new Set([expiresAt, originalExpiresAt])]
       .filter((deadline): deadline is number => deadline !== undefined)
@@ -75,6 +80,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
   const options = props.approval.options ?? DEFAULT_APPROVAL_OPTIONS;
   const key = `${props.environmentId ?? "unknown"}:${props.approval.requestId}`;
   const latest = useRef(props);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Keep retained native response callbacks bound to the latest committed request.
   useLayoutEffect(() => {
     latest.current = props;
   }, [props]);
@@ -352,9 +358,20 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
       />
       {detailsFor === key ? (
         <View className="gap-2 border-t border-border pt-3">
-          <Text selectable className="font-mono text-sm leading-normal text-foreground-secondary">
-            {props.approval.detail || "No details supplied"}
-          </Text>
+          {props.approval.requestKind === "command" &&
+          props.approval.detail &&
+          review.kind === "none" ? (
+            <RecordedExecutionCode
+              code={props.approval.detail}
+              language={commandHighlightLanguage(props.approval.detail)}
+              theme={themeAppearance}
+              shell
+            />
+          ) : (
+            <Text selectable className="font-mono text-sm leading-normal text-foreground-secondary">
+              {props.approval.detail || "No details supplied"}
+            </Text>
+          )}
           <Text selectable className="text-xs text-foreground-muted">
             Environment ID: {props.environmentId ?? "Not supplied"}
           </Text>
@@ -380,6 +397,8 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
         <ApprovalReviewModal
           bundle={review.kind === "bundle" ? review.bundle : null}
           detail={props.approval.detail}
+          requestKind={props.approval.requestKind}
+          theme={themeAppearance}
           issue={review.kind === "invalid" ? reviewIssue : null}
           environmentLabel={props.environmentLabel || props.environmentId || "Not supplied"}
           requestId={props.approval.requestId}

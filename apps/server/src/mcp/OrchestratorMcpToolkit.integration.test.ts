@@ -3983,10 +3983,23 @@ describe("orchestrator MCP toolkit", () => {
             });
 
             const ordinaryLoopPrompt = "Run an ordinary thread loop iteration.";
+            const replyTo = {
+              environmentId: invocation.environmentId,
+              threadId: promptedThread.threadId,
+              messageId: promptedRead.items[0]!.messageId!,
+            };
+            const invalidReply = yield* invoke("t3_thread_send", {
+              threadId: emptyThread.threadId,
+              message: ordinaryLoopPrompt,
+              replyTo: { ...replyTo, messageId: "missing-question" },
+              clientRequestId: "ordinary-loop-invalid-reply",
+            });
+            expect(declaredFailure(invalidReply)).toMatchObject({ code: "invalid_request" });
             const sendCall = yield* invoke("t3_thread_send", {
               threadId: emptyThread.threadId,
               message: ordinaryLoopPrompt,
               clientRequestId: "ordinary-loop-send-1",
+              replyTo,
             });
             const sent = yield* decodeThreadSendResult(sendCall.structuredContent).pipe(
               Effect.orDie,
@@ -3996,6 +4009,7 @@ describe("orchestrator MCP toolkit", () => {
               sentSource.messages.find((message) => message.id === sent.messageId),
             ).toMatchObject({
               senderThreadId: parentThreadId,
+              replyTo,
             });
             expect(
               sentSource.turnItems.find(
@@ -4003,6 +4017,7 @@ describe("orchestrator MCP toolkit", () => {
               ),
             ).toMatchObject({
               senderThreadId: parentThreadId,
+              replyTo,
             });
             expect(["accepted", "started"]).toContain(sent.delivery);
             const waitCall = yield* invoke("t3_thread_wait", {
@@ -4018,10 +4033,20 @@ describe("orchestrator MCP toolkit", () => {
               status: "completed",
               timedOut: false,
             });
+            const replyReadCall = yield* invoke("t3_thread_read", {
+              threadId: emptyThread.threadId,
+            });
+            const replyRead = yield* decodeThreadReadResult(replyReadCall.structuredContent).pipe(
+              Effect.orDie,
+            );
+            expect(
+              replyRead.items.find((item) => item.messageId === sent.messageId)?.replyTo,
+            ).toEqual(replyTo);
             const repeatedSendCall = yield* invoke("t3_thread_send", {
               threadId: emptyThread.threadId,
               message: ordinaryLoopPrompt,
               clientRequestId: "ordinary-loop-send-1",
+              replyTo,
             });
             const repeatedSend = yield* decodeThreadSendResult(
               repeatedSendCall.structuredContent,

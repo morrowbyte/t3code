@@ -4,6 +4,7 @@ import {
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
+import { isOrchestrationV2ThreadSnoozed } from "@t3tools/shared/orchestrationV2ThreadSnooze";
 import {
   CommandId,
   isOrchestrationV2WorkActive,
@@ -177,17 +178,7 @@ export function isSnoozed(
   >,
   nowMs: number,
 ): boolean {
-  const snoozedUntilMs = toMillis(thread.snoozedUntil);
-  if (snoozedUntilMs === null || snoozedUntilMs <= nowMs) return false;
-  if (thread.pendingRuntimeRequest !== null) return false;
-  // Same as the client: a waiting guest message wakes the thread, and the snooze stays stored.
-  if ((thread.pendingGuestMessageCount ?? 0) > 0) return false;
-  const snoozedAtMs = toMillis(thread.snoozedAt);
-  const completedAtMs = toMillis(thread.latestRunCompletedAt);
-  const wokeOnError =
-    thread.status === "failed" &&
-    (snoozedAtMs === null || (completedAtMs !== null && completedAtMs > snoozedAtMs));
-  return !wokeOnError;
+  return isOrchestrationV2ThreadSnoozed(thread, nowMs);
 }
 
 export function resolveAutoSettlementAt(input: {

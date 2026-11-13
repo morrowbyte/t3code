@@ -1,4 +1,4 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -22,7 +22,17 @@ const request: ConnectedEnvironmentRelayRequest = {
   },
   request: {
     type: "send",
-    input: { threadId, message: "fixture", mode: "queue", clientRequestId: "retry-1" },
+    input: {
+      threadId,
+      message: "fixture",
+      mode: "queue",
+      clientRequestId: "retry-1",
+      replyTo: {
+        environmentId: source,
+        threadId: ThreadId.make("source-thread"),
+        messageId: MessageId.make("original-question"),
+      },
+    },
   },
 };
 
@@ -114,7 +124,11 @@ describe("connected environment target", () => {
         ),
       );
       expect(seen).toMatchObject({
-        input: { clientRequestId: "retry-1", mode: "queue" },
+        input: {
+          clientRequestId: "retry-1",
+          mode: "queue",
+          replyTo: request.request.type === "send" ? request.request.input.replyTo : undefined,
+        },
         limit: { runtimeMode: "approval-required", interactionMode: "plan" },
         scope: { thread: undefined, requestNamespace: "connected:source:source-thread" },
       });

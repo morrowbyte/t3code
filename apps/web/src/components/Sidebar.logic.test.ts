@@ -645,6 +645,16 @@ describe("sidebar thread lineage helpers", () => {
         [key(descendant), 2, "working"],
       ]);
       expect(rows[0]).toMatchObject({ descendantCount: 2, activeDescendantCount: 1 });
+      const askingRows = buildSidebarHierarchy({
+        ...input,
+        threads: threads.map((thread) =>
+          thread === root
+            ? { ...thread, settledOverride: null, hasPendingUserInput: true }
+            : thread,
+        ),
+      });
+      expect(askingRows.every((row) => row.displaySection === "active")).toBe(true);
+      expect(askingRows[0]?.activeDescendantCount).toBe(1);
       expect(buildSidebarHierarchy({ ...input, closedKeys: new Set([key(root)]) })).toMatchObject([
         { key: key(root), expanded: false, activeDescendantCount: 1 },
       ]);
@@ -2495,7 +2505,7 @@ describe("Working shelf (beta)", () => {
     );
     const keys = workingThreadKeys([...threads, running]);
     const key = (thread: typeof parent) => `${thread.environmentId}:${thread.id}`;
-    expect(keys.size).toBe(2);
+    expect(keys.size).toBe(3);
     const input = {
       threads,
       workingKeys: keys,
@@ -2512,8 +2522,8 @@ describe("Working shelf (beta)", () => {
     };
     const folded = buildSidebarHierarchy(input);
     expect(folded.find((row) => row.key === key(parent))).toMatchObject({
-      displaySection: "working",
-      activeDescendantCount: 1,
+      displaySection: "active",
+      activeDescendantCount: 2,
       descendantCount: 2,
     });
     expect(folded).toHaveLength(2);
@@ -2527,7 +2537,7 @@ describe("Working shelf (beta)", () => {
       expandedKeys: new Set([key(parent)]),
     });
     expect(questionsOnly.map((row) => row.displaySection)).toEqual(["active", "active"]);
-    expect(questionsOnly[0]?.activeDescendantCount).toBe(0);
+    expect(questionsOnly[0]?.activeDescendantCount).toBe(1);
     expect(resolveSidebarThreadStatus(oldQuestion)).toBe("ready");
     expect(resolveThreadStatusPill({ thread: oldApproval })).toBeNull();
   });
@@ -2563,8 +2573,8 @@ describe("Working shelf (beta)", () => {
     expect(isSidebarThreadWorking({ ...idle, runtime })).toBe(true);
     expect(isSidebarThreadWorking(waiting)).toBe(true);
     expect(isSidebarThreadWorking(idle)).toBe(false);
-    expect(isSidebarThreadWorking({ ...idle, runtime, hasPendingApprovals: true })).toBe(false);
-    expect(isSidebarThreadWorking({ ...idle, runtime, hasPendingUserInput: true })).toBe(false);
+    expect(isSidebarThreadWorking({ ...idle, runtime, hasPendingApprovals: true })).toBe(true);
+    expect(isSidebarThreadWorking({ ...idle, runtime, hasPendingUserInput: true })).toBe(true);
     expect(
       isSidebarThreadWorking({
         ...waiting,
