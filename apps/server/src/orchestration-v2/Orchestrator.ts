@@ -1373,7 +1373,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       } = {},
     ) {
       const withIds = yield* Effect.forEach(events, (event) => makeSystemEvent(event));
-      yield* eventSink.writeWithEffects({ events: withIds, effects, ...options });
+      return yield* eventSink.writeWithEffects({ events: withIds, effects, ...options });
     });
 
   const completionDeliveryRun = (
@@ -2405,7 +2405,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) {
     let next = options;
     while (yield* tryStartNextQueuedRun(threadId, next)) {
-      next = { ...options, queuedRunId: undefined };
+      const remaining = { ...options };
+      delete remaining.queuedRunId;
+      next = remaining;
     }
   });
 

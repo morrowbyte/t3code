@@ -331,7 +331,7 @@ it.effect.each(deliveries)(
                 schedule: oneTime
                   ? {
                       type: "once",
-                      runAt: new Date(DateTime.toEpochMillis(now) + 60_000).toISOString(),
+                      runAt: DateTime.formatIso(DateTime.add(now, { minutes: 1 })),
                     }
                   : { type: "interval", everyMs: 60_000 },
                 projectId,

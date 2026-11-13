@@ -5582,7 +5582,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         .pipe(Effect.mapError(controlReadError(threadId)));
 
     const isScheduledTaskDeliveryCurrent: ProjectionStoreV2Shape["isScheduledTaskDeliveryCurrent"] =
-      (message) => {
+      Effect.fn("ProjectionStore.isScheduledTaskDeliveryCurrent")((
+        message: OrchestrationV2ConversationMessage,
+      ) => {
         const taskId = message.scheduledTaskId;
         const delivery = message.scheduledTaskDelivery;
         const prefix = `scheduled-task-message:${taskId}:`;
@@ -5603,11 +5605,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           Effect.map(
             (rows) =>
               rows[0]?.enabled === 1 &&
-              (delivery === undefined || rows[0].delivery_generation === delivery.generation),
+              rows[0].delivery_generation === (delivery?.generation ?? ""),
           ),
           Effect.mapError(controlReadError(message.threadId)),
         );
-      };
+      });
 
     const canStartQueuedRun: ProjectionStoreV2Shape["canStartQueuedRun"] = (threadId) =>
       sql
