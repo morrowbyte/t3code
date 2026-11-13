@@ -36,6 +36,12 @@ export interface ServiceState {
   readonly protocol: typeof SERVICE_LAUNCHER_PROTOCOL;
   readonly activeVersion: string;
   readonly update?: ServiceUpdateRecord;
+  readonly preparation?: {
+    readonly fromVersion: string;
+    readonly targetVersion: string;
+    readonly installationId: string;
+    readonly sha256: string;
+  };
 }
 
 export interface ServiceLauncherContext {
@@ -45,6 +51,11 @@ export interface ServiceLauncherContext {
 }
 
 export type ServiceLauncherChildMessage =
+  | {
+      readonly type: "prepare-update";
+      readonly targetVersion: string;
+      readonly dbPath: string;
+    }
   | {
       readonly type: "request-update";
       readonly targetVersion: string;
@@ -57,6 +68,7 @@ export type ServiceLauncherChildMessage =
     };
 
 export type ServiceLauncherParentMessage =
+  | { readonly type: "update-prepared"; readonly targetVersion: string }
   | {
       readonly type: "update-accepted";
       readonly updateId: string;
@@ -183,11 +195,23 @@ export function compareExactServiceVersions(left: string, right: string): number
 export function decodeServiceState(value: unknown): ServiceState | undefined {
   if (!isRecord(value)) return undefined;
   const update = value.update === undefined ? undefined : decodeServiceUpdate(value.update);
+  const preparation = value.preparation;
   if (
     value.protocol !== SERVICE_LAUNCHER_PROTOCOL ||
     typeof value.activeVersion !== "string" ||
     !isExactServiceVersion(value.activeVersion) ||
     (value.update !== undefined && update === undefined) ||
+    (preparation !== undefined &&
+      (!isRecord(preparation) ||
+        typeof preparation.fromVersion !== "string" ||
+        !isExactServiceVersion(preparation.fromVersion) ||
+        typeof preparation.targetVersion !== "string" ||
+        !isExactServiceVersion(preparation.targetVersion) ||
+        compareExactServiceVersions(preparation.targetVersion, preparation.fromVersion) <= 0 ||
+        typeof preparation.installationId !== "string" ||
+        !/^[a-f0-9]{64}$/.test(preparation.installationId) ||
+        typeof preparation.sha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(preparation.sha256))) ||
     (update !== undefined &&
       (update.restore === undefined
         ? compareExactServiceVersions(update.targetVersion, update.fromVersion) <= 0
@@ -203,6 +227,16 @@ export function decodeServiceState(value: unknown): ServiceState | undefined {
     protocol: SERVICE_LAUNCHER_PROTOCOL,
     activeVersion: value.activeVersion,
     ...(update === undefined ? {} : { update }),
+    ...(isRecord(preparation)
+      ? {
+          preparation: {
+            fromVersion: preparation.fromVersion as string,
+            targetVersion: preparation.targetVersion as string,
+            installationId: preparation.installationId as string,
+            sha256: preparation.sha256 as string,
+          },
+        }
+      : {}),
   };
 }
 
@@ -274,7 +308,7 @@ export function decodeServiceLauncherChildMessage(
 ): ServiceLauncherChildMessage | undefined {
   if (!isRecord(value)) return undefined;
   if (
-    value.type === "request-update" &&
+    (value.type === "request-update" || value.type === "prepare-update") &&
     typeof value.targetVersion === "string" &&
     typeof value.dbPath === "string"
   ) {
@@ -299,6 +333,8 @@ export function decodeServiceLauncherParentMessage(
   value: unknown,
 ): ServiceLauncherParentMessage | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.type === "update-prepared" && typeof value.targetVersion === "string")
+    return { type: value.type, targetVersion: value.targetVersion };
   if (value.type === "update-rejected" && typeof value.reason === "string") {
     return { type: value.type, reason: value.reason };
   }

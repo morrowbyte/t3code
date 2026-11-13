@@ -126,6 +126,10 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
       }),
   });
   const launcher = ServiceLauncherClient.ServiceLauncherClient.of({
+    prepareUpdate: () =>
+      Effect.sync(() => {
+        order.push("prepare");
+      }),
     managed: options.managed ?? true,
     requestUpdate:
       options.requestUpdate ??
@@ -181,7 +185,7 @@ it.layer(NodeServices.layer)("server self update", (it) => {
         method: "boot-service",
         updateId: "launcher-id",
       });
-      expect(order).toEqual(["download", "extract", "preflight", "accept"]);
+      expect(order).toEqual(["prepare", "download", "extract", "preflight", "accept"]);
       const history = (yield* selfUpdate.history!.list).entries;
       expect(history[0]?.status).toBe("awaiting-restart");
       expect(history[0]?.receiptId).toBe("launcher-id");
@@ -211,7 +215,7 @@ it.layer(NodeServices.layer)("server self update", (it) => {
         method: "boot-service",
         updateId: "launcher-id",
       });
-      expect(order).toEqual(["download", "extract", "preflight", "accept"]);
+      expect(order).toEqual(["prepare", "download", "extract", "preflight", "accept"]);
     }),
   );
 
@@ -358,7 +362,7 @@ it.layer(NodeServices.layer)("server self update", (it) => {
 
       yield* Deferred.succeed(releaseDownload, undefined);
       yield* Deferred.await(accepted);
-      expect(order).toEqual(["download", "extract", "preflight", "accept"]);
+      expect(order).toEqual(["prepare", "download", "extract", "preflight", "accept"]);
       expect((yield* selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip)).reason).toBe(
         "A server update is already in progress.",
       );

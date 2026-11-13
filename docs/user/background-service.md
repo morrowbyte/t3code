@@ -22,6 +22,10 @@ Uninstalling the service leaves your projects, threads, and settings intact.
 Running `t3 service install` again repairs a service that `t3 service status`
 reports as broken.
 
+For a custom Linux unit, pass its exact name to service commands, for example
+`t3 service status --unit crew.service`. Keep `--base-dir` consistent with that
+unit's T3 home. Service commands leave units for another T3 home alone.
+
 `t3 update` downloads the newest release on your channel and switches `t3`
 and the service to it. Restarting interrupts running agent turns, terminals,
 and remote clients, so it asks first; answer no and the service keeps running
@@ -30,6 +34,17 @@ script. A server you started by hand is left running; stop and start it again
 to pick up the new version. Wait for any remote update already in progress
 before updating; to match a remote client's version, follow
 [Updating T3 Code](./updating.md).
+
+If an older service cannot prepare its next runtime within the retention limit,
+use an up-to-date CLI on that machine. Stop its exact systemd user unit, then run
+`t3 service update-stopped VERSION --base-dir /path/to/t3-home --unit UNIT.service` and start
+that unit again. This command requires a stopped server and launcher, verifies
+the download against the same profile, and commits through the normal trial and
+database-backup path. A failed preparation keeps the current runtime available;
+retry while stopped or start the unit to run its recorded recovery. Linux units
+installed by the current CLI use `runtime/launcher` under T3 home as their stable executable. For an older custom unit,
+point `ExecStart` there with `__service-launcher` before starting it again, keeping
+its existing environment and other settings.
 
 Pass an exact version (`t3 update 0.0.42`) to pin one, `--channel nightly` to
 switch trains, or `--allow-downgrade` to move backwards. `preview` is a

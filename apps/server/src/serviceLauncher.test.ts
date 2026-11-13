@@ -13,7 +13,6 @@ import { vi } from "vite-plus/test";
 import {
   databaseBackupBlocker,
   Launcher,
-  main,
   readServiceEnvironment,
   type BackupSpaceProbe,
   readServiceState,
@@ -536,7 +535,14 @@ if (context.update?.status === "pending") {
         Effect.sync(() => vi.spyOn(console, "error")),
         (spy) => Effect.sync(() => spy.mockRestore()),
       );
-      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      const handoff = vi.fn<(version: string) => void>();
+      const launcher = new Launcher(
+        root,
+        yield* Effect.promise(() => readServiceState(statePath)),
+        {
+          handoff,
+        },
+      );
       yield* Effect.promise(() =>
         launcher.run().then(
           () => Promise.reject(new Error("launcher unexpectedly completed")),
@@ -547,6 +553,7 @@ if (context.update?.status === "pending") {
       const state = yield* Effect.promise(() => readServiceState(statePath));
       assert.equal(state.activeVersion, "1.1.0");
       assert.equal(state.update?.status, "committed");
+      assert.deepEqual(handoff.mock.calls, [["1.1.0"]]);
       assert.isEmpty(cleanupErrors.mock.calls);
     }),
   );
@@ -599,8 +606,17 @@ if (context.update?.status === "pending") {
         }),
       );
 
+      const handoff = vi.fn<(version: string) => void>();
+      const launcher = new Launcher(
+        root,
+        yield* Effect.promise(() => readServiceState(statePath)),
+        {
+          environment: yield* Effect.promise(() => readServiceEnvironment(root)),
+          handoff,
+        },
+      );
       yield* Effect.promise(() =>
-        main().then(
+        launcher.run().then(
           () => Promise.reject(new Error("launcher unexpectedly completed")),
           () => Promise.resolve(),
         ),
@@ -609,6 +625,7 @@ if (context.update?.status === "pending") {
       const state = yield* Effect.promise(() => readServiceState(statePath));
       assert.equal(state.activeVersion, "1.0.0");
       assert.equal(state.update?.status, "rolled-back");
+      assert.deepEqual(handoff.mock.calls, [["1.1.0"], ["1.0.0"]]);
       assert.equal(
         state.update?.status === "rolled-back" ? state.update.reason : undefined,
         "invalid-prepared",

@@ -127,10 +127,12 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
       const failed = command === control.failCommand;
       if (!failed && command === "loginctl enable-linger --no-ask-password 501")
         control.linger = "yes";
-      if (!failed && command === "systemctl --user enable t3code.service") control.enabled = true;
-      if (!failed && command === "systemctl --user restart t3code.service") control.active = true;
+      if (!failed && input.command === "systemctl" && input.args[1] === "enable")
+        control.enabled = true;
+      if (!failed && input.command === "systemctl" && input.args[1] === "restart")
+        control.active = true;
       // A timed-out stop may still stop the service.
-      if (command === "systemctl --user stop t3code.service") control.active = false;
+      if (input.command === "systemctl" && input.args[1] === "stop") control.active = false;
       if (
         control.stateAfterStop !== undefined &&
         (command === "systemctl --user stop t3code.service" ||
@@ -169,8 +171,9 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
     environmentPath: string | undefined = installerPath,
     cliVersion = "1.2.3",
     serviceBaseDir = baseDir,
-    insideService = false,
+    insideService: boolean | string = false,
     hostExecPath = "/usr/bin/t3",
+    unit?: string,
   ) =>
     Effect.gen(function* () {
       const paths = pinnedRuntimePaths(path, serviceBaseDir, cliVersion, platform);
@@ -181,6 +184,7 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
         baseDir: serviceBaseDir,
         logsDir: path.join(serviceBaseDir, "userdata", "logs"),
         cliVersion,
+        ...(unit === undefined ? {} : { unit }),
         host: { execPath: hostExecPath },
       });
     }).pipe(
@@ -201,7 +205,12 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
                 ...(environmentPath === undefined || environmentPath === ""
                   ? {}
                   : { PATH: environmentPath }),
-                ...(insideService ? { T3_BOOT_SERVICE_UNIT: "t3code.service" } : {}),
+                ...(insideService
+                  ? {
+                      T3_BOOT_SERVICE_UNIT:
+                        typeof insideService === "string" ? insideService : "t3code.service",
+                    }
+                  : {}),
               },
             }),
           ),
@@ -318,20 +327,52 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
   it.effect("installs, reports current state, and uninstalls", () =>
     Effect.gen(function* () {
       const { service, fs, statePath, timeouts, runtime } = yield* makeHarness();
+      const path = yield* Path.Path;
       const plan = yield* service.install();
+      const launcherPath = path.join(plan.baseDir, "runtime", "launcher");
 
       expect(parseServiceState(yield* fs.readFileString(statePath))).toEqual({
         protocol: SERVICE_LAUNCHER_PROTOCOL,
         activeVersion: "1.2.3",
       });
-      expect(plan.program).toEqual([runtime.entryPath, "__service-launcher"]);
+      expect(plan.program).toEqual([launcherPath, "__service-launcher"]);
       const unit = yield* fs.readFileString(plan.unitPath);
-      expect(BootService.bootServiceProgramOf(unit)).toBe(runtime.entryPath);
+      expect(BootService.bootServiceProgramOf(unit)).toBe(launcherPath);
+      expect(yield* fs.realPath(launcherPath)).toBe(runtime.entryPath);
       expect(unit).toMatch(/^ExecStart=(?:"(?:\\.|[^"\\])*"|\S+) __service-launcher$/m);
       expect(yield* service.status).toMatchObject({
         current: true,
         installedVersion: "1.2.3",
       });
+      yield* fs.writeFileString(plan.unitPath, unit.replace(launcherPath, runtime.entryPath));
+      expect(yield* service.status).toMatchObject({ installed: true, current: false });
+      const repairedState = {
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        activeVersion: "1.2.3",
+        update: {
+          id: "previous",
+          fromVersion: "1.2.2",
+          targetVersion: "1.2.3",
+          status: "committed",
+        },
+        preparation: {
+          fromVersion: "1.2.2",
+          targetVersion: "1.2.3",
+          installationId: "a".repeat(64),
+          sha256: "b".repeat(64),
+        },
+      };
+      yield* fs.writeFileString(statePath, JSON.stringify(repairedState));
+      yield* service.install();
+      expect(parseServiceState(yield* fs.readFileString(statePath))).toEqual(repairedState);
+      expect(yield* fs.readFileString(plan.unitPath)).toBe(unit);
+      yield* fs.remove(launcherPath);
+      expect((yield* service.status).current).toBe(false);
+      yield* fs.symlink(runtime.sentinelPath, launcherPath);
+      expect((yield* service.status).current).toBe(false);
+      yield* fs.remove(launcherPath);
+      yield* fs.symlink(runtime.entryPath, launcherPath);
+      expect((yield* service.status).current).toBe(true);
       const pendingState = JSON.stringify({
         protocol: SERVICE_LAUNCHER_PROTOCOL,
         activeVersion: "1.2.3",
@@ -489,8 +530,15 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
           activeVersion: "1.2.4",
         });
         expect(BootService.bootServiceProgramOf(yield* fs.readFileString(plan.unitPath))).toBe(
-          pinnedRuntimePaths(path, baseDir, "1.2.4", platform).entryPath,
+          platform === "linux"
+            ? path.join(baseDir, "runtime", "launcher")
+            : pinnedRuntimePaths(path, baseDir, "1.2.4", platform).entryPath,
         );
+        if (platform === "linux") {
+          expect(yield* fs.realPath(plan.program[0]!)).toBe(
+            pinnedRuntimePaths(path, baseDir, "1.2.4", platform).entryPath,
+          );
+        }
         expect(
           commands.filter(
             (command) =>
@@ -514,10 +562,9 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       const path = yield* Path.Path;
       yield* service.install();
       const newer = yield* makeService(undefined, "1.2.4");
-      const unitPath = (yield* service.status).unitPath;
-      yield* fs.remove(unitPath);
-      yield* fs.makeDirectory(unitPath);
-      yield* fs.writeFileString(path.join(unitPath, "occupied"), "");
+      const launcherPath = path.join(path.dirname(statePath), "launcher");
+      yield* fs.remove(launcherPath);
+      yield* fs.writeFileString(launcherPath, "unowned launcher");
 
       const error = yield* newer.install({ start: false }).pipe(Effect.flip);
       expect(error._tag).toBe("BootServiceInstallError");
@@ -612,7 +659,7 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
     }),
   );
 
-  it.effect("restart leaves a service that serves another T3 home alone", () =>
+  it.effect("leaves a service that serves another T3 home alone", () =>
     Effect.gen(function* () {
       const { service, fs, commands, makeService } = yield* makeHarness();
       yield* service.install();
@@ -622,7 +669,99 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
 
       const other = yield* makeService(undefined, "1.2.3", path.join(otherHome, ".t3"));
       expect(yield* other.restart).toBe("skipped");
+      expect(yield* other.uninstall).toBe(false);
+      expect((yield* other.install().pipe(Effect.flip))._tag).toBe("BootServiceInstallError");
+      expect(yield* other.status).toMatchObject({ installed: true, current: false });
       expect(commands.filter((command) => command.startsWith("systemctl "))).toEqual([]);
+    }),
+  );
+
+  it.effect("manages only the selected custom unit and rejects invalid unit names", () =>
+    Effect.gen(function* () {
+      const { service, fs, commands, invocations, makeService, baseDir, statePath } =
+        yield* makeHarness();
+      const original = yield* service.install();
+      const originalUnit = yield* fs.readFileString(original.unitPath);
+      const custom = yield* makeService(
+        undefined,
+        undefined,
+        undefined,
+        false,
+        undefined,
+        "crew.service",
+      );
+      commands.length = 0;
+      const plan = yield* custom.install();
+      expect(plan.unitPath).toBe(original.unitPath.replace("t3code.service", "crew.service"));
+      expect(yield* fs.readFileString(plan.unitPath)).toContain(
+        "Environment=T3_BOOT_SERVICE_UNIT=crew.service",
+      );
+      expect((yield* custom.status).current).toBe(true);
+      expect(commands).toContain("systemctl --user is-active crew.service");
+      expect(commands).toContain("systemctl --user is-enabled crew.service");
+      const inherited = yield* makeService(undefined, undefined, undefined, "crew.service");
+      expect((yield* inherited.status).unitPath).toBe(plan.unitPath);
+      expect(yield* inherited.restart).toBe("queued");
+      const explicit = yield* makeService(
+        undefined,
+        undefined,
+        undefined,
+        "t3code.service",
+        undefined,
+        "crew.service",
+      );
+      expect((yield* explicit.status).unitPath).toBe(plan.unitPath);
+      invocations.length = 0;
+      expect(yield* explicit.restart).toBe("restarted");
+      expect(invocations.some(({ args }) => args.includes("--no-block"))).toBe(false);
+      commands.length = 0;
+      yield* custom.withStopped(Effect.void);
+      expect(commands).toEqual([
+        "systemctl --user is-enabled crew.service",
+        "systemctl --user is-active crew.service",
+        "systemctl --user stop crew.service",
+        "systemctl --user restart crew.service",
+      ]);
+      const otherDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-custom-other-" });
+      const other = yield* makeService(
+        undefined,
+        undefined,
+        otherDir,
+        false,
+        undefined,
+        "crew.service",
+      );
+      commands.length = 0;
+      expect(yield* other.restart).toBe("skipped");
+      yield* other.withStopped(Effect.void);
+      expect(yield* other.uninstall).toBe(false);
+      const state = yield* fs.readFileString(statePath);
+      expect((yield* other.install().pipe(Effect.flip))._tag).toBe("BootServiceInstallError");
+      expect((yield* other.status).current).toBe(false);
+      expect(commands).toEqual([]);
+      expect(yield* fs.readFileString(statePath)).toBe(state);
+      expect(yield* custom.uninstall).toBe(true);
+      expect(yield* fs.readFileString(original.unitPath)).toBe(originalUnit);
+      expect((yield* service.status).current).toBe(true);
+      for (const unit of [
+        "../crew.service",
+        "/tmp/crew.service",
+        "--crew.service",
+        "crew.timer",
+        "crew\n.service",
+      ]) {
+        commands.length = 0;
+        const error = yield* makeService(
+          undefined,
+          undefined,
+          baseDir,
+          false,
+          undefined,
+          unit,
+        ).pipe(Effect.flip);
+        expect(error._tag).toBe("BootServiceInstallError");
+        expect(commands).toEqual([]);
+      }
     }),
   );
 
@@ -632,12 +771,19 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       const path = yield* Path.Path;
       const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-handoff-" });
       const baseDir = path.join(home, "T3 Data 100%", "${UNSET}", "$literal");
-      const outside = yield* makeService(undefined, "1.2.3", baseDir);
+      const outside = yield* makeService(
+        undefined,
+        "1.2.3",
+        baseDir,
+        false,
+        undefined,
+        "crew.service",
+      );
       const plan = yield* outside.install();
       const statePath = path.join(baseDir, "runtime", "service-state.json");
       const state = yield* fs.readFileString(statePath);
       const unit = yield* fs.readFileString(plan.unitPath);
-      const inside = yield* makeService(undefined, "1.2.4", baseDir, true);
+      const inside = yield* makeService(undefined, "1.2.4", baseDir, "crew.service");
       commands.length = 0;
       invocations.length = 0;
 
@@ -645,7 +791,7 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
 
       expect(yield* fs.readFileString(statePath)).toBe(state);
       expect(yield* fs.readFileString(plan.unitPath)).toBe(unit);
-      expect(commands).not.toContain("systemctl --user stop t3code.service");
+      expect(commands).not.toContain("systemctl --user stop crew.service");
       expect(result).toMatchObject({ handedOff: true, logPath: plan.logPath });
       const handoffs = invocations.filter(({ command }) => command === "systemd-run");
       expect(handoffs).toHaveLength(1);
@@ -661,6 +807,8 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
         "install",
         "--base-dir",
         path.join(home, "T3 Data 100%", "$${UNSET}", "$$literal"),
+        "--unit",
+        "crew.service",
         "--allow-downgrade",
       ]);
 
@@ -671,7 +819,7 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       expect(yield* fs.readFileString(statePath)).toBe(state);
       expect(yield* fs.readFileString(plan.unitPath)).toBe(unit);
       expect(control.active).toBe(true);
-      expect(commands).not.toContain("systemctl --user stop t3code.service");
+      expect(commands).not.toContain("systemctl --user stop crew.service");
     }),
   );
 

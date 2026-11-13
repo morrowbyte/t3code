@@ -62,14 +62,16 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands
         const fs = yield* FileSystem.FileSystem;
         const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-cli-test-" });
         const { service, installOptions } = makeTestService(newerServiceStatus);
-        vi.spyOn(BootService, "layer").mockReturnValue(
-          Layer.succeed(BootService.BootService, service),
-        );
+        const serviceLayer = vi
+          .spyOn(BootService, "layer")
+          .mockReturnValue(Layer.succeed(BootService.BootService, service));
 
         const error = yield* Command.runWith(serviceCommand, { version: packageJson.version })([
           command,
           "--base-dir",
           baseDir,
+          "--unit",
+          "crew.service",
         ]).pipe(
           Effect.provideService(HostProcess.Environment, {}),
           Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
@@ -82,6 +84,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands
           targetVersion: packageJson.version,
         });
         expect(installOptions).toEqual([]);
+        expect(serviceLayer).toHaveBeenCalledWith(
+          expect.objectContaining({ baseDir, unit: "crew.service" }),
+        );
       }),
   );
 

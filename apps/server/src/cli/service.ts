@@ -5,8 +5,9 @@ import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import { Command, Flag, GlobalFlag, Prompt } from "effect/cli";
+import { Argument, Command, Flag, GlobalFlag, Prompt } from "effect/cli";
 import { FetchHttpClient } from "effect/http";
 
 import packageJson from "../../package.json" with { type: "json" };
@@ -14,15 +15,17 @@ import * as BootService from "../cloud/bootService.ts";
 import * as ServiceProtection from "../cloud/serviceProtection.ts";
 import { compareExactServiceVersions, SERVICE_ENV_FILE } from "../cloud/serviceProtocol.ts";
 import * as ServerConfig from "../config.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import { resolveEntryPath } from "./invocation.ts";
 
-export const layer = (config: ServerConfig.ServerConfig["Service"]) =>
+export const layer = (config: ServerConfig.ServerConfig["Service"], unit?: string) =>
   BootService.layer({
     baseDir: config.baseDir,
     logsDir: config.logsDir,
     cliVersion: packageJson.version,
+    ...(unit === undefined ? {} : { unit }),
   }).pipe(Layer.provide(ProcessRunner.layer), Layer.provide(FetchHttpClient.layer));
 
 export type ServiceReconcileResult =
@@ -154,7 +157,8 @@ function formatServiceStatus(
   }
   const installedVersion = status.installedVersion ?? cliVersion;
   const problems = (status.problems ?? []).map(
-    (problem) => `  [${problem}] ${BootService.formatBootServiceProblem(problem)}`,
+    (problem) =>
+      `  [${problem}] ${BootService.formatBootServiceProblem(problem, status.unitPath.split("/").at(-1))}`,
   );
   if (
     !status.current &&
@@ -183,16 +187,31 @@ function formatServiceStatus(
 }
 
 const runServiceCommand = Effect.fn("cli.service.run")(function* <A, E, R>(
-  flags: { readonly baseDir: Parameters<typeof resolveCliAuthConfig>[0]["baseDir"] },
+  flags: {
+    readonly baseDir: Parameters<typeof resolveCliAuthConfig>[0]["baseDir"];
+    readonly unit?: Option.Option<string>;
+  },
   run: Effect.Effect<A, E, R>,
 ) {
   const logLevel = yield* GlobalFlag.LogLevel;
   const config = yield* resolveCliAuthConfig(flags, logLevel);
-  return yield* run.pipe(Effect.provide(Layer.merge(layer(config), ServerConfig.layer(config))));
+  const unit = flags.unit === undefined ? undefined : Option.getOrUndefined(flags.unit);
+  return yield* run.pipe(
+    Effect.provide(Layer.merge(layer(config, unit), ServerConfig.layer(config))),
+  );
 });
 
-const serviceReconcileFlags = {
+const serviceFlags = {
   ...projectLocationFlags,
+  unit: Flag.String("unit").pipe(
+    Flag.withDescription("Select the systemd user service unit."),
+    Flag.withSchema(BootService.BootServiceUnitName),
+    Flag.optional,
+  ),
+};
+
+const serviceReconcileFlags = {
+  ...serviceFlags,
   allowDowngrade: Flag.Boolean("allow-downgrade").pipe(
     Flag.withDescription("Allow replacing a newer installed service with this older CLI version."),
     Flag.withDefault(false),
@@ -246,7 +265,28 @@ const serviceUpdateCommand = Command.make("update", serviceReconcileFlags).pipe(
   ),
 );
 
-const serviceRestartCommand = Command.make("restart", projectLocationFlags).pipe(
+const serviceUpdateStoppedCommand = Command.make("update-stopped", {
+  ...serviceFlags,
+  targetVersion: Argument.String("target-version"),
+}).pipe(
+  Command.withDescription("Update an already stopped service to an exact release version."),
+  Command.withHandler((flags) =>
+    runServiceCommand(
+      flags,
+      Effect.promise(() => import("../cloud/selfUpdate.ts")).pipe(
+        Effect.flatMap(({ updateStoppedRuntime }) =>
+          updateStoppedRuntime({ targetVersion: flags.targetVersion }),
+        ),
+        Effect.provide(
+          Layer.mergeAll(ProcessRunner.layer, FetchHttpClient.layer, ManagedPolicy.layer),
+        ),
+        Effect.andThen(Console.log(`Service active version: t3@${flags.targetVersion}`)),
+      ),
+    ),
+  ),
+);
+
+const serviceRestartCommand = Command.make("restart", serviceFlags).pipe(
   Command.withDescription(
     "Restart the background service. Picks up a version installed by `t3 update` that was not restarted at the time.",
   ),
@@ -271,7 +311,7 @@ const serviceRestartCommand = Command.make("restart", projectLocationFlags).pipe
   ),
 );
 
-const serviceUninstallCommand = Command.make("uninstall", projectLocationFlags).pipe(
+const serviceUninstallCommand = Command.make("uninstall", serviceFlags).pipe(
   Command.withDescription("Stop and remove the T3 Code background service."),
   Command.withHandler((flags) =>
     runServiceCommand(
@@ -287,7 +327,7 @@ const serviceUninstallCommand = Command.make("uninstall", projectLocationFlags).
   ),
 );
 
-const serviceStatusCommand = Command.make("status", projectLocationFlags).pipe(
+const serviceStatusCommand = Command.make("status", serviceFlags).pipe(
   Command.withDescription("Show whether the T3 Code background service is installed."),
   Command.withHandler((flags) =>
     runServiceCommand(
@@ -295,9 +335,14 @@ const serviceStatusCommand = Command.make("status", projectLocationFlags).pipe(
       Effect.gen(function* () {
         const service = yield* BootService.BootService;
         const path = yield* Path.Path;
+        const { baseDir } = yield* ServerConfig.ServerConfig;
         const status = yield* service.status;
         const protection =
-          status.installed && (yield* HostProcess.Platform) === "linux"
+          status.installed &&
+          status.installedBaseDir !== undefined &&
+          path.resolve(status.installedBaseDir) === path.resolve(baseDir) &&
+          path.basename(status.unitPath) === BootService.BOOT_SERVICE_UNIT_FILE &&
+          (yield* HostProcess.Platform) === "linux"
             ? yield* ServiceProtection.readProtection(path.dirname(status.unitPath)).pipe(
                 Effect.provide(ProcessRunner.layer),
               )
@@ -426,5 +471,6 @@ export const serviceCommand = Command.make("service").pipe(
     serviceStatusCommand,
     serviceProtectCommand,
     serviceUpdateCommand,
+    serviceUpdateStoppedCommand,
   ]),
 );

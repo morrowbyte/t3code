@@ -13,9 +13,15 @@ import {
   serverRestoreLimits,
   serverRuntimeStorage,
 } from "./serverRestoreStore.ts";
-import { verifyServerRestoreRuntime } from "./serverRestoreManifest.ts";
+import {
+  serverRestoreDatabaseBlocker,
+  serverRestoreIdentity,
+  serverRestoreQualificationBlocker,
+  verifyServerRestoreRuntime,
+} from "./serverRestoreManifest.ts";
 import {
   isExactServiceVersion,
+  compareExactServiceVersions,
   parseServiceState,
   SERVICE_STATE_FILE,
   type ServiceState,
@@ -291,6 +297,7 @@ async function runtimeReferences(baseDir: string) {
   ].filter(NodePath.isAbsolute);
   for (const launcher of new Set([
     ...recorded,
+    ...(process.platform === "linux" ? [NodePath.join(baseDir, "runtime", "launcher")] : []),
     ...directories.map((directory) => NodePath.join(directory, launcherName)),
   ])) {
     try {
@@ -331,10 +338,22 @@ async function retentionSnapshot(baseDir: string, nextState?: ServiceState) {
     // Legacy homes cannot qualify a predecessor until their profile has initialized.
     if (inventory === undefined)
       for (const version of (await serverRuntimeStorage(baseDir)).entries) keep.add(version);
-    const predecessor = inventory?.candidates.find((candidate) => candidate.blockedReason === null);
-    if (predecessor !== undefined) keep.add(predecessor.version);
-    else if (state.update?.status === "committed" && state.update.restore === undefined)
-      keep.add(state.update.fromVersion);
+    const preparation = state.preparation;
+    if (preparation?.fromVersion === state.activeVersion) {
+      const baseline = await qualifiedActiveRuntime(baseDir, state.activeVersion);
+      if (
+        baseline.installationId !== preparation.installationId ||
+        baseline.sha256 !== preparation.sha256
+      )
+        throw new Error("The prepared rollback baseline changed; no runtime was removed.");
+    } else {
+      const predecessor = inventory?.candidates.find(
+        (candidate) => candidate.blockedReason === null,
+      );
+      if (predecessor !== undefined) keep.add(predecessor.version);
+      else if (state.update?.status === "committed" && state.update.restore === undefined)
+        keep.add(state.update.fromVersion);
+    }
   }
   const references = await runtimeReferences(baseDir);
   const fold = (value: string) => (process.platform === "win32" ? value.toLowerCase() : value);
@@ -348,6 +367,19 @@ async function retentionSnapshot(baseDir: string, nextState?: ServiceState) {
     );
   };
   return { versionsDir, state, keep, referenced };
+}
+
+async function qualifiedActiveRuntime(baseDir: string, version: string) {
+  const identity = await serverRestoreIdentity(baseDir);
+  const directory = NodePath.join(identity.baseDir, "runtime", "versions", version);
+  if ((await readOptional(NodePath.join(directory, ".install-complete")))?.trim() !== version)
+    throw new Error("The active runtime is incomplete; its predecessor remains protected.");
+  const verified = await verifyServerRestoreRuntime(directory, version);
+  const blocker =
+    (await serverRestoreQualificationBlocker(identity, version, verified.sha256)) ??
+    serverRestoreDatabaseBlocker(identity.dbPath, verified.manifest);
+  if (blocker !== undefined) throw new Error(blocker);
+  return { installationId: identity.installationId, sha256: verified.sha256 };
 }
 
 async function cleanUnused(baseDir: string, reuseVersion?: string) {
@@ -493,6 +525,28 @@ export async function acquireServerRuntimeRetention(
   return {
     release: () => db.close(),
     metadataBytes,
+    prepare: async (state: ServiceState, targetVersion: string): Promise<ServiceState> => {
+      const snapshot = await cleanUnused(baseDir);
+      if (
+        snapshot.candidate !== undefined ||
+        snapshot.state?.update?.status === "pending" ||
+        JSON.stringify(snapshot.state) !== JSON.stringify(state)
+      )
+        throw new Error("A concurrent runtime transaction needs recovery before preparation.");
+      if (
+        !isExactServiceVersion(targetVersion) ||
+        compareExactServiceVersions(targetVersion, state.activeVersion) <= 0
+      )
+        throw new Error("Update preparation requires a newer exact runtime version.");
+      return {
+        ...state,
+        preparation: {
+          fromVersion: state.activeVersion,
+          targetVersion,
+          ...(await qualifiedActiveRuntime(baseDir, state.activeVersion)),
+        },
+      };
+    },
     clean: async () => {
       await cleanUnused(baseDir);
       await check();
@@ -505,6 +559,10 @@ export async function acquireServerRuntimeRetention(
       );
       if (
         state?.update?.status === "pending" ||
+        (state?.preparation?.fromVersion === state?.activeVersion &&
+          state?.preparation !== undefined &&
+          state.preparation.targetVersion !== version &&
+          version !== state.activeVersion) ||
         (candidate !== undefined && (!cached || candidate.version !== version))
       )
         throw new Error(
