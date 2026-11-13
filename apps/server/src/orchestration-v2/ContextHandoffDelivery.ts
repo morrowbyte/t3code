@@ -40,7 +40,13 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       return { context: "", delivered: Effect.void, unsent: Effect.void };
     if (
       pending.some(
-        (handoff) => handoff.history?.messages.length === 0 && handoff.history.omittedItems > 0,
+        ({ history }) =>
+          history !== undefined &&
+          (((history.omittedItems > 0 || (history.omittedItemIds?.length ?? 0) > 0) &&
+            (history.messages.length === 0 || history.requiredItemIds === undefined)) ||
+            history.requiredItemIds?.some(
+              (itemId) => !history.messages.some((message) => message.itemId === itemId),
+            )),
       )
     ) {
       if (input.deferInline) return { context: "", delivered: Effect.void, unsent: Effect.void };
@@ -80,6 +86,9 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       messages,
       coverage: fullCoverage,
       omittedItems: pending.reduce((sum, handoff) => sum + (handoff.history?.omittedItems ?? 0), 0),
+      requiredItemIds: pending
+        .flatMap((handoff) => handoff.history?.requiredItemIds ?? [])
+        .filter((itemId) => !input.alreadyDeliveredItemIds.has(itemId)),
       budget,
     }).pipe(Effect.catch((cause) => (input.deferInline ? Effect.void : Effect.fail(cause))));
     if (selected === undefined) return { context: "", delivered: Effect.void, unsent: Effect.void };

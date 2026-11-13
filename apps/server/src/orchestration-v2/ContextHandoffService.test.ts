@@ -94,6 +94,7 @@ it.layer(layerTest)("ContextHandoffService legacy import", (it) => {
 
       assert.equal(handoff.strategy, "manual_context");
       assert.deepStrictEqual(handoff.fromProviderThreadIds, []);
+      assert.deepEqual(handoff.history?.requiredItemIds, [TurnItemId.make("turn-item:one")]);
       assert.include(handoff.summaryText, "What did we decide?");
       assert.include(handoff.summaryText, "keep the migration lightweight");
     }),

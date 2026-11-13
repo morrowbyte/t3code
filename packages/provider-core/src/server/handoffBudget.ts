@@ -227,6 +227,7 @@ export function selectHistory(input: {
   readonly messages: ReadonlyArray<OrchestrationV2HistoricalMessage>;
   readonly coverage: string;
   readonly omittedItems?: number;
+  readonly requiredItemIds?: ReadonlyArray<OrchestrationV2HistoricalMessage["itemId"]>;
   readonly budget: number;
   readonly requireHumanRequests?: boolean;
 }) {
@@ -236,12 +237,15 @@ export function selectHistory(input: {
     (message.createdBy === "user" || message.createdBy === undefined) &&
     message.senderThreadId === undefined;
   const required = new Set<number>();
+  const missingRequired = new Set(input.requiredItemIds);
   const lastByThread = new Map<string, number>();
   messages.forEach((message, index) => {
+    if (missingRequired.delete(message.itemId)) required.add(index);
     if (input.requireHumanRequests === false || !isUserRequest(message)) return;
     if (!lastByThread.has(message.threadId)) required.add(index);
     lastByThread.set(message.threadId, index);
   });
+  if (missingRequired.size > 0) throw new ContextHandoffBudgetError();
   for (const index of lastByThread.values()) required.add(index);
   const messageCost = (message: OrchestrationV2HistoricalMessage) =>
     Math.max(
@@ -285,6 +289,7 @@ export function selectHistory(input: {
   return {
     coverage,
     messages: messages.filter((_, index) => selected.has(index)),
+    requiredItemIds: requiredMessages.map((message) => message.itemId),
     omittedItemIds: messages
       .filter((_, index) => !selected.has(index))
       .map((message) => message.itemId),
