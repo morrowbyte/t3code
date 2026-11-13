@@ -62,14 +62,23 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
     async connectDesktopPage(endpoint: string) {
       const context = makeContext(undefined, desktopPageUrl);
       context.page.viewportSize.mockReturnValue(null);
-      const connection = { endpoint, context, closed: false };
+      const events = new NodeEvents.EventEmitter();
+      const connection = {
+        endpoint,
+        context,
+        closed: false,
+        disconnect: () => {
+          connection.closed = true;
+          events.emit("disconnected");
+        },
+      };
       desktopConnections.push(connection);
       desktopDetaches.emit("connected");
       return {
         browser: {
-          close: async () => {
-            connection.closed = true;
-          },
+          once: events.once.bind(events),
+          isConnected: () => !connection.closed,
+          close: async () => connection.disconnect(),
         },
         page: context.page as unknown as Page,
       };
@@ -342,6 +351,7 @@ const desktopConnections: Array<{
   endpoint: string;
   context: ReturnType<typeof makeContext>;
   closed: boolean;
+  disconnect: () => void;
 }> = [];
 let nativeHandler: DesktopChannel.DesktopPrivateEntryHandler | undefined;
 let nativeReplyWaiter: ((response: DesktopBrowserPrivateEntryResponse) => void) | undefined;
@@ -2634,7 +2644,7 @@ it.live("a desktop page that comes back reconnects without waiting for a viewer"
   Effect.scoped(
     Effect.gen(function* () {
       const manager = yield* Manager.PreviewManager;
-      yield* ServerBrowser.ServerBrowser;
+      const browser = yield* ServerBrowser.ServerBrowser;
       const connected = desktopEvent("connected");
       const detachReady =
         desktopDetaches.listenerCount("detach") === 0 ? desktopEvent("detach-ready") : undefined;
@@ -2646,14 +2656,56 @@ it.live("a desktop page that comes back reconnects without waiting for a viewer"
       const opened = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
       yield* Effect.promise(() => connected);
       yield* Effect.promise(() => desktopConnections[0]!.context.registered);
+      const firstViewerScope = yield* Scope.make();
+      yield* browser
+        .attachViewer({ ...viewerInput(opened.tabId, false), frames: false })
+        .pipe(Effect.provideService(Scope.Scope, firstViewerScope));
+      const firstSession = desktopConnections[0]!.context.sessions.at(-1)!;
       const released = desktopEvent("released");
       desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId: opened.tabId });
       yield* Effect.promise(() => released);
+      yield* Scope.close(firstViewerScope, Exit.void);
+      expect(firstSession.detach).not.toHaveBeenCalled();
       const reconnected = desktopEvent("connected");
       desktopDetaches.emit("attach", { threadId: scope.thread.threadId, tabId: opened.tabId });
       yield* Effect.promise(() => reconnected);
       yield* Effect.promise(() => desktopConnections[1]!.context.registered);
       expect(desktopConnections).toHaveLength(2);
+      const connection = desktopConnections[1]!;
+      const attachedViewerScope = yield* Scope.make();
+      yield* browser
+        .attachViewer({ ...viewerInput(opened.tabId, false), frames: false })
+        .pipe(Effect.provideService(Scope.Scope, attachedViewerScope));
+      const attachedSession = connection.context.sessions.at(-1)!;
+      yield* Scope.close(attachedViewerScope, Exit.void);
+      expect(attachedSession.detach).toHaveBeenCalledOnce();
+      expect(connection.closed).toBe(false);
+      expect(connection.context.page.close).not.toHaveBeenCalled();
+
+      const lostViewerScope = yield* Scope.make();
+      yield* browser
+        .attachViewer({ ...viewerInput(opened.tabId, false), frames: false })
+        .pipe(Effect.provideService(Scope.Scope, lostViewerScope));
+      const lostSession = connection.context.sessions.at(-1)!;
+      const detachStarted = yield* Deferred.make<void>();
+      const detachReleased = yield* Deferred.make<void>();
+      lostSession.detach.mockImplementation(async () => {
+        Effect.runSync(Deferred.succeed(detachStarted, undefined));
+        await Effect.runPromise(Deferred.await(detachReleased));
+      });
+      const closing = yield* Scope.close(lostViewerScope, Exit.void).pipe(Effect.forkScoped);
+      try {
+        yield* Deferred.await(detachStarted);
+        expect(connection.closed).toBe(false);
+        connection.disconnect();
+        yield* Fiber.join(closing);
+        expect(yield* Deferred.isDone(detachReleased)).toBe(false);
+        expect(lostSession.detach).toHaveBeenCalledOnce();
+        expect(connection.context.page.close).not.toHaveBeenCalled();
+      } finally {
+        yield* Deferred.succeed(detachReleased, undefined);
+        yield* Fiber.join(closing);
+      }
       return opened.tabId;
     }).pipe(Effect.provide(layer)),
   ).pipe(

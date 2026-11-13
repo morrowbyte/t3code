@@ -577,7 +577,11 @@ interface ServerTab {
 
   readonly isolatedContext: boolean;
 
-  readonly desktop: { readonly close: () => Promise<void> } | null;
+  readonly desktop: {
+    readonly close: () => Promise<void>;
+    readonly closed: Promise<void>;
+    readonly isConnected: () => boolean;
+  } | null;
   readonly profileId: string | undefined;
   readonly openerTabId: string | undefined;
 
@@ -1094,6 +1098,9 @@ const make = Effect.gen(function* () {
           .pipe(Scope.provide(scope)),
       );
       const connected = await contexts.connectDesktopPage(endpoint);
+      const disconnected = Promise.withResolvers<void>();
+      connected.browser.once("disconnected", () => disconnected.resolve());
+      if (!connected.browser.isConnected()) disconnected.resolve();
       await runPromise(
         Scope.addFinalizer(
           scope,
@@ -1103,6 +1110,8 @@ const make = Effect.gen(function* () {
       return {
         page: connected.page,
         close: () => runPromise(Scope.close(scope, Exit.void)),
+        closed: disconnected.promise,
+        isConnected: () => connected.browser.isConnected(),
       };
     } catch (cause) {
       await runPromise(Scope.close(scope, Exit.void));
@@ -2912,8 +2921,12 @@ const make = Effect.gen(function* () {
       }),
       (session) =>
         Effect.promise(async () => {
-          if (streamsFrames) await session.send("Page.stopScreencast").catch(constVoid);
-          await session.detach().catch(constVoid);
+          if (tab.desktop && !tab.desktop.isConnected()) return;
+          const detach = async () => {
+            if (streamsFrames) await session.send("Page.stopScreencast").catch(constVoid);
+            await session.detach().catch(constVoid);
+          };
+          await (tab.desktop ? Promise.race([detach(), tab.desktop.closed]) : detach());
         }),
     );
     const quality = Math.min(100, Math.max(1, Math.round(input.quality)));
