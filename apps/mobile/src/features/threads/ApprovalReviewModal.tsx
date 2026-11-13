@@ -5,6 +5,9 @@ import {
   type ReviewBundle,
 } from "@t3tools/client-runtime/approvalReview";
 import type { ApprovalReviewAuthority } from "@t3tools/contracts";
+import { commandHighlightLanguage } from "@t3tools/client-runtime/work-log/command-label";
+import type { PendingApproval } from "../../lib/threadActivity";
+import { RecordedExecutionCode } from "./RecordedExecutionCode";
 import {
   useEffect,
   useEffectEvent,
@@ -26,6 +29,8 @@ const SOURCE_PAGE_LINES = 100;
 export function ApprovalReviewModal(props: {
   readonly bundle: ReviewBundle | null;
   readonly detail: string | undefined;
+  readonly requestKind: PendingApproval["requestKind"];
+  readonly theme: "light" | "dark";
   readonly issue: string | null;
   readonly environmentLabel: string;
   readonly requestId: string;
@@ -46,8 +51,10 @@ export function ApprovalReviewModal(props: {
   } | null>(null);
   const verificationResult =
     verification !== null && verification.bundle === props.bundle ? verification.result : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Synchronize asynchronous package verification with this mounted review and discard stale results.
   useEffect(() => {
     onVerification(false);
+    // oxlint-disable-next-line react/set-state-in-effect -- Invalidate the previous external integrity result before checking the current bundle.
     setVerification(null);
     const currentBundle = props.bundle;
     if (!currentBundle) return;
@@ -361,6 +368,13 @@ export function ApprovalReviewModal(props: {
                   </View>
                 ) : null}
               </View>
+            ) : props.requestKind === "command" && props.detail ? (
+              <RecordedExecutionCode
+                code={props.detail}
+                language={commandHighlightLanguage(props.detail)}
+                theme={props.theme}
+                shell
+              />
             ) : (
               <Text selectable className="font-mono text-sm leading-6">
                 {props.detail ?? "No details supplied"}

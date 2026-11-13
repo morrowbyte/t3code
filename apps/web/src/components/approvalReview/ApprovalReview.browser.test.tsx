@@ -408,7 +408,7 @@ it("submits an ordinary provider approval only once through its existing request
     requestKind: "command" as const,
     createdAt: "2026-10-22T00:00:00Z",
     responseCapability: "live" as const,
-    detail: "Read the workspace package manifest",
+    detail: "bash -lc '# Intent: Read workspace package manifest\npython3 -c \"print(42)\"'",
   };
   await using screen = await render(
     <ComposerPendingApprovalActions
@@ -424,6 +424,18 @@ it("submits an ordinary provider approval only once through its existing request
       .find((button) => button.textContent === "Review action")!
       .click();
   });
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  await vi.waitFor(() => {
+    expect(dialog.textContent).toContain("Python");
+    expect(dialog.querySelector("h2")?.textContent).toBe("Read workspace package manifest");
+    expect(
+      [...dialog.querySelectorAll("pre")].some((code) => code.textContent === "print(42)"),
+    ).toBe(true);
+    expect(
+      [...dialog.querySelectorAll("pre")].some((code) => code.textContent === approval.detail),
+    ).toBe(true);
+  });
+  expect(dialog.querySelector(".cm-editor")).toBeNull();
   const approve = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(
     (button) => button.textContent === "Approve once",
   )!;

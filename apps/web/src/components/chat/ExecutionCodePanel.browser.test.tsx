@@ -16,7 +16,10 @@ const harness = vi.hoisted(() => ({
   highlight: vi.fn(({ code }: { code: string }) => code),
 }));
 vi.mock("../../state/queries", () => ({ useTurnItemDetail: harness.query }));
-vi.mock("../../hooks/useTheme", () => ({ useTheme: () => ({ resolvedTheme: "dark" }) }));
+vi.mock("../../hooks/useTheme", () => ({
+  useTheme: () => ({ resolvedTheme: "dark" }),
+  useRenderedAppearance: () => "dark",
+}));
 vi.mock("./HighlightedTokens", () => ({ HighlightedTokens: harness.highlight }));
 import { ExecutionCodePanel } from "./ExecutionCodePanel";
 
@@ -93,6 +96,46 @@ describe("execution code panel", () => {
     await using screen = await render(panel({ wireItem: { ...item, input: large } }));
     expect(inputText(screen.container)).toBe(large);
     expect(harness.highlight).not.toHaveBeenCalled();
+  });
+  it("shows embedded source in its language while retaining the exact shell invocation", async () => {
+    setup();
+    const script = 'print("héllo 🦦")\nprint("done")\n';
+    const shell = `python3 - <<'PY'\n${script}PY`;
+    const input = `/bin/bash -lc "${shell.replace(/["\\$`]/gu, "\\$&")}"`;
+    harness.query.mockReturnValue({ data: null, isPending: false, error: null });
+    await using screen = await render(panel({ wireItem: { ...item, input } }));
+    await vi.waitFor(() =>
+      expect(
+        screen.container.querySelector('[aria-label="Embedded Python script"]')?.textContent,
+      ).toBe(script),
+    );
+    expect(inputText(screen.container)).toBe(input);
+    expect(
+      screen.container
+        .querySelector("details:has([aria-label='Recorded input'])")
+        ?.hasAttribute("open"),
+    ).toBe(true);
+    const redirected = String.raw`python3 -c "print('$HOME')" > result.txt`;
+    await screen.rerender(panel({ wireItem: { ...item, input: redirected } }));
+    await vi.waitFor(() =>
+      expect(screen.container.textContent).toContain("Python · before shell processing"),
+    );
+    expect(inputText(screen.container)).toBe(redirected);
+    expect(
+      screen.container
+        .querySelector("details:has([aria-label='Recorded input'])")
+        ?.hasAttribute("open"),
+    ).toBe(true);
+    expect(screen.container.querySelector('[aria-label="Copy embedded Python script"]')).toBeNull();
+    const powershellSource = 'Write-Output "eins"; Write-Output "zwei"';
+    await screen.rerender(
+      panel({ wireItem: { ...item, input: `pwsh -NoProfile -Command '${powershellSource}'` } }),
+    );
+    await vi.waitFor(() =>
+      expect(
+        screen.container.querySelector('[aria-label="Embedded PowerShell script"]')?.textContent,
+      ).toBe(powershellSource),
+    );
   });
   it("fetches through the existing authorized item route and keeps command/output separate after completion", async () => {
     setup();

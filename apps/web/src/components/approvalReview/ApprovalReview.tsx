@@ -20,6 +20,8 @@ import type {
   RuntimeRequestId,
 } from "@t3tools/contracts";
 import { hashTelemetryId } from "@t3tools/shared/telemetryId";
+import { authoredCodeIntent } from "@t3tools/shared/toolActivity";
+import { ShellCommandBlock } from "../chat/ShellCommandBlock";
 import { Dialog } from "../ui/dialog";
 import { KeyboardLayerContext } from "../ui/keyboardLayer";
 import { Button } from "../ui/button";
@@ -126,6 +128,7 @@ function privilegedHash(requestId: RuntimeRequestId, command: PrivilegedCommandA
 }
 
 function SourceUnavailable({ onFailure }: { onFailure: () => void }) {
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Report a mounted source-viewer boundary failure to its review owner.
   useEffect(() => onFailure(), [onFailure]);
   return <p role="alert">The source viewer could not load. Close and reopen the review.</p>;
 }
@@ -136,6 +139,8 @@ function ReviewContent(props: ApprovalReviewProps) {
   const bundle = parsed.kind === "bundle" ? parsed.bundle : null;
   const authority = props.approval.approvalReview;
   const privileged = props.privilegedCommand;
+  const ordinaryCommand =
+    !privileged && !bundle && parsed.kind === "none" && props.approval.requestKind === "command";
   const commandPath = privileged?.bundle.shell === "powershell" ? "script.ps1" : "script.sh";
   const positionKey = `${props.environmentId}:${props.approval.requestId}:${privileged?.packageHash ?? bundle?.hash ?? "request"}`;
   const [saved] = useState(() => reviewPositions.get(positionKey));
@@ -147,6 +152,7 @@ function ReviewContent(props: ApprovalReviewProps) {
       line: 1,
     },
   );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Persist source positions in the bounded cache across review unmounts.
   useLayoutEffect(() => {
     reviewPositions.delete(positionKey);
     reviewPositions.set(positionKey, { location });
@@ -161,6 +167,7 @@ function ReviewContent(props: ApprovalReviewProps) {
   const [expired, setExpired] = useState(
     () => Number.isFinite(decisionExpiresAt) && Date.now() >= decisionExpiresAt,
   );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Synchronize review expiry with its scheduled browser timeout.
   useEffect(() => {
     if (!Number.isFinite(decisionExpiresAt) || expired) return;
     const timeout = setTimeout(() => setExpired(true), Math.max(0, decisionExpiresAt - Date.now()));
@@ -170,6 +177,7 @@ function ReviewContent(props: ApprovalReviewProps) {
   const [response, setResponse] = useState<string | null>(null);
   const inFlight = useRef(false);
   const current = useRef(props);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Bind asynchronous response callbacks to the latest committed review props.
   useLayoutEffect(() => {
     current.current = props;
   });
@@ -188,6 +196,7 @@ function ReviewContent(props: ApprovalReviewProps) {
     snapshot.responder !== props.onRespond ||
     snapshot.authorityHash !== authority?.packageHash ||
     snapshot.privilegedSnapshot !== JSON.stringify(privileged);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Synchronize asynchronous package integrity verification with the mounted review.
   useEffect(() => {
     let active = true;
     if (bundle)
@@ -290,19 +299,18 @@ function ReviewContent(props: ApprovalReviewProps) {
         setResponse(
           "Decision rejected by the server. The request has not been approved. Close and reopen it to inspect its current state.",
         );
-        return;
+      } else {
+        setResponse(
+          decision === "accept"
+            ? "Approval submitted. Execution and target verification remain unconfirmed."
+            : "Rejection submitted. No execution evidence supplied.",
+        );
       }
-      setResponse(
-        decision === "accept"
-          ? "Approval submitted. Execution and target verification remain unconfirmed."
-          : "Rejection submitted. No execution evidence supplied.",
-      );
     } catch {
       setResponse("Decision failed. Close and reopen this request to inspect its current state.");
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
     }
+    inFlight.current = false;
+    setBusy(false);
   };
   const canAct =
     !props.disabled &&
@@ -345,7 +353,12 @@ function ReviewContent(props: ApprovalReviewProps) {
               <Primitive.Title>
                 {privileged
                   ? "Review privileged action"
-                  : (bundle?.title ?? props.approval.appName ?? "Review agent request")}
+                  : (bundle?.title ??
+                    (ordinaryCommand && props.approval.detail
+                      ? authoredCodeIntent(props.approval.detail)
+                      : undefined) ??
+                    props.approval.appName ??
+                    "Review agent request")}
               </Primitive.Title>
             </div>
           </div>
@@ -423,19 +436,29 @@ function ReviewContent(props: ApprovalReviewProps) {
               <b>Action</b> {bundle.steps[0].description}
             </p>
           ) : null}
-          <div className={styles["review-source"]}>
+          <div
+            className={
+              ordinaryCommand
+                ? "min-w-0 border-y border-border px-7 py-4 max-sm:px-3"
+                : styles["review-source"]
+            }
+          >
             <RenderErrorBoundary
               fallback={<SourceUnavailable onFailure={() => setSourceFailed(true)} />}
             >
               <Suspense fallback={<p role="status">Loading source editor…</p>}>
-                <SourceEditor
-                  compact
-                  files={sourceFiles}
-                  symbols={bundle?.symbols ?? []}
-                  location={location}
-                  sessionKey={`${props.environmentId}:${props.approval.requestId}:${privileged?.packageHash ?? bundle?.hash ?? "provider-request"}`}
-                  onLocationChange={setLocation}
-                />
+                {ordinaryCommand ? (
+                  <ShellCommandBlock command={props.approval.detail || "No details supplied"} />
+                ) : (
+                  <SourceEditor
+                    compact
+                    files={sourceFiles}
+                    symbols={bundle?.symbols ?? []}
+                    location={location}
+                    sessionKey={`${props.environmentId}:${props.approval.requestId}:${privileged?.packageHash ?? bundle?.hash ?? "provider-request"}`}
+                    onLocationChange={setLocation}
+                  />
+                )}
               </Suspense>
             </RenderErrorBoundary>
           </div>

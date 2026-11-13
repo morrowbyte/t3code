@@ -2114,7 +2114,7 @@ it("stops stranded thinking after a steer and follows the next thought or tool",
     status: "running",
     completedAt: null,
     streaming: true,
-    text: id,
+    text: `**${id}**\nProvider detail`,
   });
   const first = thought("first-thought");
   const next = thought("next-thought");
@@ -2128,6 +2128,15 @@ it("stops stranded thinking after a steer and follows the next thought or tool",
       expanded,
       at,
     );
+  const progress = { ...assistantMessage(), text: "Prüfe die verfügbaren Ergebnisse" };
+  const withProgress = rows([progress, first]);
+  expect(withProgress.find((row) => row.type === "work-toggle")).toMatchObject({
+    summary: "Thinking",
+    thought: "first-thought",
+  });
+  expect(
+    withProgress.filter((row) => row.type === "message" && row.message.text === progress.text),
+  ).toHaveLength(1);
   expect(rows([first]).find((row) => row.type === "work-toggle")).toMatchObject({
     summary: "Thinking",
     thought: "first-thought",
@@ -2485,7 +2494,7 @@ it("presents an arbitrary runtime tool's authored intent without flattening its 
 });
 
 it.each(["command_execution", "dynamic_tool"] as const)(
-  "separates immediate public group context from enriched %s details",
+  "keeps public progress once and uses %s intent for the live group",
   (type) => {
     const input = type === "command_execution" ? "python3 - <<'PY'\nopaque()\nPY" : { capsule: 42 };
     const activity = {
@@ -2493,6 +2502,7 @@ it.each(["command_execution", "dynamic_tool"] as const)(
       type,
       status: "running",
       input,
+      title: "Prüfe ausgewählte Beiträge",
       toolName: "mcp__future_capsules__unpack",
     } as OrchestrationV2TurnItem;
     const progress = { ...assistantMessage(), text: "Inspect Tibo's OpenAI posts from 23 October" };
@@ -2541,11 +2551,11 @@ it.each(["command_execution", "dynamic_tool"] as const)(
       cache,
     );
     expect(updated.find((row) => row.type === "work-toggle")).toMatchObject({
-      summary: "Compare selected announcements",
+      summary: activity.title,
     });
 
     expect(header).toMatchObject({
-      summary: progress.text,
+      summary: activity.title,
       expanded: false,
       executionStatus: "Running",
     });
@@ -2563,7 +2573,7 @@ it.each(["command_execution", "dynamic_tool"] as const)(
       "2026-10-23T20:05:50.263Z",
     );
     expect(fast.find((row) => row.type === "work-toggle")).toMatchObject({
-      summary: progress.text,
+      summary: activity.title,
       executionStatus: "Completed",
     });
     const titled = { ...activity, title: "Extract the selected OpenAI posts" };
@@ -2580,8 +2590,11 @@ it.each(["command_execution", "dynamic_tool"] as const)(
       "2026-10-23T20:05:50.263Z",
     );
     expect(expanded.find((row) => row.type === "work-toggle")).toMatchObject({
-      summary: progress.text,
+      summary: titled.title,
     });
+    expect(
+      expanded.filter((row) => row.type === "message" && row.message.text === progress.text),
+    ).toHaveLength(1);
     const detail = expanded.flatMap((row) =>
       row.type === "activity-group" ? row.activities : [],
     )[0];
@@ -2651,6 +2664,36 @@ it.each([false, true])(
     expect(activity.detail).toBe(prompt);
     expect(JSON.parse(activity.getFullDetail()!).item).toMatchObject({ prompt });
     expect(activity.getCopyText()).toContain(prompt);
+    const intent = "Installierte Paketversionen prüfen";
+    const intentFeed = buildThreadFeed([
+      projected({ ...approval, prompt: `# Intent: ${intent}\n${prompt}` }, 0),
+    ]);
+    const intentActivity = intentFeed.flatMap((row) =>
+      row.type === "activity-group" ? row.activities : [],
+    )[0]!;
+    expect(workEntryRowLabel(intentActivity.workEntry)).toBe(intent);
+    expect(workEntryRowLabel(intentActivity.workEntry, true)).toBe(intent);
+    const intentPresented = deriveThreadFeedPresentation(
+      buildThreadFeed([
+        projected(userMessage(), 0),
+        ...(grouped ? [projected(command(), 1)] : []),
+        projected({ ...approval, prompt: `# Intent: ${intent}\n${prompt}` }, 2),
+      ]),
+      { runId, status: "running", startedAt: at, completedAt: null },
+      new Set(),
+      new Set(),
+      at,
+    );
+    const intentHeader = intentPresented.find((row) =>
+      grouped ? row.type === "work-toggle" : row.type === "activity-group",
+    );
+    expect(
+      intentHeader?.type === "work-toggle"
+        ? intentHeader.summary
+        : intentHeader?.type === "activity-group"
+          ? intentHeader.activities[0]?.groupStandIn?.label
+          : undefined,
+    ).toBe(intent);
   },
 );
 
@@ -2682,4 +2725,71 @@ it("caps live thought previews while preserving reasoning detail", () => {
   expect(activity.detail).toBe(text);
   expect(JSON.parse(activity.getFullDetail()!).item).toMatchObject({ text });
   expect(activity.getCopyText()).toContain(text);
+});
+
+it.each([
+  { text: "Checking the result", title: null, canExpand: false },
+  { text: "Checking the result", title: "Checking the result", canExpand: false },
+  { text: "x".repeat(180), title: null, canExpand: false },
+  { text: "x".repeat(181), title: null, canExpand: true },
+  { text: "First line\nSecond line", title: null, canExpand: true },
+  { text: "First line\rSecond line", title: null, canExpand: true },
+  { text: "[Result](https://example.com)", title: null, canExpand: true },
+  { text: "<https://example.com>", title: null, canExpand: true },
+  { text: "Original provider text", title: "Check the result", canExpand: true },
+  { text: "", title: "Check the result", canExpand: true },
+])("preserves meaningful reasoning details for $text / $title", ({ text, title, canExpand }) => {
+  const at = "2026-06-20T00:00:02.000Z";
+  for (const running of [false, true]) {
+    const item: OrchestrationV2TurnItem = {
+      ...base("reasoning-detail", at, 1),
+      type: "reasoning",
+      title,
+      text,
+      status: running ? "running" : "completed",
+      completedAt: running ? null : DateTime.makeUnsafe(at),
+      streaming: running,
+    };
+    const feed = buildThreadFeed([projected(item, 0)]);
+    const activity = feed.flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities : [],
+    )[0]!;
+    expect(activity.canExpand).toBe(canExpand);
+    expect(activity.fetchesDetail).toBe(text.length === 0);
+    if (title) {
+      expect(workEntryRowLabel(activity.workEntry)).toBe(title);
+      expect(workEntryRowLabel(activity.workEntry, true)).toBe(title);
+    }
+    const latestRun: ThreadFeedLatestRun = {
+      runId,
+      status: running ? "running" : "completed",
+      startedAt: at,
+      completedAt: running ? null : at,
+    };
+    const rows = deriveThreadFeedPresentation(feed, latestRun, new Set([runId]), new Set(), at);
+    const header = rows.find((row) => row.type === "work-toggle");
+    if (canExpand) {
+      expect(header).toBeDefined();
+      if (header?.type !== "work-toggle") throw new Error("Missing reasoning details");
+      if (title) {
+        expect(header.summary).toBe(title);
+        const expanded = deriveThreadFeedPresentation(
+          feed,
+          latestRun,
+          new Set([runId]),
+          new Set([header.groupId]),
+          at,
+        );
+        expect(expanded.find((row) => row.type === "work-toggle")).toMatchObject({
+          summary: title,
+        });
+      }
+    } else {
+      expect(header).toBeUndefined();
+      expect(rows.find((row) => row.type === "activity-group")).toMatchObject({
+        activities: [{ canExpand: false, groupStandIn: { label: text } }],
+      });
+    }
+    expect(activity.getCopyText()).toContain(text);
+  }
 });

@@ -2085,13 +2085,55 @@ it("keeps concurrent approvals actionable outside collapsed work and restores se
     .not.toBeInTheDocument();
   await vi.waitFor(() => expect(screen.text()).not.toContain("Waiting for approval"));
   await screen.getByRole("button", { expanded: false }).click();
-  await expect
-    .element(screen.getByRole("button", { name: approvals[0]!.detail!, exact: true }))
-    .toBeVisible();
+  const completedCommand = screen.getByRole("button", { name: "Command approval", exact: true });
+  await expect.element(completedCommand).toBeVisible();
+  await completedCommand.click();
+  await vi.waitFor(() =>
+    expect(
+      screen.container.querySelector(
+        '[data-v2-item-type="approval_request"] [aria-label="Recorded input"]',
+      )?.textContent,
+    ).toBe(approvals[0]!.detail),
+  );
   await expect
     .element(screen.getByRole("button", { name: "Open the current tab", exact: true }))
     .toBeVisible();
 });
+
+it.each([
+  { title: null, text: "Cache prüfen.", details: false },
+  { title: "Cache prüfen.", text: "Cache prüfen.", details: false },
+  { title: null, text: "Read [guide](https://example.com/guide)", details: true },
+])(
+  "only offers original short provider text when it adds content (title=$title, details=$details)",
+  async ({ title, text, details }) => {
+    using _state = setup();
+    const entries = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [
+        v2Item("reasoning", {
+          title,
+          text,
+          streaming: false,
+          updatedAt: DateTime.makeUnsafe(CREATED_AT),
+        }),
+      ],
+      optimisticMessages: [],
+    });
+    await using screen = await renderTimeline(entries);
+    const fold = screen.buttons(/Worked for/)[0];
+    if (fold?.getAttribute("aria-expanded") === "false") await click(fold);
+    const row = screen.container.querySelector('[data-v2-item-type="reasoning"]');
+    if (details) {
+      expect(row?.getAttribute("role")).toBe("button");
+      await click(row!);
+      await expect.element(screen.getByRole("link", { name: "guide" })).toBeVisible();
+    } else {
+      expect(row?.textContent).toContain(text);
+      expect(row?.getAttribute("role")).not.toBe("button");
+      expect(row?.hasAttribute("aria-expanded")).toBe(false);
+    }
+  },
+);
 
 it.each([
   { source: "inline", streaming: false },

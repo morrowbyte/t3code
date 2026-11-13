@@ -56,7 +56,11 @@ function ApprovalItemReview({
 }) {
   const [open, setOpen] = useState(false);
   if (!item.privilegedCommand && parseApprovalReviewDetail(item.prompt).kind === "none")
-    return <StructuredValue value={item.prompt} />;
+    return item.requestKind === "command" && item.prompt ? (
+      <ShellCommandBlock command={item.prompt} />
+    ) : (
+      <StructuredValue value={item.prompt} />
+    );
   return (
     <>
       <Button variant="outline" size="sm" onClick={() => setOpen(true)}>

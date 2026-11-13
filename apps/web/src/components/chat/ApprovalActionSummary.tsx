@@ -9,6 +9,8 @@ import {
 import type { PendingApproval } from "../../session-logic";
 import { Badge } from "../ui/badge";
 import { cn } from "~/lib/utils";
+import { authoredCodeIntent } from "@t3tools/shared/toolActivity";
+import { ShellCommandBlock } from "./ShellCommandBlock";
 
 const presentations = {
   command: { title: "Run a command", label: "Command approval", icon: TerminalIcon },
@@ -71,6 +73,10 @@ export function ApprovalActionSummary({
     );
   }
   const presentation = presentations[approval.requestKind];
+  const actionTitle =
+    approval.requestKind === "command" && approval.detail
+      ? authoredCodeIntent(approval.detail)
+      : undefined;
   const Icon = presentation.icon;
   const external = approval.responseCapability === "external";
   const live = approval.responseCapability === "live" || external;
@@ -87,7 +93,7 @@ export function ApprovalActionSummary({
       <div className="flex flex-wrap items-center gap-2">
         <Icon aria-hidden className="size-4 shrink-0 text-warning" />
         <span className="text-xs font-medium text-foreground">
-          {external ? "Review external action" : presentation.title}
+          {external ? "Review external action" : actionTitle || presentation.title}
         </span>
         <Badge variant={live ? "warning" : "secondary"} size="sm">
           {live ? "Decision needed" : "Provider disconnected"}
@@ -160,14 +166,20 @@ export function ApprovalActionSummary({
           Provider details
         </summary>
         <div className="mt-2 flex min-w-0 flex-col gap-2">
-          <pre
-            aria-label={approval.requestKind === "command" ? "Command" : "Provider request details"}
-            data-approval-detail="complete"
-            tabIndex={0}
-            className="max-h-48 min-w-0 overflow-auto whitespace-pre-wrap font-mono text-xs wrap-break-word focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-          >
-            {approval.detail || "No details supplied"}
-          </pre>
+          {approval.requestKind === "command" && approval.detail ? (
+            <div aria-label="Command" data-approval-detail="complete" className="min-w-0">
+              <ShellCommandBlock command={approval.detail} />
+            </div>
+          ) : (
+            <pre
+              aria-label="Provider request details"
+              data-approval-detail="complete"
+              tabIndex={0}
+              className="min-w-0 whitespace-pre-wrap font-mono text-xs wrap-break-word focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            >
+              {approval.detail || "No details supplied"}
+            </pre>
+          )}
           <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-2xs text-muted-foreground">
             <dt>Request</dt>
             <dd className="wrap-break-word">{approval.requestId}</dd>
