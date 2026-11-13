@@ -1543,18 +1543,15 @@ jobs:
           );
           '@ | node
           if ($LASTEXITCODE -ne 0 -or -not $sevenZip -or -not (Test-Path -LiteralPath $sevenZip -PathType Leaf)) { throw 'Could not resolve the builder 7-Zip executable.' }
-          $scratch = Join-Path $env:RUNNER_TEMP 'crew-desktop-launch-payload'
+          $scratch = Join-Path $env:RUNNER_TEMP ('crew-desktop-launch-payload-' + [guid]::NewGuid().ToString('N'))
           $payload = Join-Path $scratch 'app'
-          New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+          New-Item -ItemType Directory -Path $scratch | Out-Null
           try {
-            & $sevenZip x $installers[0].FullName "-o$scratch" '$PLUGINSDIR/app-64.7z' -y
+            # The builder tool reads the uncompressed app archive embedded in the NSIS installer.
+            & $sevenZip x -t7z $installers[0].FullName "-o$payload" -y
             if ($LASTEXITCODE -ne 0) { throw 'Could not extract the installer payload.' }
-            $archive = Join-Path $scratch '$PLUGINSDIR/app-64.7z'
-            if (-not (Test-Path -LiteralPath $archive)) { throw 'Installer app payload is missing.' }
-            & $sevenZip x $archive "-o$payload" -y
-            if ($LASTEXITCODE -ne 0) { throw 'Could not unpack the desktop application.' }
             $executable = Join-Path $payload 'Morrowbyte.exe'
-            if (-not (Test-Path -LiteralPath $executable)) { throw 'Packaged desktop executable is missing.' }
+            if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw 'Packaged desktop executable is missing.' }
             Get-FileHash -Algorithm SHA256 -LiteralPath $installers[0].FullName, $executable
             & node scripts/smoke-desktop-app.ts --executable $executable --expect-version $env:EXPECT_VERSION --artifacts-dir "$env:RUNNER_TEMP/desktop-launch-check"
             if ($LASTEXITCODE -ne 0) { throw 'Packaged desktop launch check failed.' }
