@@ -1,5 +1,5 @@
 import { expect, it } from "vite-plus/test";
-import { createVisualInteractionStore } from "./streamableUiInteraction";
+import { createVisualInteractionStore } from "./streamableUiInteraction.ts";
 
 it("bounds retained choices, notifies matching consumers and releases subscriptions", () => {
   const store = createVisualInteractionStore(2);

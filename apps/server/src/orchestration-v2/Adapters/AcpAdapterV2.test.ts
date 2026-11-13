@@ -2211,7 +2211,12 @@ describe("AcpAdapterV2", () => {
         cwd: process.cwd(),
       });
       const modelSelection = { instanceId, model: "default" } as const;
-      const runtime = yield* adapter.openSession({ threadId, modelSelection, runtimePolicy });
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("session-acp-native-receipt-envelope"),
+        modelSelection,
+        runtimePolicy,
+      });
       const providerThread = yield* runtime.ensureThread({
         threadId,
         modelSelection,
