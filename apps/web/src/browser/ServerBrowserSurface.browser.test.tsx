@@ -528,6 +528,23 @@ describe("ServerBrowserSurface native controls", () => {
     expect(handle.current?.canvas()).toBeNull();
     expect(handle.current?.screenshot()).toBeNull();
     expect(onSelection).toHaveBeenCalledWith(null);
+    let finishPaint!: () => void;
+    const painting = new Promise<void>((resolve) => {
+      finishPaint = resolve;
+    });
+    mocks.ack.mockReturnValueOnce(painting);
+    await emitFrame(frame(5, 2, true), true);
+    await enterText("queued during paint");
+    expect(mocks.input).not.toHaveBeenCalled();
+    await act(() => finishPaint());
+    await vi.waitFor(() =>
+      expect(mocks.input).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          sequence: 5,
+          input: { type: "text", text: "queued during paint" },
+        }),
+      ),
+    );
     await emitFrame(frame(3, 1, false));
     await emitFrame(frame(4, 2, false, 9));
     expect(handle.current?.screenshot()).toBeNull();
@@ -538,7 +555,7 @@ describe("ServerBrowserSurface native controls", () => {
       tabId: "runtime-private",
       surfaceId,
       webContentsId: 8,
-      sequence: 2,
+      sequence: 5,
       generation: 2,
       input: { type: "text", text: "local input" },
     });
@@ -562,7 +579,7 @@ describe("ServerBrowserSurface native controls", () => {
     });
     expect(mocks.input).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        sequence: 2,
+        sequence: 5,
         generation: 2,
         input: { type: "probe", x: expect.closeTo(200), y: expect.closeTo(150) },
       }),
@@ -580,6 +597,10 @@ describe("ServerBrowserSurface native controls", () => {
       .toHaveTextContent("Private input was refused. Take control again.");
     expect(mocks.input).toHaveBeenCalledTimes(1);
     expect(mocks.sent).toEqual([]);
+    expect(document.activeElement).toBe(input);
+    await userEvent.keyboard("tail{Tab}tail");
+    expect(document.activeElement).toBe(input);
+    expect(mocks.input).toHaveBeenCalledTimes(1);
 
     await act(() => host.update({ kind: "pending", webContentsId: null, privateEntry: false }));
     expect(handle.current?.screenshot()).toBeNull();

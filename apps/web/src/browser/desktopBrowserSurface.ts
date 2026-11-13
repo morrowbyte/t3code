@@ -296,6 +296,30 @@ export function createLocalBrowserFocusController(input: {
   };
 }
 
+export function createLocalBrowserSurfaceQueue() {
+  let stopped = false;
+  let pending = 0;
+  let tail = Promise.resolve();
+  return {
+    run<A>(operation: () => Promise<A>): Promise<A> {
+      if (stopped || pending >= 128) return Promise.reject(new Error("Browser surface is busy."));
+      pending++;
+      const result = tail.then(() => {
+        if (stopped) throw new Error("Browser surface closed.");
+        return operation();
+      });
+      tail = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      return result.finally(() => pending--);
+    },
+    stop() {
+      stopped = true;
+    },
+  };
+}
+
 export function createLocalBrowserFrameReceiver(input: {
   readonly canvas: HTMLCanvasElement;
   readonly bridge: DesktopPreviewBridge["surface"];
@@ -306,6 +330,7 @@ export function createLocalBrowserFrameReceiver(input: {
   readonly isFocused: () => boolean;
   readonly onPainted: (frame: LocalBrowserFrame) => void;
   readonly onError: () => void;
+  readonly queue?: ReturnType<typeof createLocalBrowserSurfaceQueue>;
 }) {
   let disposed = false;
   let decoding = false;
@@ -350,39 +375,46 @@ export function createLocalBrowserFrameReceiver(input: {
       while (pending) {
         const next = pending;
         pending = null;
-        let bitmap: ImageBitmap | null = null;
-        let ackAttempted = false;
-        try {
-          bitmap = await createImageBitmap(
-            new Blob([new Uint8Array(next.png)], { type: "image/png" }),
-          );
-          if (disposed || generation !== next.generation || sequence !== next.sequence) continue;
-          const context = input.canvas.getContext("2d");
-          if (!context) throw new Error("Browser canvas is unavailable");
-          input.canvas.width = bitmap.width;
-          input.canvas.height = bitmap.height;
-          context.drawImage(bitmap, 0, 0);
-          input.onPrivateEntry(next.privateEntry);
-          ackAttempted = true;
-          if (!(await acknowledge(next, true)))
-            throw new Error("Browser frame acknowledgement failed");
-          if (disposed || generation !== next.generation || sequence !== next.sequence) continue;
-          input.onPainted({
-            tabId: next.tabId,
-            surfaceId: next.surfaceId,
-            webContentsId: next.webContentsId,
-            sequence: next.sequence,
-            generation: next.generation,
-            width: next.width,
-            height: next.height,
-            privateEntry: next.privateEntry,
+        const paint = async () => {
+          let bitmap: ImageBitmap | null = null;
+          let ackAttempted = false;
+          try {
+            bitmap = await createImageBitmap(
+              new Blob([new Uint8Array(next.png)], { type: "image/png" }),
+            );
+            if (disposed || generation !== next.generation || sequence !== next.sequence) return;
+            const context = input.canvas.getContext("2d");
+            if (!context) throw new Error("Browser canvas is unavailable");
+            input.canvas.width = bitmap.width;
+            input.canvas.height = bitmap.height;
+            context.drawImage(bitmap, 0, 0);
+            input.onPrivateEntry(next.privateEntry);
+            ackAttempted = true;
+            if (!(await acknowledge(next, true)))
+              throw new Error("Browser frame acknowledgement failed");
+            if (disposed || generation !== next.generation) return;
+            input.onPainted({
+              tabId: next.tabId,
+              surfaceId: next.surfaceId,
+              webContentsId: next.webContentsId,
+              sequence: next.sequence,
+              generation: next.generation,
+              width: next.width,
+              height: next.height,
+              privateEntry: next.privateEntry,
+            });
+          } catch {
+            if (!disposed) input.onError();
+          } finally {
+            bitmap?.close();
+            if (!ackAttempted) await acknowledge(next);
+          }
+        };
+        if (input.queue)
+          await input.queue.run(paint).catch(() => {
+            if (!disposed) input.onError();
           });
-        } catch {
-          if (!disposed) input.onError();
-        } finally {
-          bitmap?.close();
-          if (!ackAttempted) await acknowledge(next);
-        }
+        else await paint();
       }
     } finally {
       decoding = false;

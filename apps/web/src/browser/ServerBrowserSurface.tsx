@@ -53,6 +53,7 @@ import { useStableCallback } from "~/hooks/useStableCallback";
 import {
   createLocalBrowserFrameReceiver,
   createLocalBrowserFocusController,
+  createLocalBrowserSurfaceQueue,
   reconnectDesktopBrowserHost,
   type LocalBrowserFrame,
   useDesktopBrowserHostState,
@@ -238,6 +239,11 @@ function ServerBrowserSurfaceConnection(
   const localFocusRef = useRef<ReturnType<typeof createLocalBrowserFocusController> | null>(null);
   const [localReady, setLocalReady] = useState(false);
   const privateEntryRef = useRef(false);
+  const localSurfaceQueueRef = useRef<ReturnType<typeof createLocalBrowserSurfaceQueue> | null>(
+    null,
+  );
+  const privateInputBlockedRef = useRef(false);
+  const privateInputVersionRef = useRef(0);
   const [privateEntry, setPrivateEntry] = useState(false);
   const nativeFocusOnlyRef = useRef(false);
   const [nativeFocusOnly, setNativeFocusOnly] = useState(false);
@@ -336,7 +342,13 @@ function ServerBrowserSurfaceConnection(
   });
   const inputAllowed = () => {
     if (privateEntryRef.current) {
-      return visible && !controlPending && localReady && localFrameRef.current !== null;
+      return (
+        visible &&
+        !controlPending &&
+        localReady &&
+        localFrameRef.current !== null &&
+        !privateInputBlockedRef.current
+      );
     }
     if (nativeFocusOnlyRef.current) return false;
     const current = controlRef.current;
@@ -359,15 +371,31 @@ function ServerBrowserSurfaceConnection(
       input.type !== "releaseControl"
     ) {
       const frame = localFrameRef.current;
-      if (!inputAllowed() || !frame || !previewBridge || !isLocalSurfaceInput(input)) return false;
-      void previewBridge.surface
-        .input({
-          tabId: frame.tabId,
-          surfaceId: frame.surfaceId,
-          webContentsId: frame.webContentsId,
-          sequence: frame.sequence,
-          generation: frame.generation,
-          input,
+      const queue = localSurfaceQueueRef.current;
+      if (!inputAllowed() || !frame || !previewBridge || !queue || !isLocalSurfaceInput(input))
+        return false;
+      const version = privateInputVersionRef.current;
+      void queue
+        .run(async () => {
+          const latest = localFrameRef.current;
+          if (
+            !privateEntryRef.current ||
+            !latest ||
+            privateInputBlockedRef.current ||
+            version !== privateInputVersionRef.current ||
+            latest.surfaceId !== frame.surfaceId ||
+            latest.webContentsId !== frame.webContentsId ||
+            latest.generation !== frame.generation
+          )
+            throw new Error("Private browser input is no longer current.");
+          return await previewBridge.surface.input({
+            tabId: latest.tabId,
+            surfaceId: latest.surfaceId,
+            webContentsId: latest.webContentsId,
+            sequence: latest.sequence,
+            generation: latest.generation,
+            input,
+          });
         })
         .then((result) => {
           const current = localFrameRef.current;
@@ -393,8 +421,10 @@ function ServerBrowserSurfaceConnection(
             current.generation !== frame.generation
           )
             return;
+          privateInputBlockedRef.current = true;
+          privateInputVersionRef.current++;
           setLocalError("Private input was refused. Take control again.");
-          clearInput();
+          clearInput(false);
         });
       return true;
     }
@@ -510,6 +540,8 @@ function ServerBrowserSurfaceConnection(
   const localPrivateEntryChanged = useEffectEvent((active: boolean) => {
     if (privateEntryRef.current === active) return;
     clearInput(!active);
+    privateInputBlockedRef.current = false;
+    privateInputVersionRef.current++;
     privateEntryRef.current = active;
     setPrivateEntry(active);
     if (active) {
@@ -527,7 +559,7 @@ function ServerBrowserSurfaceConnection(
     if (previous?.width !== frame.width || previous.height !== frame.height) {
       viewportChanged(viewportRef.current);
     }
-    setLocalError(null);
+    if (!privateInputBlockedRef.current) setLocalError(null);
     if (!hasFrameRef.current) {
       hasFrameRef.current = true;
       setLocalReady(true);
@@ -576,6 +608,8 @@ function ServerBrowserSurfaceConnection(
       return;
     let disposed = false;
     let presentVersion = 0;
+    const queue = createLocalBrowserSurfaceQueue();
+    localSurfaceQueueRef.current = queue;
     const focus = createLocalBrowserFocusController({
       canvas,
       keyboardInput: () => inputRef.current,
@@ -590,6 +624,7 @@ function ServerBrowserSurfaceConnection(
     });
     localFocusRef.current = focus;
     const receiver = createLocalBrowserFrameReceiver({
+      queue,
       canvas,
       bridge: bridge.surface,
       tabId: runtimeTabId,
@@ -628,6 +663,9 @@ function ServerBrowserSurfaceConnection(
     window.addEventListener("resize", present);
     return () => {
       disposed = true;
+      queue.stop();
+      if (localSurfaceQueueRef.current === queue) localSurfaceQueueRef.current = null;
+      privateInputVersionRef.current++;
       focus.stop();
       if (localFocusRef.current === focus) localFocusRef.current = null;
       receiver.stop();
@@ -853,7 +891,17 @@ function ServerBrowserSurfaceConnection(
   );
 
   const handlePointer = (event: PointerEvent<HTMLCanvasElement>) => {
-    if (!inputAllowed()) return;
+    if (event.type === "pointerdown" && privateEntryRef.current && privateInputBlockedRef.current) {
+      privateInputBlockedRef.current = false;
+      setLocalError(null);
+    }
+    if (!inputAllowed()) {
+      if (privateEntryRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
     // Thumb buttons drive this tab's history in handleMouseUp, never the page.
     if (historyDeltaOf(event.button) !== null) return;
     const { type, pointerId, clientX, clientY } = event;
@@ -1044,7 +1092,13 @@ function ServerBrowserSurfaceConnection(
       if (action === "down") event.currentTarget.blur();
       return;
     }
-    if (!inputAllowed()) return;
+    if (!inputAllowed()) {
+      if (privateEntryRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
     keySentRef.current = false;
     if (
       event.nativeEvent.isComposing ||
