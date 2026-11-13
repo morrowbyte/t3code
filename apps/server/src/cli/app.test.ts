@@ -5,15 +5,20 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeStream from "node:stream";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import type { DesktopAppActivationRequest } from "@t3tools/contracts";
+import {
+  DESKTOP_BROWSER_REGISTRATION_FILE,
+  type DesktopAppActivationRequest,
+} from "@t3tools/contracts";
 import { resolveDesktopAppControlAddress } from "@t3tools/shared/desktopAppControl";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { Command } from "effect/cli";
@@ -384,5 +389,145 @@ describe("t3 app", () => {
           }
         }).pipe(Effect.provideService(HostProcess.HomeDirectory, root), Effect.scoped),
       ),
+  );
+});
+
+describe("SSH desktop browser helper", () => {
+  it.live.each([
+    "caller-eof-before-ready",
+    "caller-eof-after-ready",
+    "abort-before-ready",
+    "wrong-epoch",
+    "wrong-environment",
+    "oversized-header",
+  ] as const)("cleans up %s without exposing the capability", (scenario) =>
+    withTempDirectory("t3-ssh-", (root) =>
+      Effect.gen(function* () {
+        const platform = yield* HostProcess.Platform;
+        const endpoint =
+          platform === "win32"
+            ? `\\\\.\\pipe\\t3-ssh-${NodePath.basename(root)}`
+            : NodePath.join(root, "channel.sock");
+        const server = NodeNet.createServer();
+        const peers = new Set<NodeNet.Socket>();
+        const accepted = Promise.withResolvers<NodeNet.Socket>();
+        const registered = Promise.withResolvers<string>();
+        yield* Effect.acquireRelease(
+          Effect.promise(async () => {
+            server.on("connection", (socket) => {
+              peers.add(socket);
+              accepted.resolve(socket);
+              let header = "";
+              socket.on("data", (chunk) => {
+                header += chunk.toString();
+                if (header.includes("\n")) registered.resolve(header);
+              });
+            });
+            await new Promise<void>((resolve, reject) => {
+              server.once("error", reject);
+              server.listen(endpoint, resolve);
+            });
+            if (platform !== "win32") await NodeFSP.chmod(endpoint, 0o600);
+          }),
+          () =>
+            Effect.promise(async () => {
+              for (const socket of peers) socket.destroy();
+              await new Promise<void>((resolve, reject) =>
+                server.close((error) => (error ? reject(error) : resolve())),
+              );
+            }),
+        );
+        const stateDir = NodePath.join(root, "userdata");
+        const token = "test-only-local-capability";
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(stateDir, { mode: 0o700 });
+          await NodeFSP.writeFile(
+            NodePath.join(stateDir, DESKTOP_BROWSER_REGISTRATION_FILE),
+            JSON.stringify({
+              endpoint,
+              token,
+              environmentId: "target-env",
+              processEpoch: "target-epoch",
+              processId: process.pid,
+            }),
+            { mode: 0o600 },
+          );
+        });
+        const stdin = new NodeStream.PassThrough();
+        const stdout = new NodeStream.PassThrough();
+        const output: string[] = [];
+        const forwarded = Promise.withResolvers<void>();
+        stdout.on("data", (chunk: Buffer) => {
+          output.push(chunk.toString());
+          if (output.join("").includes('"type":"turn"')) forwarded.resolve();
+        });
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const input = Object.getOwnPropertyDescriptor(process, "stdin")!;
+            const output = Object.getOwnPropertyDescriptor(process, "stdout")!;
+            Object.defineProperty(process, "stdin", { configurable: true, value: stdin });
+            Object.defineProperty(process, "stdout", { configurable: true, value: stdout });
+            return { input, output };
+          }),
+          (original) =>
+            Effect.sync(() => {
+              Object.defineProperty(process, "stdin", original.input);
+              Object.defineProperty(process, "stdout", original.output);
+              stdin.destroy();
+              stdout.destroy();
+            }),
+        );
+        const fiber = yield* runCli([
+          "__ssh-helper",
+          "desktop-browser",
+          "target-env",
+          "--base-dir",
+          root,
+        ]).pipe(
+          Effect.provideService(HostProcess.Platform, platform),
+          Effect.result,
+          Effect.forkScoped,
+        );
+        const socket = yield* Effect.promise(() => accepted.promise);
+        const disconnected = NodeEvents.EventEmitter.once(socket, "close");
+        expect(JSON.parse(yield* Effect.promise(() => registered.promise))).toEqual({
+          type: "desktop-browser-register",
+          environmentId: "target-env",
+          processEpoch: "target-epoch",
+          token,
+        });
+        if (scenario === "abort-before-ready") {
+          yield* Fiber.interrupt(fiber);
+        } else if (scenario === "caller-eof-before-ready") {
+          stdin.end();
+          expect((yield* Fiber.join(fiber))._tag).toBe("Success");
+        } else {
+          const ready = JSON.stringify({
+            type: "desktop-browser-ready",
+            environmentId: scenario === "wrong-environment" ? "other-env" : "target-env",
+            processEpoch: scenario === "wrong-epoch" ? "other-epoch" : "target-epoch",
+          });
+          const command = '{"type":"turn","threadId":"thread-1","active":true}\n';
+          socket.write(scenario === "oversized-header" ? "x".repeat(8193) : `${ready}\n${command}`);
+          if (scenario === "caller-eof-after-ready") {
+            yield* Effect.promise(() => forwarded.promise);
+            expect(output.join("")).toBe(`${ready}\n${command}`);
+            stdin.end();
+            expect((yield* Fiber.join(fiber))._tag).toBe("Success");
+          } else {
+            const result = yield* Fiber.join(fiber);
+            expect(result._tag).toBe("Failure");
+            expect(JSON.stringify(result)).not.toContain(token);
+          }
+        }
+        yield* Effect.promise(() => disconnected);
+        if (scenario !== "caller-eof-after-ready") expect(output.join("")).toBe("");
+        for (const event of ["end", "close", "error", "readable"]) {
+          expect(stdin.listenerCount(event)).toBe(0);
+        }
+        expect(stdout.listenerCount("close")).toBe(0);
+        expect(stdout.listenerCount("error")).toBe(0);
+      }).pipe(Effect.scoped),
+    ),
   );
 });

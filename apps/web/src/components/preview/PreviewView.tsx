@@ -87,7 +87,8 @@ import { revealInFileExplorerLabel } from "./fileExplorerLabel";
 import { shouldShowPreviewEmptyState } from "./previewEmptyStateLogic";
 import { Badge } from "~/components/ui/badge";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
-import { alternatePreviewRuntime, useRendersServerTabNatively } from "~/browser/previewRuntime";
+import { useDesktopBrowserHostState } from "~/browser/desktopBrowserSurface";
+import { alternatePreviewRuntime, useControlsNativePreviewTab } from "~/browser/previewRuntime";
 import { ServerBrowserSurface, type ServerBrowserHandle } from "~/browser/ServerBrowserSurface";
 import { cn } from "~/lib/utils";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
@@ -192,8 +193,16 @@ export function PreviewView({
   usePreviewSession(threadRef);
 
   const tabId = requestedTabId ?? previewState.activeTabId;
+  const snapshot = tabId ? (previewState.sessions[tabId] ?? null) : null;
   const runtimeTabId = tabId
-    ? previewRuntimeTabId(threadRef, previewState.serverEpoch, tabId)
+    ? previewRuntimeTabId(
+        threadRef,
+        previewState.serverEpoch,
+        tabId,
+        !snapshot?.headless && snapshot?.threadId === threadRef.threadId
+          ? snapshot.desktopHostId
+          : undefined,
+      )
     : null;
   const recordingRuntimeTabId =
     tabId && runtimeTabId
@@ -201,10 +210,14 @@ export function PreviewView({
         ? runtimeTabId
         : findActiveBrowserRecordingRuntimeTabId(threadRef, tabId)
       : null;
-  const snapshot = tabId ? (previewState.sessions[tabId] ?? null) : null;
-  const nativeServerTab = useRendersServerTabNatively(threadRef.environmentId, snapshot);
+  const localHost = useDesktopBrowserHostState(runtimeTabId);
+  const localOffscreenTab = localHost?.kind === "offscreen";
+  const nativeServerTab =
+    useControlsNativePreviewTab(threadRef.environmentId, snapshot) || localOffscreenTab;
   const isServerTab = snapshot?.runtime === "server" && !nativeServerTab;
   const serverOwnsRendering = snapshot?.runtime === "server";
+  const serverControlsTab = serverOwnsRendering || nativeServerTab;
+  const streamPicker = isServerTab || localOffscreenTab;
   const serverSurfaceRef = useRef<ServerBrowserHandle | null>(null);
   const [serverAspectRatioLocked, setServerAspectRatioLocked] = useState(false);
   const [serverToolbarWidth, setServerToolbarWidth] = useState(0);
@@ -220,7 +233,7 @@ export function PreviewView({
     );
   }, [serverToolbarShown]);
   const [serverControlledTabId, setServerControlledTabId] = useState<string | null>(null);
-  const serverInputDisabled = serverOwnsRendering && serverControlledTabId !== runtimeTabId;
+  const serverInputDisabled = serverControlsTab && serverControlledTabId !== runtimeTabId;
   const [serverFrameTabId, setServerFrameTabId] = useState<string | null>(null);
   // A desktop page that mounted before its tab went headless leaves its stale state here.
   const desktopOverlay =
@@ -248,7 +261,7 @@ export function PreviewView({
 
   const { environmentId: threadEnvironmentId, threadId } = threadRef;
   const documentRevision = tabId ? (previewState.documentRevisionByTabId?.[tabId] ?? 0) : 0;
-  const selectionScope = `${runtimeTabId ?? ""}\n${url}\n${documentRevision}`;
+  const selectionScope = `${runtimeTabId ?? ""}\n${previewState.serverEpoch ?? ""}\n${url}\n${documentRevision}`;
   const selectionScopeRef = useRef(selectionScope);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fences browser pick callbacks and clears the external selection store when its scope ends
   useLayoutEffect(() => {
@@ -262,7 +275,7 @@ export function PreviewView({
   }, [clearSelection, selectionScope, threadEnvironmentId, threadId]);
 
   const navigateToResolvedUrl = async (resolvedUrl: string) => {
-    if (serverOwnsRendering) {
+    if (serverControlsTab) {
       if (serverInputDisabled) return false;
       if (!serverSurfaceRef.current) return false;
       serverSurfaceRef.current.navigate(resolvedUrl);
@@ -330,7 +343,7 @@ export function PreviewView({
   };
 
   const handleRefresh = () => {
-    if (serverOwnsRendering) serverSurfaceRef.current?.reload();
+    if (serverControlsTab) serverSurfaceRef.current?.reload();
     else if (previewBridge && runtimeTabId) void previewBridge.refresh(runtimeTabId);
   };
 
@@ -401,12 +414,12 @@ export function PreviewView({
   };
 
   const handleBack = () => {
-    if (serverOwnsRendering) serverSurfaceRef.current?.history(-1);
+    if (serverControlsTab) serverSurfaceRef.current?.history(-1);
     else if (previewBridge && runtimeTabId) void previewBridge.goBack(runtimeTabId);
   };
 
   const handleForward = () => {
-    if (serverOwnsRendering) serverSurfaceRef.current?.history(1);
+    if (serverControlsTab) serverSurfaceRef.current?.history(1);
     else if (previewBridge && runtimeTabId) void previewBridge.goForward(runtimeTabId);
   };
 
@@ -829,7 +842,7 @@ export function PreviewView({
   };
 
   const handlePickElement = () => {
-    if (isServerTab) {
+    if (streamPicker) {
       setPickActive((active) => !active);
       return;
     }
@@ -915,7 +928,7 @@ export function PreviewView({
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- installs Escape on window while server element picking is active
   useEffect(() => {
-    if (!isServerTab || !pickActive || serverInputDisabled || !visible) return;
+    if (!streamPicker || !pickActive || serverInputDisabled || !visible) return;
     const cancel = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -924,7 +937,7 @@ export function PreviewView({
     };
     window.addEventListener("keydown", cancel);
     return () => window.removeEventListener("keydown", cancel);
-  }, [isServerTab, pickActive, serverInputDisabled, visible]);
+  }, [streamPicker, pickActive, serverInputDisabled, visible]);
 
   const onPreviewAction = useEffectEvent(
     (action: Parameters<Parameters<typeof subscribePreviewAction>[0]>[0]) => {
@@ -1078,7 +1091,7 @@ export function PreviewView({
             setPickActive(false);
           }}
           onScreenshot={
-            isServerTab
+            streamPicker
               ? () => {
                   try {
                     const screenshot = serverSurfaceRef.current?.screenshot();
@@ -1128,6 +1141,7 @@ export function PreviewView({
                 environmentId={threadRef.environmentId}
                 threadId={threadRef.threadId}
                 tabId={snapshot.tabId}
+                runtimeTabId={runtimeTabId}
                 pdfUrl={
                   navStatus._tag === "Success"
                     ? previewPdfAssetUrl(url, environmentHttpBaseUrl)
@@ -1170,7 +1184,22 @@ export function PreviewView({
                 environmentId={threadRef.environmentId}
                 threadId={threadRef.threadId}
                 tabId={snapshot.tabId}
+                runtimeTabId={runtimeTabId}
+                viewport={viewport}
+                zoomFactor={desktopOverlay?.zoomFactor ?? 1}
                 visible={visible}
+                picking={pickActive && visible && !serverInputDisabled}
+                selectionScope={selectionScope}
+                onSelection={(annotation) => {
+                  if (
+                    documentRevision !==
+                    (readThreadPreviewState(threadRef).documentRevisionByTabId?.[tabId ?? ""] ?? 0)
+                  )
+                    return;
+                  if (annotation) replaceSelection(threadRef, annotation);
+                  else clearSelection(threadRef);
+                  setPickActive(false);
+                }}
                 onControl={(control) => {
                   const ready =
                     control?.canOperate === true &&
@@ -1222,6 +1251,7 @@ export function PreviewView({
         ) : null}
         {runtimeTabId &&
         desktopOverlay &&
+        !localOffscreenTab &&
         !showEmptyState &&
         !isUnreachable &&
         !activeRecordingTabIds.has(runtimeTabId) ? (

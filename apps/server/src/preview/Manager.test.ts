@@ -59,23 +59,123 @@ it.layer(layer)("PreviewManager", (it) => {
     }),
   );
 
-  it.effect("keeps the tab's profile across status reports", () =>
+  it.effect("restores desktop tabs and keeps their profile across status reports", () =>
     Effect.gen(function* () {
       const threadId = freshThreadId();
       const manager = yield* PreviewManager.PreviewManager;
-
-      const opened = yield* manager.open({ threadId, profileId: "work" });
-      expect(opened.profileId).toBe("work");
+      const collector = yield* collectEvents;
+      const before = yield* manager.list({ threadId });
+      expect(before.sessions).toEqual([]);
+      const input = {
+        threadId,
+        tabId: "tab_existing-main-guest",
+        desktopHostId: "main-runtime-tab-7",
+        profileId: "work",
+        viewport: { _tag: "freeform" as const, width: 1024, height: 768 },
+        url: "localhost:5173",
+        title: "Existing page",
+        canGoBack: true,
+        canGoForward: true,
+      };
+      const restored = yield* manager.restoreDesktopTab(input);
+      expect(restored).toMatchObject({
+        threadId,
+        tabId: input.tabId,
+        desktopHostId: input.desktopHostId,
+        profileId: input.profileId,
+        viewport: input.viewport,
+        runtime: "desktop",
+        navStatus: { _tag: "Success", url: "http://localhost:5173/", title: input.title },
+        canGoBack: true,
+        canGoForward: true,
+      });
+      expect(restored.updatedAt).toEqual(expect.any(String));
+      expect(restored).not.toHaveProperty("automationOwner");
+      expect(restored).not.toHaveProperty("revealRequest");
+      const restoredList = yield* manager.list({ threadId });
+      expect(restoredList.sessions).toEqual([restored]);
+      expect(restoredList.revision).toBe(before.revision + 1);
+      expect(yield* collector.drain).toEqual([
+        {
+          type: "opened",
+          threadId,
+          tabId: input.tabId,
+          createdAt: restored.updatedAt,
+          serverEpoch: restoredList.serverEpoch,
+          revision: restoredList.revision,
+          snapshot: restored,
+        },
+      ]);
 
       yield* manager.reportStatus({
         threadId,
-        tabId: opened.tabId,
-        navStatus: { _tag: "Success", url: "http://localhost:5173/", title: "Dev" },
+        tabId: restored.tabId,
+        navStatus: { _tag: "Success", url: "http://localhost:5173/ready", title: "Dev" },
         canGoBack: true,
         canGoForward: false,
       });
-      const listed = yield* manager.list({ threadId });
-      expect(listed.sessions.find((s) => s.tabId === opened.tabId)?.profileId).toBe("work");
+      const healthy = yield* manager.list({ threadId });
+      expect(healthy.sessions[0]?.profileId).toBe("work");
+      yield* collector.drain;
+      const repeated = yield* manager.restoreDesktopTab({ ...input, url: "invalid://stale" });
+      expect(repeated).toBe(healthy.sessions[0]);
+      expect(yield* manager.list({ threadId })).toEqual(healthy);
+      expect(yield* collector.drain).toEqual([]);
+
+      const opened = yield* manager.open({ threadId, profileId: "personal" });
+      yield* collector.drain;
+      for (const conflict of [
+        { ...input, desktopHostId: "different-main-runtime-tab" },
+        { ...input, tabId: opened.tabId },
+        { ...input, threadId: freshThreadId() },
+      ]) {
+        const original = yield* manager.list({ threadId });
+        const other = yield* manager.list({ threadId: conflict.threadId });
+        const error = yield* manager.restoreDesktopTab(conflict).pipe(Effect.flip);
+        expect(error._tag).toBe("PreviewControlRequiredError");
+        expect(yield* manager.list({ threadId })).toEqual(original);
+        expect(yield* manager.list({ threadId: conflict.threadId })).toEqual(other);
+        expect(yield* collector.drain).toEqual([]);
+      }
+
+      const bound = yield* manager.bindDesktopTab({
+        threadId,
+        tabId: opened.tabId,
+        desktopHostId: "initial-main-host",
+      });
+      expect(bound.profileId).toBe("personal");
+      expect(bound.desktopHostId).toBe("initial-main-host");
+      yield* collector.drain;
+      expect(
+        yield* manager.bindDesktopTab({
+          threadId,
+          tabId: opened.tabId,
+          desktopHostId: "initial-main-host",
+        }),
+      ).toBe(bound);
+      expect(yield* collector.drain).toEqual([]);
+      const bindingError = yield* manager
+        .bindDesktopTab({ threadId, tabId: opened.tabId, desktopHostId: "foreign-main-host" })
+        .pipe(Effect.flip);
+      expect(bindingError._tag).toBe("PreviewControlRequiredError");
+      expect(
+        (yield* manager.list({ threadId })).sessions.find(
+          (snapshot) => snapshot.tabId === opened.tabId,
+        ),
+      ).toBe(bound);
+      expect(yield* collector.drain).toEqual([]);
+
+      const idle = yield* manager.restoreDesktopTab({
+        threadId,
+        tabId: "tab_existing-empty-guest",
+        desktopHostId: "main-runtime-tab-8",
+        title: "",
+        canGoBack: false,
+        canGoForward: false,
+      });
+      expect(idle.navStatus).toEqual({ _tag: "Idle" });
+      expect(idle.runtime).toBe("desktop");
+      expect(idle.viewport).toEqual({ _tag: "fill" });
     }),
   );
 

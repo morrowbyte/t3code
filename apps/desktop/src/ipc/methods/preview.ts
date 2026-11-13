@@ -16,6 +16,13 @@ import {
   DesktopPreviewClearDataInputSchema,
   DesktopPreviewImportCookiesInputSchema,
   DesktopPreviewCreateTabInputSchema,
+  DesktopPreviewOffscreenHostInputSchema,
+  DesktopPreviewSurfacePresentationSchema,
+  DesktopPreviewSurfaceStateSchema,
+  DesktopPreviewSurfaceAckSchema,
+  DesktopPreviewSurfaceFocusInputSchema,
+  DesktopPreviewSurfaceInputRequestSchema,
+  DesktopPreviewSurfaceInputResultSchema,
   DesktopPreviewTabInputSchema,
   DesktopPreviewWebviewConfigSchema,
   PreviewAnnotationSubmissionResultSchema,
@@ -27,12 +34,14 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 import * as NodeURL from "node:url";
 
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as BrowserImport from "../../preview/BrowserImport/BrowserImport.ts";
 import * as PreviewManager from "../../preview/Manager.ts";
+import * as DesktopBrowserHost from "../../preview/DesktopBrowserHost.ts";
 import { normalizeCaptureFailure } from "../../preview/captureErrors.ts";
 import * as DesktopClientSettings from "../../settings/DesktopClientSettings.ts";
 import { PREVIEW_WEBVIEW_PREFERENCES } from "../../preview/WebviewPreferences.ts";
@@ -44,6 +53,19 @@ export const installPreviewEventForwarding = Effect.fn(
 )(function* () {
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const manager = yield* PreviewManager.PreviewManager;
+  const browserHost = yield* DesktopBrowserHost.DesktopBrowserHost;
+  yield* browserHost.hostedEnvironmentsChanged.pipe(
+    Stream.runForEach((ids) =>
+      Effect.gen(function* () {
+        const main = yield* electronWindow.main;
+        if (Option.isNone(main) || main.value.isDestroyed()) return;
+        yield* Effect.sync(() =>
+          main.value.webContents.send(IpcChannels.PREVIEW_HOSTED_ENVIRONMENTS_CHANGE_CHANNEL, ids),
+        );
+      }),
+    ),
+    Effect.forkScoped,
+  );
   yield* manager.subscribeStateChanges((tabId, state) =>
     electronWindow.sendAll(IpcChannels.PREVIEW_STATE_CHANGE_CHANNEL, tabId, state),
   );
@@ -56,6 +78,24 @@ export const installPreviewEventForwarding = Effect.fn(
   yield* manager.subscribeOpenLinks((event) =>
     electronWindow.sendAll(IpcChannels.PREVIEW_OPEN_LINK_CHANNEL, event),
   );
+});
+
+const getHostedEnvironmentIds = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_HOSTED_ENVIRONMENTS_GET_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Array(Schema.String),
+  handler: Effect.fn("desktop.ipc.preview.getHostedEnvironmentIds")(function* (_input, event) {
+    const electronWindow = yield* ElectronWindow.ElectronWindow;
+    const main = yield* electronWindow.main;
+    if (
+      Option.isNone(main) ||
+      main.value.isDestroyed() ||
+      main.value.webContents.id !== event?.sender.id
+    )
+      return [];
+    const browserHost = yield* DesktopBrowserHost.DesktopBrowserHost;
+    return browserHost.hostedEnvironmentIds();
+  }),
 });
 
 const setForwardedShortcuts = DesktopIpc.makeIpcMethod({
@@ -74,12 +114,13 @@ const createTab = DesktopIpc.makeIpcMethod({
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.preview.createTab")(function* ({
     tabId,
+    initialUrl,
     zoomFactor,
     colorScheme,
     serverTab,
   }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.createTab(tabId, { zoomFactor, colorScheme, serverTab });
+    yield* manager.createTab(tabId, { initialUrl, zoomFactor, colorScheme, serverTab });
   }),
 });
 
@@ -100,6 +141,66 @@ const registerWebview = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.registerWebview")(function* ({ tabId, webContentsId }) {
     const manager = yield* PreviewManager.PreviewManager;
     yield* manager.registerWebview(tabId, webContentsId);
+  }),
+});
+
+const ensureOffscreenHost = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_ENSURE_OFFSCREEN_HOST_CHANNEL,
+  payload: DesktopPreviewOffscreenHostInputSchema,
+  result: DesktopPreviewSurfaceStateSchema,
+  handler: Effect.fn("desktop.ipc.preview.ensureOffscreenHost")(function* (
+    { tabId, environmentId, profileId, viewport },
+    event,
+  ) {
+    const manager = yield* PreviewManager.PreviewManager;
+    const { scope, persistent, namespace } = resolvePartitionScope(environmentId, profileId);
+    yield* manager.getBrowserSession(scope, persistent, namespace, environmentId);
+    const partition = yield* manager.getBrowserPartition(scope, persistent, namespace);
+    return yield* manager.ensureOffscreenHost(
+      tabId,
+      { partition, preload: `${__dirname}/preview-pick-preload.cjs`, viewport },
+      event?.sender.id,
+    );
+  }),
+});
+
+const presentLocalSurface = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_LOCAL_SURFACE_PRESENT_CHANNEL,
+  payload: DesktopPreviewSurfacePresentationSchema,
+  result: DesktopPreviewSurfaceStateSchema,
+  handler: Effect.fn("desktop.ipc.preview.presentLocalSurface")(function* (input, event) {
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* manager.presentSurface(input, event?.sender.id);
+  }),
+});
+
+const ackLocalSurface = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_LOCAL_SURFACE_ACK_CHANNEL,
+  payload: DesktopPreviewSurfaceAckSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.ackLocalSurface")(function* (input, event) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.ackSurface(input, event?.sender.id);
+  }),
+});
+
+const inputLocalSurface = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_LOCAL_SURFACE_INPUT_CHANNEL,
+  payload: DesktopPreviewSurfaceInputRequestSchema,
+  result: DesktopPreviewSurfaceInputResultSchema,
+  handler: Effect.fn("desktop.ipc.preview.inputLocalSurface")(function* (input, event) {
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* manager.sendSurfaceInput(input, event?.sender.id);
+  }),
+});
+
+const focusLocalSurface = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_LOCAL_SURFACE_FOCUS_CHANNEL,
+  payload: DesktopPreviewSurfaceFocusInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.focusLocalSurface")(function* (input, event) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.focusSurface(input, event?.sender.id);
   }),
 });
 
@@ -288,7 +389,7 @@ const resolveClearPartitions = Effect.fn("desktop.ipc.preview.resolveClearPartit
   if (profileId === undefined) return undefined;
   const { scope, persistent, namespace } = resolvePartitionScope(environmentId, profileId);
   // getBrowserSession registers the partition; deriving its name alone leaves unopened profiles uncleared.
-  yield* manager.getBrowserSession(scope, persistent, namespace);
+  yield* manager.getBrowserSession(scope, persistent, namespace, environmentId);
   return [yield* manager.getBrowserPartition(scope, persistent, namespace)];
 });
 
@@ -300,7 +401,7 @@ const getPreviewConfig = DesktopIpc.makeIpcMethod({
     const manager = yield* PreviewManager.PreviewManager;
     const { scope, persistent, namespace } = resolvePartitionScope(environmentId, profileId);
     // Session creation installs UA and permission handlers before a guest can attach.
-    yield* manager.getBrowserSession(scope, persistent, namespace);
+    yield* manager.getBrowserSession(scope, persistent, namespace, environmentId);
     return {
       partition: yield* manager.getBrowserPartition(scope, persistent, namespace),
       webPreferences: PREVIEW_WEBVIEW_PREFERENCES,
@@ -417,10 +518,16 @@ const saveRecording = DesktopIpc.makeIpcMethod({
 });
 
 export const methods = [
+  getHostedEnvironmentIds,
   setForwardedShortcuts,
   createTab,
   closeTab,
   registerWebview,
+  ensureOffscreenHost,
+  presentLocalSurface,
+  ackLocalSurface,
+  focusLocalSurface,
+  inputLocalSurface,
   navigate,
   goBack,
   goForward,

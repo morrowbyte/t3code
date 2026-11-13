@@ -1,4 +1,10 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type DesktopPreviewBridge,
+  type DesktopPreviewSurfaceFrame,
+  type DesktopPreviewSurfaceFocusRequest,
+} from "@t3tools/contracts";
+import { createRef } from "react";
 import type {
   PreviewStreamControl,
   PreviewStreamEvents,
@@ -15,6 +21,13 @@ const mocks = vi.hoisted(() => ({
   access: { url: "ws://preview.test", token: "test" },
   painted: null as (() => void) | null,
   stopClient: vi.fn(),
+  preparePrivateEntry: vi.fn<(generation: number, signal: AbortSignal) => Promise<void>>(),
+  present: vi.fn<DesktopPreviewBridge["surface"]["present"]>(),
+  ack: vi.fn<DesktopPreviewBridge["surface"]["ack"]>(),
+  focus: vi.fn<DesktopPreviewBridge["surface"]["focus"]>(),
+  input: vi.fn<DesktopPreviewBridge["surface"]["input"]>(),
+  frameListeners: new Set<(frame: DesktopPreviewSurfaceFrame) => void>(),
+  focusListeners: new Set<(request: DesktopPreviewSurfaceFocusRequest) => void>(),
 }));
 
 vi.mock(import("@t3tools/client-runtime/preview/server-browser-stream"), async (original) => ({
@@ -26,23 +39,62 @@ vi.mock(import("@t3tools/client-runtime/preview/server-browser-stream"), async (
   },
 }));
 
-vi.mock(import("~/state/previewStream"), async (original) => ({
-  ...(await original()),
+vi.mock(import("~/state/previewStream"), () => ({
   usePreviewStreamAccess: () => mocks.access as never,
+  refreshPreviewStreamAccess: () => undefined,
+  readPreviewStreamAccess: async () => mocks.access as never,
 }));
 
-import { ServerBrowserSurface } from "./ServerBrowserSurface";
+vi.mock(import("~/components/preview/previewBridge"), () => ({
+  previewBridge: {
+    surface: {
+      present: mocks.present,
+      ack: mocks.ack,
+      focus: mocks.focus,
+      onFocusRequest: (listener: (request: DesktopPreviewSurfaceFocusRequest) => void) => {
+        mocks.focusListeners.add(listener);
+        return () => {
+          mocks.focusListeners.delete(listener);
+        };
+      },
+      input: mocks.input,
+      onFrame: (listener: (frame: DesktopPreviewSurfaceFrame) => void) => {
+        mocks.frameListeners.add(listener);
+        return () => {
+          mocks.frameListeners.delete(listener);
+        };
+      },
+    },
+  } as never,
+}));
+
+import { ServerBrowserSurface, type ServerBrowserHandle } from "./ServerBrowserSurface";
+import {
+  acquireDesktopBrowserHostState,
+  createLocalBrowserFrameReceiver,
+  createLocalBrowserSurfaceQueue,
+} from "./desktopBrowserSurface";
 
 function setup() {
   mocks.sent.length = 0;
   mocks.painted = null;
   mocks.stopClient.mockReset();
+  mocks.preparePrivateEntry.mockReset().mockResolvedValue(undefined);
+  mocks.frameListeners.clear();
+  mocks.focusListeners.clear();
+  mocks.present
+    .mockReset()
+    .mockResolvedValue({ kind: "offscreen", webContentsId: 8, privateEntry: false });
+  mocks.ack.mockReset().mockResolvedValue(undefined);
+  mocks.focus.mockReset().mockResolvedValue(undefined);
+  mocks.input.mockReset().mockResolvedValue({});
   mocks.createClient.mockReset().mockImplementation(() => ({
     send: (input: PreviewStreamInput) => {
       mocks.sent.push(input);
       return true;
     },
     stop: mocks.stopClient,
+    preparePrivateEntry: mocks.preparePrivateEntry,
   }));
 }
 
@@ -68,6 +120,11 @@ async function renderSurface(controller: PreviewStreamControl["controller"]) {
   await act(() =>
     handlers.onControl?.({ canOperate: true, controller, generation: 1, dialog: null }),
   );
+  expect(mocks.createClient).toHaveBeenCalledTimes(1);
+  expect(mocks.stopClient).not.toHaveBeenCalled();
+  if (controller === "you")
+    await expect.element(screen.getByRole("textbox", { name: "Browser page" })).toBeEnabled();
+  else await expect.element(screen.getByRole("textbox", { name: "Browser page" })).toBeDisabled();
   mocks.sent.length = 0;
   const input = container.querySelector("textarea")!;
   const canvas = container.querySelector("canvas")!;
@@ -77,96 +134,642 @@ async function renderSurface(controller: PreviewStreamControl["controller"]) {
 
 const keys = () => mocks.sent.filter((input) => input.type === "key");
 
+async function canvasPng(canvas: HTMLCanvasElement) {
+  const blob = await new Promise<Blob>((resolve) =>
+    canvas.toBlob((value) => resolve(value!), "image/png"),
+  );
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
 describe("ServerBrowserSurface native controls", () => {
-  it("waits for confirmed takeover and release, fences reconnects, and disconnects when hidden", async () => {
+  it.each([false, true])(
+    "waits for confirmed takeover and release, fences reconnects, and disconnects when hidden (offscreen=%s)",
+    async (offscreen) => {
+      setup();
+      const host = acquireDesktopBrowserHostState("runtime-native");
+      using _host = { [Symbol.dispose]: host.release };
+      if (offscreen) host.update({ kind: "offscreen", webContentsId: 8, privateEntry: false });
+      const onControl = vi.fn();
+      const onFirstFrame = vi.fn();
+      const surface = (visible: boolean) => (
+        <ServerBrowserSurface
+          environmentId={EnvironmentId.make("environment-native")}
+          threadId="thread-native"
+          tabId="tab-native"
+          runtimeTabId="runtime-native"
+          mode="native"
+          visible={visible}
+          onControl={onControl}
+          onFirstFrame={onFirstFrame}
+        >
+          {(interactive) => <div data-native-page data-interactive={interactive} />}
+        </ServerBrowserSurface>
+      );
+      const container = document.createElement("div");
+      await using screen = await render(surface(true), { container });
+      await vi.waitFor(() => expect(mocks.createClient).toHaveBeenCalled());
+      expect(mocks.createClient.mock.calls.at(-1)![0]).toMatchObject({
+        threadId: "thread-native",
+        tabId: "tab-native",
+        frames: false,
+      });
+      const nativePage = container.querySelector("[data-native-page]");
+      const interactive = () =>
+        offscreen
+          ? !container.querySelector("textarea")!.disabled
+          : nativePage?.getAttribute("data-interactive") === "true";
+      expect(interactive()).toBe(false);
+      expect(Boolean(container.querySelector("canvas, textarea"))).toBe(offscreen);
+      expect(Boolean(nativePage)).toBe(!offscreen);
+      if (offscreen) {
+        const canvas = container.querySelector("canvas")!;
+        const png = await canvasPng(canvas);
+        const surfaceId = mocks.present.mock.calls.find(([value]) => value.visible)![0].surfaceId;
+        await act(() => {
+          for (const listener of mocks.frameListeners)
+            listener({
+              tabId: "runtime-native",
+              surfaceId,
+              webContentsId: 8,
+              sequence: 1,
+              generation: 1,
+              width: 300,
+              height: 150,
+              privateEntry: false,
+              png,
+            });
+        });
+        await vi.waitFor(() => expect(mocks.ack).toHaveBeenCalled());
+        await vi.waitFor(() => expect(onFirstFrame).toHaveBeenCalledOnce());
+      }
+      await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
+
+      const handlers = mocks.createClient.mock.calls.at(-1)![1];
+      const control = (
+        controller: PreviewStreamControl["controller"],
+        canOperate = true,
+        ready = true,
+      ) => handlers.onControl?.({ controller, canOperate, ready, generation: 1, dialog: null });
+      await act(() => control("agent"));
+      expect(mocks.createClient).toHaveBeenCalledTimes(1);
+      expect(mocks.stopClient).not.toHaveBeenCalled();
+      await expect.element(screen.getByRole("button", { name: "Take control" })).toBeEnabled();
+      await userEvent.click(screen.getByRole("button", { name: "Take control" }));
+      expect(mocks.sent).toEqual([{ type: "takeControl" }]);
+      await expect.element(screen.getByRole("status")).toHaveTextContent("Agent has control");
+      await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
+
+      await act(() => control("you", true, false));
+      await expect.element(screen.getByRole("status")).toHaveTextContent("Control reserved…");
+      await expect.element(screen.getByRole("button", { name: "Release control" })).toBeDisabled();
+      expect(interactive()).toBe(false);
+      await act(() => control("you"));
+      await expect.element(screen.getByRole("status")).toHaveTextContent("You have control");
+      expect(interactive()).toBe(true);
+      await userEvent.click(screen.getByRole("button", { name: "Release control" }));
+      expect(mocks.sent).toEqual([{ type: "takeControl" }, { type: "releaseControl" }]);
+      await expect.element(screen.getByRole("status")).toHaveTextContent("Releasing control…");
+      await expect.element(screen.getByRole("button", { name: "Release control" })).toBeDisabled();
+      expect(interactive()).toBe(false);
+      await act(() => control("agent"));
+
+      await act(() => handlers.onConnectedChange(false));
+      await expect.element(screen.getByRole("status")).toHaveTextContent("Reconnecting…");
+      await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
+      expect(onControl).toHaveBeenLastCalledWith(null);
+      expect(interactive()).toBe(false);
+      await act(() => handlers.onConnectedChange(true));
+      await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
+      expect(mocks.sent).toHaveLength(2);
+
+      await act(() => control("another-viewer"));
+      await expect
+        .element(screen.getByRole("status"))
+        .toHaveTextContent("Another viewer has control");
+      await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
+      await act(() => control("unclaimed", false));
+      await expect.element(screen.getByRole("status")).toHaveTextContent("Read-only");
+      await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
+
+      await act(() =>
+        handlers.onControl?.({ controller: "you", canOperate: true, generation: 1, dialog: null }),
+      );
+      await expect
+        .element(screen.getByRole("status"))
+        .toHaveTextContent("Update the server to use native control.");
+      await expect.element(screen.getByRole("button", { name: "Release control" })).toBeDisabled();
+      expect(interactive()).toBe(false);
+
+      await act(() => control("you"));
+      mocks.sent.length = 0;
+      await act(() => handlers.onGone?.());
+      await userEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+      await vi.waitFor(() => expect(mocks.createClient).toHaveBeenCalledTimes(2));
+      if (!offscreen) expect(container.querySelector("[data-native-page]")).toBe(nativePage);
+      expect(mocks.sent).toEqual([]);
+      await screen.rerender(surface(false));
+      expect(mocks.stopClient).toHaveBeenCalledTimes(2);
+      expect(onControl).toHaveBeenLastCalledWith(null);
+      expect(mocks.sent).toEqual([]);
+    },
+  );
+
+  it("keeps private pixels local, uses the displayed frame for private input, and clears on detach", async () => {
     setup();
-    const onControl = vi.fn();
-    const surface = (visible: boolean) => (
-      <ServerBrowserSurface
-        environmentId={EnvironmentId.make("environment-native")}
-        threadId="thread-native"
-        tabId="tab-native"
-        mode="native"
-        visible={visible}
-        onControl={onControl}
-      >
-        {(interactive) => <div data-native-page data-interactive={interactive} />}
-      </ServerBrowserSurface>
-    );
+    const host = acquireDesktopBrowserHostState("runtime-private");
+    using _host = { [Symbol.dispose]: host.release };
+    host.update({ kind: "offscreen", webContentsId: 8, privateEntry: false });
+    const handle = createRef<ServerBrowserHandle>();
+    const onSelection = vi.fn();
     const container = document.createElement("div");
-    await using screen = await render(surface(true), { container });
-    await vi.waitFor(() => expect(mocks.createClient).toHaveBeenCalled());
-    expect(mocks.createClient.mock.calls.at(-1)![0]).toMatchObject({
-      threadId: "thread-native",
-      tabId: "tab-native",
-      frames: false,
-    });
-    expect(container.querySelector("[data-native-page]")).not.toBeNull();
-    const nativePage = container.querySelector("[data-native-page]")!;
-    expect(nativePage.getAttribute("data-interactive")).toBe("false");
-    expect(container.querySelector("canvas, textarea")).toBeNull();
-    await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
-
-    const handlers = mocks.createClient.mock.calls.at(-1)![1];
-    const control = (
-      controller: PreviewStreamControl["controller"],
-      canOperate = true,
-      ready = true,
-    ) => handlers.onControl?.({ controller, canOperate, ready, generation: 1, dialog: null });
-    await act(() => control("agent"));
-    await userEvent.click(screen.getByRole("button", { name: "Take control" }));
-    expect(mocks.sent).toEqual([{ type: "takeControl" }]);
-    await expect.element(screen.getByRole("status")).toHaveTextContent("Agent has control");
-    await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
-
-    await act(() => control("you", true, false));
-    await expect.element(screen.getByRole("status")).toHaveTextContent("Control reserved…");
-    await expect.element(screen.getByRole("button", { name: "Release control" })).toBeDisabled();
-    expect(nativePage.getAttribute("data-interactive")).toBe("false");
-    await act(() => control("you"));
-    await expect.element(screen.getByRole("status")).toHaveTextContent("You have control");
-    expect(nativePage.getAttribute("data-interactive")).toBe("true");
-    await userEvent.click(screen.getByRole("button", { name: "Release control" }));
-    expect(mocks.sent).toEqual([{ type: "takeControl" }, { type: "releaseControl" }]);
-    await expect.element(screen.getByRole("status")).toHaveTextContent("Releasing control…");
-    await expect.element(screen.getByRole("button", { name: "Release control" })).toBeDisabled();
-    expect(nativePage.getAttribute("data-interactive")).toBe("false");
-    await act(() => control("agent"));
-
-    await act(() => handlers.onConnectedChange(false));
-    await expect.element(screen.getByRole("status")).toHaveTextContent("Reconnecting…");
-    await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
-    expect(onControl).toHaveBeenLastCalledWith(null);
-    expect(nativePage.getAttribute("data-interactive")).toBe("false");
-    await act(() => handlers.onConnectedChange(true));
-    await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
-    expect(mocks.sent).toHaveLength(2);
-
-    await act(() => control("another-viewer"));
-    await expect
-      .element(screen.getByRole("status"))
-      .toHaveTextContent("Another viewer has control");
-    await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
-    await act(() => control("unclaimed", false));
-    await expect.element(screen.getByRole("status")).toHaveTextContent("Read-only");
-    await expect.element(screen.getByRole("button", { name: "Take control" })).toBeDisabled();
-
-    await act(() =>
-      handlers.onControl?.({ controller: "you", canOperate: true, generation: 1, dialog: null }),
+    container.style.cssText = "width: 400px; height: 300px; display: flex;";
+    await using screen = await render(
+      <ServerBrowserSurface
+        ref={handle}
+        environmentId={EnvironmentId.make("environment-private")}
+        threadId="thread-private"
+        tabId="tab-private"
+        runtimeTabId="runtime-private"
+        mode="native"
+        visible
+        picking
+        onSelection={onSelection}
+        className="flex-1"
+      />,
+      { container },
     );
+    await vi.waitFor(() => expect(mocks.createClient).toHaveBeenCalled());
+    expect(mocks.createClient.mock.calls.at(-1)![0]).toMatchObject({ frames: false });
+    const handlers = mocks.createClient.mock.calls.at(-1)![1];
+    const canvas = container.querySelector("canvas")!;
+    const input = container.querySelector("textarea")!;
+    using _documentFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const seed = document.createElement("canvas");
+    seed.width = 800;
+    seed.height = 600;
+    const png = await canvasPng(seed);
+    const surfaceId = mocks.present.mock.calls.find(([value]) => value.visible)![0].surfaceId;
+    const frame = (
+      sequence: number,
+      generation: number,
+      privateEntry: boolean,
+      webContentsId = 8,
+    ): DesktopPreviewSurfaceFrame => ({
+      tabId: "runtime-private",
+      surfaceId,
+      webContentsId,
+      sequence,
+      generation,
+      width: 400,
+      height: 300,
+      privateEntry,
+      png,
+    });
+    const emitFrame = async (value: DesktopPreviewSurfaceFrame, focused = false) => {
+      await act(() => {
+        for (const listener of mocks.frameListeners) listener(value);
+      });
+      await vi.waitFor(() =>
+        expect(mocks.ack).toHaveBeenCalledWith({
+          tabId: value.tabId,
+          surfaceId,
+          webContentsId: value.webContentsId,
+          sequence: value.sequence,
+          generation: value.generation,
+          focused,
+        }),
+      );
+    };
+    await emitFrame(frame(1, 1, false));
+    await vi.waitFor(() =>
+      expect(handle.current?.screenshot()?.cropRect).toEqual({
+        x: 0,
+        y: 0,
+        width: 400,
+        height: 300,
+      }),
+    );
+    expect(handle.current?.screenshot()?.width).toBe(800);
+    await act(() =>
+      handlers.onControl?.({
+        controller: "you",
+        canOperate: true,
+        ready: false,
+        generation: 1,
+        dialog: null,
+      }),
+    );
+    expect(input.disabled).toBe(true);
+    await act(() =>
+      handlers.onControl?.({
+        controller: "you",
+        canOperate: true,
+        ready: true,
+        generation: 1,
+        dialog: null,
+      }),
+    );
+    await expect.element(screen.getByRole("textbox", { name: "Browser page" })).toBeEnabled();
+    const enterText = async (text: string) =>
+      act(() => {
+        input.value = `\u200b${text}`;
+        input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+      });
+    await enterText("public input");
+    expect(mocks.sent).toContainEqual({ type: "text", text: "public input" });
+    expect(mocks.input).not.toHaveBeenCalled();
+    const requestFocus = async (
+      requestId: string,
+      override: Partial<DesktopPreviewSurfaceFocusRequest> = {},
+    ) => {
+      const request = {
+        tabId: "runtime-private",
+        surfaceId,
+        webContentsId: 8,
+        sequence: 1,
+        generation: 1,
+        requestId,
+        ...override,
+      };
+      await act(() => {
+        for (const listener of mocks.focusListeners) listener(request);
+      });
+    };
+    await requestFocus("menu-focus");
+    expect(mocks.preparePrivateEntry).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(input);
+    expect(mocks.focus).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "menu-focus", focused: true }),
+    );
+    await requestFocus("stale-focus", { sequence: 0 });
+    expect(mocks.focus).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "stale-focus", focused: false }),
+    );
+    const focusCalls = mocks.focus.mock.calls.length;
+    await requestFocus("wrong-contents", { webContentsId: 99 });
+    expect(mocks.focus).toHaveBeenCalledTimes(focusCalls);
+    _documentFocus.mockReturnValue(false);
+    await requestFocus("unfocused-document");
+    expect(mocks.focus).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "unfocused-document", focused: false }),
+    );
+    _documentFocus.mockReturnValue(true);
+    await act(() => input.blur());
+    expect(mocks.focus.mock.calls.at(-1)?.[0].focused).toBe(false);
+    await requestFocus("returned-focus");
+    mocks.sent.length = 0;
+
+    let releaseViewer!: () => void;
+    const released = new Promise<void>((resolve) => {
+      releaseViewer = resolve;
+    });
+    mocks.preparePrivateEntry.mockReturnValueOnce(released);
+    const clientsBeforePreparation = mocks.createClient.mock.calls.length;
+    const stopsBeforePreparation = mocks.stopClient.mock.calls.length;
+    await requestFocus("prepare-entry-aborted", { preparation: "begin" });
+    expect(mocks.preparePrivateEntry).toHaveBeenCalledExactlyOnceWith(1, expect.any(AbortSignal));
+    expect(mocks.createClient).toHaveBeenCalledTimes(clientsBeforePreparation);
+    expect(mocks.stopClient).toHaveBeenCalledTimes(stopsBeforePreparation);
+    expect(mocks.preparePrivateEntry.mock.calls[0]![1].aborted).toBe(false);
+    expect(document.activeElement).toBe(input);
+    expect(input.disabled).toBe(false);
+    expect(input.readOnly).toBe(true);
+    await enterText("must not enter before the native grant");
+    expect(mocks.sent).toEqual([]);
+    expect(mocks.input).not.toHaveBeenCalled();
+    expect(mocks.focus).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "prepare-entry-aborted", prepared: true }),
+    );
+    await userEvent.keyboard("{Shift>}{Escape}{/Shift}");
+    expect(mocks.preparePrivateEntry.mock.calls[0]![1].aborted).toBe(true);
+    expect(document.activeElement).not.toBe(input);
+    expect(input.readOnly).toBe(false);
+    expect(mocks.sent).toEqual([]);
+    expect(mocks.input).not.toHaveBeenCalled();
+    expect(mocks.focus).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "prepare-entry-aborted", prepared: true }),
+    );
+    await act(() => releaseViewer());
+    await vi.waitFor(() =>
+      expect(mocks.focus).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestId: "prepare-entry-aborted",
+          prepared: false,
+          focused: false,
+        }),
+      ),
+    );
+    expect(mocks.focus).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "prepare-entry-aborted", prepared: true }),
+    );
+    expect(document.activeElement).not.toBe(input);
+    expect(input.readOnly).toBe(false);
+
+    await requestFocus("focus-after-abort");
+    expect(mocks.focus).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "focus-after-abort", focused: true }),
+    );
+    let releaseNextViewer!: () => void;
+    const nextReleased = new Promise<void>((resolve) => {
+      releaseNextViewer = resolve;
+    });
+    mocks.preparePrivateEntry.mockReturnValueOnce(nextReleased);
+    await requestFocus("prepare-entry", { preparation: "begin" });
+    expect(mocks.preparePrivateEntry).toHaveBeenCalledTimes(2);
+    expect(mocks.preparePrivateEntry).toHaveBeenLastCalledWith(1, expect.any(AbortSignal));
+    expect(mocks.preparePrivateEntry.mock.calls[1]![1].aborted).toBe(false);
+    expect(mocks.createClient).toHaveBeenCalledTimes(clientsBeforePreparation);
+    expect(mocks.stopClient).toHaveBeenCalledTimes(stopsBeforePreparation);
+    expect(document.activeElement).toBe(input);
+    expect(input.disabled).toBe(false);
+    expect(input.readOnly).toBe(true);
+    await act(() =>
+      handlers.onControl?.({
+        controller: "unclaimed",
+        canOperate: true,
+        ready: false,
+        generation: 2,
+        dialog: null,
+      }),
+    );
+    expect(document.activeElement).toBe(input);
+    expect(mocks.focus).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "prepare-entry", prepared: true }),
+    );
+    releaseNextViewer();
+    await vi.waitFor(() =>
+      expect(mocks.focus).toHaveBeenCalledWith(
+        expect.objectContaining({ requestId: "prepare-entry", prepared: true, focused: false }),
+      ),
+    );
+    await requestFocus("focus-after-drain");
+    expect(mocks.focus).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "focus-after-drain", focused: true }),
+    );
+    await act(() =>
+      handlers.onControl?.({
+        controller: "another-viewer",
+        canOperate: true,
+        ready: false,
+        generation: 3,
+        dialog: null,
+      }),
+    );
+    expect(document.activeElement).toBe(input);
+    await requestFocus("prepare-entry", { preparation: "finish", privateEntry: true });
+    expect(input.readOnly).toBe(true);
+
+    await emitFrame(frame(2, 2, true), true);
+    await vi.waitFor(() =>
+      expect(mocks.focus).toHaveBeenCalledWith(
+        expect.objectContaining({ surfaceId, webContentsId: 8, sequence: 2, generation: 2 }),
+      ),
+    );
+    expect(document.activeElement).toBe(input);
+    await vi.waitFor(() => expect(input.readOnly).toBe(false));
+    expect(handle.current?.canvas()).toBeNull();
+    expect(handle.current?.screenshot()).toBeNull();
+    expect(onSelection).toHaveBeenCalledWith(null);
+    let finishPaint!: () => void;
+    const painting = new Promise<void>((resolve) => {
+      finishPaint = resolve;
+    });
+    mocks.ack.mockReturnValueOnce(painting);
+    await emitFrame(frame(5, 2, true), true);
+    await enterText("queued during paint");
+    expect(mocks.input).not.toHaveBeenCalled();
+    await act(() => finishPaint());
+    await vi.waitFor(() =>
+      expect(mocks.input).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          sequence: 5,
+          input: { type: "text", text: "queued during paint" },
+        }),
+      ),
+    );
+    await emitFrame(frame(3, 1, false));
+    await emitFrame(frame(4, 2, false, 9));
+    expect(handle.current?.screenshot()).toBeNull();
+    await act(() => handlers.onConnectedChange(false));
+    expect(input.disabled).toBe(false);
+    await enterText("local input");
+    expect(mocks.input).toHaveBeenLastCalledWith({
+      tabId: "runtime-private",
+      surfaceId,
+      webContentsId: 8,
+      sequence: 5,
+      generation: 2,
+      input: { type: "text", text: "local input" },
+    });
+    expect(mocks.sent).toEqual([]);
+    mocks.input.mockResolvedValue({ editable: true });
+    const box = canvas.getBoundingClientRect();
+    const touch = (type: "pointerdown" | "pointerup") =>
+      canvas.dispatchEvent(
+        new PointerEvent(type, {
+          pointerType: "touch",
+          pointerId: 1,
+          isPrimary: true,
+          button: 0,
+          clientX: box.left + box.width / 2,
+          clientY: box.top + box.height / 2,
+          bubbles: true,
+        }),
+      );
+    await act(() => {
+      touch("pointerdown");
+    });
+    expect(mocks.input).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sequence: 5,
+        generation: 2,
+        input: { type: "probe", x: expect.closeTo(200), y: expect.closeTo(150) },
+      }),
+    );
+    await act(() => {
+      touch("pointerup");
+    });
+    expect(document.activeElement).toBe(input);
+    expect(mocks.sent).toEqual([]);
+    mocks.input.mockClear();
+    mocks.input.mockRejectedValueOnce(new Error("expired private lease"));
+    await enterText("refused input");
     await expect
       .element(screen.getByRole("status"))
-      .toHaveTextContent("Update the server to use native control.");
-    await expect.element(screen.getByRole("button", { name: "Release control" })).toBeDisabled();
-    expect(nativePage.getAttribute("data-interactive")).toBe("false");
-
-    await act(() => control("you"));
-    mocks.sent.length = 0;
-    await screen.rerender(surface(false));
-    expect(mocks.stopClient).toHaveBeenCalledOnce();
-    expect(onControl).toHaveBeenLastCalledWith(null);
+      .toHaveTextContent("Private input was refused. Take control again.");
+    expect(mocks.input).toHaveBeenCalledTimes(1);
     expect(mocks.sent).toEqual([]);
+    expect(document.activeElement).toBe(input);
+    await userEvent.keyboard("tail{Tab}tail");
+    expect(document.activeElement).toBe(input);
+    expect(mocks.input).toHaveBeenCalledTimes(1);
+
+    const clientsBeforeResume = mocks.createClient.mock.calls.length;
+    const stopsBeforeResume = mocks.stopClient.mock.calls.length;
+    await emitFrame(frame(6, 3, false));
+    await vi.waitFor(() =>
+      expect(mocks.createClient).toHaveBeenCalledTimes(clientsBeforeResume + 1),
+    );
+    expect(mocks.stopClient).toHaveBeenCalledTimes(stopsBeforeResume + 1);
+    expect(mocks.sent).toEqual([]);
+    expect(mocks.frameListeners.size).toBe(1);
+    expect(canvas.width).toBeGreaterThan(0);
+
+    const resumedHandlers = mocks.createClient.mock.calls.at(-1)![1];
+    await act(() =>
+      resumedHandlers.onControl?.({
+        controller: "you",
+        canOperate: true,
+        ready: true,
+        generation: 3,
+        dialog: null,
+      }),
+    );
+    await act(() =>
+      handlers.onControl?.({
+        controller: "unclaimed",
+        canOperate: true,
+        ready: false,
+        generation: 2,
+        dialog: null,
+      }),
+    );
+    await expect.element(screen.getByRole("button", { name: "Release control" })).toBeVisible();
+
+    await act(() => host.update({ kind: "pending", webContentsId: null, privateEntry: false }));
+    expect(handle.current?.screenshot()).toBeNull();
+    expect(canvas.width).toBe(0);
+    expect(mocks.frameListeners.size).toBe(0);
+    expect(mocks.focusListeners.size).toBe(0);
+    expect(mocks.focus.mock.calls.at(-1)?.[0].focused).toBe(false);
+    expect(mocks.present).toHaveBeenCalledWith({
+      tabId: "runtime-private",
+      surfaceId,
+      visible: false,
+    });
   });
+
+  it.each([false, true])(
+    "acknowledges a full queue and an older local decode (stopped=%s)",
+    async (stopped) => {
+      setup();
+      const canvas = document.createElement("canvas");
+      const png = await canvasPng(canvas);
+      const bitmap = await createImageBitmap(canvas);
+      let finishDecode: ((value: ImageBitmap) => void) | undefined;
+      let markDecodeStarted: (() => void) | undefined;
+      const decodeStarted = new Promise<void>((resolve) => {
+        markDecodeStarted = resolve;
+      });
+      using _decode = vi.spyOn(globalThis, "createImageBitmap").mockImplementationOnce(
+        () =>
+          new Promise<ImageBitmap>((resolve) => {
+            finishDecode = resolve;
+            markDecodeStarted?.();
+          }),
+      );
+      using closed = vi.spyOn(bitmap, "close");
+      using drawn = vi.spyOn(canvas.getContext("2d")!, "drawImage");
+      let markAckStarted: (() => void) | undefined;
+      let releaseAck: (() => void) | undefined;
+      const ackStarted = new Promise<void>((resolve) => {
+        markAckStarted = resolve;
+      });
+      const ackPending = new Promise<void>((resolve) => {
+        releaseAck = resolve;
+      });
+      mocks.ack.mockImplementation((frame) => {
+        if (frame.sequence !== 2) return Promise.resolve();
+        markAckStarted?.();
+        return ackPending;
+      });
+      const onPainted = vi.fn();
+      const onError = vi.fn();
+      const queue = createLocalBrowserSurfaceQueue();
+      using _queue = { [Symbol.dispose]: queue.stop };
+      const receiver = createLocalBrowserFrameReceiver({
+        canvas,
+        bridge: {
+          present: mocks.present,
+          ack: mocks.ack,
+          focus: mocks.focus,
+          onFocusRequest: () => () => undefined,
+          input: mocks.input,
+          onFrame: () => () => undefined,
+        },
+        tabId: "runtime-decode",
+        surfaceId: "surface-decode",
+        webContentsId: 8,
+        onPrivateEntry: vi.fn(),
+        isFocused: () => true,
+        onPainted,
+        onError,
+        queue,
+      });
+      using _receiver = { [Symbol.dispose]: receiver.stop };
+      const first: DesktopPreviewSurfaceFrame = {
+        tabId: "runtime-decode",
+        surfaceId: "surface-decode",
+        webContentsId: 8,
+        sequence: 1,
+        generation: 1,
+        width: 300,
+        height: 150,
+        privateEntry: false,
+        png,
+      };
+      let releaseInput: (() => void) | undefined;
+      const inputPending = new Promise<void>((resolve) => {
+        releaseInput = resolve;
+      });
+      const inputs = Array.from({ length: 128 }, () => queue.run(() => inputPending));
+      try {
+        await receiver.receive({ ...first, sequence: 0, privateEntry: true });
+        expect(mocks.ack).toHaveBeenCalledExactlyOnceWith({
+          tabId: first.tabId,
+          surfaceId: first.surfaceId,
+          webContentsId: first.webContentsId,
+          sequence: 0,
+          generation: 1,
+          focused: false,
+        });
+        expect(_decode).not.toHaveBeenCalled();
+        expect(drawn).not.toHaveBeenCalled();
+        expect(onPainted).not.toHaveBeenCalled();
+        expect(onError).toHaveBeenCalledOnce();
+      } finally {
+        releaseInput?.();
+        await Promise.all(inputs);
+      }
+      mocks.ack.mockClear();
+      onError.mockClear();
+      const decoding = receiver.receive(first);
+      await decodeStarted;
+      await receiver.receive({ ...first, sequence: 2, generation: 2 });
+      expect(mocks.ack).not.toHaveBeenCalled();
+      if (stopped) receiver.stop();
+      finishDecode?.(bitmap);
+      await ackStarted;
+      expect(drawn).toHaveBeenCalledTimes(stopped ? 0 : 1);
+      expect(onPainted).not.toHaveBeenCalled();
+      releaseAck?.();
+      await decoding;
+      if (stopped) expect(onPainted).not.toHaveBeenCalled();
+      else
+        expect(onPainted).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ sequence: 2, generation: 2 }),
+        );
+      expect(onError).not.toHaveBeenCalled();
+      expect(closed).toHaveBeenCalledOnce();
+      expect(mocks.ack).toHaveBeenCalledTimes(2);
+      expect(mocks.ack).toHaveBeenCalledWith(
+        expect.objectContaining({ sequence: 1, generation: 1 }),
+      );
+      expect(mocks.ack).toHaveBeenCalledWith(
+        expect.objectContaining({ sequence: 2, generation: 2 }),
+      );
+    },
+  );
 });
 
 describe("ServerBrowserSurface clipboard commands", () => {

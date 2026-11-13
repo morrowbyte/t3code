@@ -1,3 +1,5 @@
+import type { DesktopPreviewTabDefaults } from "@t3tools/contracts";
+
 import { previewBridge } from "~/components/preview/previewBridge";
 
 import { browserDefaultTabState, resolveBrowserDefaults } from "./browserDefaults";
@@ -7,7 +9,7 @@ interface DesktopTabLease {
   references: number;
   closeTimer: number | null;
   ready: Promise<void>;
-  serverTab?: { readonly threadId: string; readonly tabId: string };
+  serverTab?: DesktopPreviewTabDefaults["serverTab"];
 }
 
 const leases = new Map<string, DesktopTabLease>();
@@ -44,7 +46,8 @@ export interface AcquiredDesktopTab {
 
 export function acquireDesktopTab(
   tabId: string,
-  serverTab?: { readonly threadId: string; readonly tabId: string },
+  serverTab?: DesktopPreviewTabDefaults["serverTab"],
+  initialUrl?: string,
 ): AcquiredDesktopTab {
   const current =
     leases.get(tabId) ??
@@ -56,10 +59,20 @@ export function acquireDesktopTab(
       ready: enqueueDesktopTabOperation(tabId, async () =>
         previewBridge?.createTab(tabId, {
           ...browserDefaultTabState(await resolveBrowserDefaults()),
+          ...(initialUrl === undefined ? {} : { initialUrl }),
           ...(serverTab === undefined ? {} : { serverTab }),
         }),
       ),
     } satisfies DesktopTabLease);
+  if (
+    current.serverTab &&
+    serverTab &&
+    (current.serverTab.environmentId !== serverTab.environmentId ||
+      current.serverTab.threadId !== serverTab.threadId ||
+      current.serverTab.tabId !== serverTab.tabId)
+  ) {
+    throw new Error("Desktop browser tab is already bound to another server tab");
+  }
   if (!current.serverTab && serverTab) {
     current.serverTab = serverTab;
     current.ready = enqueueDesktopTabOperation(tabId, () =>

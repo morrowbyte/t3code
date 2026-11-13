@@ -1083,7 +1083,17 @@ function ChatViewContent(props: ChatViewProps) {
   const activePreviewState = useThreadPreviewState(activeThreadRef);
   const activePreviewServerEpoch = activePreviewState.serverEpoch;
   const resolvePreviewRuntimeTabId = activeThreadRef
-    ? (tabId: string) => previewRuntimeTabId(activeThreadRef, activePreviewServerEpoch, tabId)
+    ? (tabId: string) => {
+        const snapshot = activePreviewState.sessions[tabId];
+        return previewRuntimeTabId(
+          activeThreadRef,
+          activePreviewServerEpoch,
+          tabId,
+          !snapshot?.headless && snapshot?.threadId === activeThreadRef.threadId
+            ? snapshot.desktopHostId
+            : undefined,
+        );
+      }
     : undefined;
   const activePreviewMiniPlayer = usePreviewMiniPlayerStore((state) =>
     selectThreadPreviewMiniPlayer(state.byThreadKey, activeThreadRef),

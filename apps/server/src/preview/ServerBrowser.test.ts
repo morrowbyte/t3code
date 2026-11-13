@@ -62,9 +62,26 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
     async connectDesktopPage(endpoint: string) {
       const context = makeContext(undefined, desktopPageUrl);
       context.page.viewportSize.mockReturnValue(null);
-      desktopConnections.push({ endpoint, context });
+      const events = new NodeEvents.EventEmitter();
+      const connection = {
+        endpoint,
+        context,
+        closed: false,
+        disconnect: () => {
+          connection.closed = true;
+          events.emit("disconnected");
+        },
+      };
+      desktopConnections.push(connection);
       desktopDetaches.emit("connected");
-      return { browser: { close: async () => {} }, page: context.page as unknown as Page };
+      return {
+        browser: {
+          once: events.once.bind(events),
+          isConnected: () => !connection.closed,
+          close: async () => connection.disconnect(),
+        },
+        page: context.page as unknown as Page,
+      };
     }
     async close() {
       for (const context of contexts) await context.close();
@@ -309,10 +326,12 @@ let focusedFrame: ReturnType<typeof makeFrame> | null = null;
 let contextFailure: Error | null = null;
 let initialNavigation: (() => Promise<void>) | null = null;
 let desktopRendersNext = false;
+let desktopChannelAvailable = true;
 let desktopPageUrl = "about:blank";
 /** Replaces the answer to the desktop page's size reads. */
 let desktopSizeAnswer: (() => Promise<Record<string, unknown>>) | null = null;
 const desktopAttachWaits: string[] = [];
+let desktopAttachGate: (() => Promise<boolean>) | null = null;
 const desktopDetaches = new NodeEvents.EventEmitter();
 const desktopEvent = (name: string) =>
   new Promise<void>((resolve) => desktopDetaches.once(name, () => resolve()));
@@ -328,7 +347,12 @@ const desktopRenders = (tabId: string) => {
 };
 const releasedDesktopTabs: Array<string> = [];
 const desktopTurns = new NodeEvents.EventEmitter();
-const desktopConnections: Array<{ endpoint: string; context: ReturnType<typeof makeContext> }> = [];
+const desktopConnections: Array<{
+  endpoint: string;
+  context: ReturnType<typeof makeContext>;
+  closed: boolean;
+  disconnect: () => void;
+}> = [];
 let nativeHandler: DesktopChannel.DesktopPrivateEntryHandler | undefined;
 let nativeReplyWaiter: ((response: DesktopBrowserPrivateEntryResponse) => void) | undefined;
 const testThread = {
@@ -360,7 +384,9 @@ const dependencies = Layer.mergeAll(
     installed: Effect.die("mock Chromium does not need an executable"),
   }),
   Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
-    available: true,
+    get available() {
+      return desktopChannelAvailable;
+    },
     registerPrivateEntryHandler: (handler) =>
       Effect.acquireRelease(
         Effect.sync(() => {
@@ -386,9 +412,10 @@ const dependencies = Layer.mergeAll(
         return true;
       }),
     awaitAttached: (key) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         desktopAttachWaits.push(key.tabId);
-        return desktopRenders(key.tabId);
+        const gate = desktopAttachGate;
+        return gate ? Effect.promise(gate) : Effect.succeed(desktopRenders(key.tabId));
       }),
     detached: Stream.callback<{ threadId: string; tabId: string }>((queue) =>
       Effect.acquireRelease(
@@ -403,10 +430,10 @@ const dependencies = Layer.mergeAll(
         (onDetach) => Effect.sync(() => desktopDetaches.off("detach", onDetach)),
       ),
     ),
-    attached: Stream.callback<{ threadId: string; tabId: string }>((queue) =>
+    attached: Stream.callback<DesktopChannel.DesktopTabAttachment>((queue) =>
       Effect.acquireRelease(
         Effect.sync(() => {
-          const onAttach = (key: { threadId: string; tabId: string }) =>
+          const onAttach = (key: DesktopChannel.DesktopTabAttachment) =>
             Queue.offerUnsafe(queue, key);
           desktopDetaches.on("attach", onAttach);
           desktopDetaches.emit("attach-ready");
@@ -495,7 +522,9 @@ beforeEach(() => {
   focusedFrame = null;
   desktopTabs.clear();
   desktopRendersNext = false;
+  desktopChannelAvailable = true;
   desktopAttachWaits.length = 0;
+  desktopAttachGate = null;
   desktopPageUrl = "about:blank";
   desktopSizeAnswer = null;
   desktopDetachReady = Promise.withResolvers<void>();
@@ -792,6 +821,37 @@ it.live.each(["desktop" as const, undefined])(
           ...(runtime === undefined ? {} : { runtime }),
         });
         desktopTabs.add(local.tabId);
+        const bound = yield* Deferred.make<void>();
+        const bindDesktopTab = manager.bindDesktopTab;
+        using _bind = vi
+          .spyOn(manager, "bindDesktopTab")
+          .mockImplementation((input) =>
+            bindDesktopTab(input).pipe(
+              Effect.tap(() =>
+                input.threadId === scope.thread.threadId && input.tabId === local.tabId
+                  ? Deferred.succeed(bound, undefined)
+                  : Effect.void,
+              ),
+            ),
+          );
+        desktopDetaches.emit("attach", {
+          threadId: scope.thread.threadId,
+          tabId: local.tabId,
+          restoration: {
+            desktopHostId: "native-host",
+            url: "https://example.com/logged-in",
+            title: "Signed in",
+            canGoBack: true,
+            canGoForward: false,
+            profileId: "default",
+          },
+        });
+        yield* Deferred.await(bound);
+        expect(
+          (yield* manager.list({ threadId: scope.thread.threadId })).sessions.find(
+            (session) => session.tabId === local.tabId,
+          )?.desktopHostId,
+        ).toBe("native-host");
         const status = yield* broker.invoke<PreviewAutomationStatus>({
           scope,
           operation: "status",
@@ -848,25 +908,29 @@ it.live.each(["desktop" as const, undefined])(
     ).pipe(Effect.provide(layer)),
 );
 
-it.effect("a tab the desktop does not draw is marked headless, so the desktop streams it", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { broker, tabId } = yield* ready;
-      const manager = yield* Manager.PreviewManager;
-      desktopRendersNext = true;
-      const desktopTab = yield* broker.invoke<PreviewAutomationStatus>({
-        scope,
-        operation: "open",
-        input: { reuseExistingTab: false, show: false },
-      });
-      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
-      const headlessOf = (id: string | null) =>
-        sessions.find((session) => session.tabId === id)?.headless;
+it.effect.each([false, true])(
+  "a tab the desktop does not draw is marked headless before a late attachment: %s",
+  (available) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        desktopChannelAvailable = available;
+        const { broker, tabId } = yield* ready;
+        const manager = yield* Manager.PreviewManager;
+        desktopChannelAvailable = true;
+        desktopRendersNext = true;
+        const desktopTab = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+        const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+        const headlessOf = (id: string | null) =>
+          sessions.find((session) => session.tabId === id)?.headless;
 
-      expect(headlessOf(tabId)).toBe(true);
-      expect(headlessOf(desktopTab.tabId)).toBeUndefined();
-    }),
-  ).pipe(Effect.provide(layer)),
+        expect(headlessOf(tabId)).toBe(true);
+        expect(headlessOf(desktopTab.tabId)).toBeUndefined();
+      }),
+    ).pipe(Effect.provide(layer)),
 );
 
 it.effect("a desktop page that loaded before the server attached reports its loaded title", () =>
@@ -1121,6 +1185,12 @@ it.live("inspects the existing controlled page without clicking and refuses othe
       yield* Queue.clear(viewer.output);
       const session = contexts[0]!.sessions.at(-1)!;
       session.send.mockClear();
+      const retiredSession = contexts[0]!.sessions[0]!;
+      const retiredSend = retiredSession.send.getMockImplementation()!;
+      retiredSession.send.mockImplementation(async (method, input) => {
+        if (method === "Page.getFrameTree") throw new Error("Session with given id not found.");
+        return retiredSend(method, input);
+      });
       yield* viewer.input({ type: "inspect", requestId: "selected", x: 15, y: 25 });
       const outputs = yield* Queue.takeAll(viewer.output);
       expect(outputs).toContainEqual(
@@ -2191,6 +2261,90 @@ it.live("only the current controller can answer a file picker", () =>
   ).pipe(Effect.provide(layer)),
 );
 
+it.effect.each([
+  { runtime: "server", lateAttach: false },
+  { runtime: "desktop", lateAttach: false },
+  { runtime: "desktop", lateAttach: true },
+] as const)(
+  "awaits native viewport changes through the existing control session for $runtime tabs (lateAttach=$lateAttach)",
+  ({ runtime, lateAttach }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const browser = yield* ServerBrowser.ServerBrowser;
+        const manager = yield* Manager.PreviewManager;
+        desktopRendersNext = !lateAttach;
+        const { tabId } = yield* manager.open({ threadId: scope.thread.threadId, runtime });
+        const opening = browser.attachViewer({ ...viewerInput(tabId, true), frames: false });
+        const viewer = yield* lateAttach
+          ? Effect.gen(function* () {
+              const waiting = Promise.withResolvers<void>();
+              const attached = Promise.withResolvers<boolean>();
+              yield* Effect.addFinalizer(() => Effect.sync(() => attached.resolve(false)));
+              desktopAttachGate = () => {
+                waiting.resolve();
+                return attached.promise;
+              };
+              const connecting = yield* opening.pipe(Effect.forkScoped);
+              const state = yield* Effect.raceFirst(
+                Effect.promise(() => waiting.promise).pipe(Effect.as("waiting")),
+                Fiber.join(connecting).pipe(Effect.as("connected")),
+              );
+              expect(state).toBe("waiting");
+              expect(desktopConnections).toHaveLength(0);
+              desktopTabs.add(tabId);
+              desktopAttachGate = null;
+              attached.resolve(true);
+              return yield* Fiber.join(connecting);
+            })
+          : opening;
+        const context = desktopConnections[0]!.context;
+        const cdp = context.sessions[0]!;
+        const started = Promise.withResolvers<void>();
+        const finish = Promise.withResolvers<void>();
+        yield* Effect.addFinalizer(() => Effect.sync(() => finish.resolve()));
+        const send = cdp.send;
+        cdp.send = vi.fn(async (method: string, input?: unknown) => {
+          if (method === "Emulation.setDeviceMetricsOverride") {
+            started.resolve();
+            await finish.promise;
+            Object.assign(context.cssViewport, input);
+          }
+          return send(method, input);
+        });
+        yield* viewer.input({ type: "takeControl" });
+        let completed = false;
+        const resizing = yield* viewer
+          .input({
+            type: "viewport",
+            setting: { _tag: "freeform", width: 1440, height: 1700 },
+          })
+          .pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                completed = true;
+              }),
+            ),
+            Effect.forkScoped,
+          );
+        yield* Effect.promise(() => started.promise);
+        expect(completed).toBe(false);
+        expect(context.page.setViewportSize).not.toHaveBeenCalled();
+        finish.resolve();
+        yield* Fiber.join(resizing);
+        expect(viewportSizes(yield* Queue.takeAll(viewer.output))).toContain("1440x1700");
+        yield* viewer.input({ type: "viewport", setting: { _tag: "fill" } });
+        expect(cdp.send).toHaveBeenCalledWith("Emulation.clearDeviceMetricsOverride");
+        const inputSession = context.sessions.at(-1)!;
+        yield* viewer.input({ type: "text", text: "human input" });
+        expect(inputSession.send).toHaveBeenCalledWith("Input.insertText", { text: "human input" });
+        yield* viewer.input({ type: "releaseControl" });
+        inputSession.send.mockClear();
+        yield* viewer.input({ type: "text", text: "released input" });
+        expect(inputSession.send).not.toHaveBeenCalledWith("Input.insertText", expect.anything());
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "desktop viewers get the page's CSS size and keep the last one a read cannot measure",
   () =>
@@ -2517,37 +2671,117 @@ it.live("an agent tab keeps throwaway storage when no client reported profiles",
   ).pipe(Effect.provide(layer)),
 );
 
-it.live("a desktop page that comes back reconnects without waiting for a viewer", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const manager = yield* Manager.PreviewManager;
-      yield* ServerBrowser.ServerBrowser;
-      const connected = desktopEvent("connected");
-      const detachReady =
-        desktopDetaches.listenerCount("detach") === 0 ? desktopEvent("detach-ready") : undefined;
-      const attachReady =
-        desktopDetaches.listenerCount("attach") === 0 ? desktopEvent("attach-ready") : undefined;
-      if (detachReady !== undefined) yield* Effect.promise(() => detachReady);
-      if (attachReady !== undefined) yield* Effect.promise(() => attachReady);
-      desktopRendersNext = true;
-      const opened = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
-      yield* Effect.promise(() => connected);
-      yield* Effect.promise(() => desktopConnections[0]!.context.registered);
-      const released = desktopEvent("released");
-      desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId: opened.tabId });
-      yield* Effect.promise(() => released);
-      const reconnected = desktopEvent("connected");
-      desktopDetaches.emit("attach", { threadId: scope.thread.threadId, tabId: opened.tabId });
-      yield* Effect.promise(() => reconnected);
-      yield* Effect.promise(() => desktopConnections[1]!.context.registered);
-      expect(desktopConnections).toHaveLength(2);
-    }),
-  ).pipe(Effect.provide(layer)),
+it.live.each([false, true])(
+  "a desktop page that comes back reconnects without waiting for a viewer (missing snapshot: %s)",
+  (missingSnapshot) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const manager = yield* Manager.PreviewManager;
+        const browser = yield* ServerBrowser.ServerBrowser;
+        const connected = desktopEvent("connected");
+        const detachReady =
+          desktopDetaches.listenerCount("detach") === 0 ? desktopEvent("detach-ready") : undefined;
+        const attachReady =
+          desktopDetaches.listenerCount("attach") === 0 ? desktopEvent("attach-ready") : undefined;
+        if (detachReady !== undefined) yield* Effect.promise(() => detachReady);
+        if (attachReady !== undefined) yield* Effect.promise(() => attachReady);
+        desktopRendersNext = true;
+        const opened = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
+        yield* Effect.promise(() => connected);
+        yield* Effect.promise(() => desktopConnections[0]!.context.registered);
+        const firstViewerScope = yield* Scope.make();
+        yield* browser
+          .attachViewer({ ...viewerInput(opened.tabId, false), frames: false })
+          .pipe(Effect.provideService(Scope.Scope, firstViewerScope));
+        const firstSession = desktopConnections[0]!.context.sessions.at(-1)!;
+        const released = desktopEvent("released");
+        desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId: opened.tabId });
+        yield* Effect.promise(() => released);
+        yield* Scope.close(firstViewerScope, Exit.void);
+        expect(firstSession.detach).not.toHaveBeenCalled();
+        if (missingSnapshot) {
+          yield* manager.close({ threadId: scope.thread.threadId, tabId: opened.tabId });
+        }
+        const reconnected = desktopEvent("connected");
+        desktopDetaches.emit("attach", {
+          threadId: scope.thread.threadId,
+          tabId: opened.tabId,
+          restoration: {
+            desktopHostId: "surviving-native-host",
+            url: "https://example.com/survived",
+            title: "Survived",
+            canGoBack: true,
+            canGoForward: false,
+            viewport: { _tag: "freeform", width: 900, height: 700 },
+            profileId: "default",
+          },
+        });
+        yield* Effect.promise(() => reconnected);
+        yield* Effect.promise(() => desktopConnections[1]!.context.registered);
+        expect(desktopConnections).toHaveLength(2);
+        const restored = (yield* manager.list({ threadId: scope.thread.threadId })).sessions.find(
+          (session) => session.tabId === opened.tabId,
+        );
+        expect(restored?.desktopHostId).toBe("surviving-native-host");
+        if (missingSnapshot) {
+          expect(restored).toMatchObject({ runtime: "desktop", profileId: "default" });
+          expect(restored).not.toHaveProperty("automationOwner");
+          expect(restored).not.toHaveProperty("revealRequest");
+        }
+        const connection = desktopConnections[1]!;
+        expect(connection.context.page.goto).not.toHaveBeenCalled();
+        expect(connection.context.page.reload).not.toHaveBeenCalled();
+        const attachedViewerScope = yield* Scope.make();
+        yield* browser
+          .attachViewer({ ...viewerInput(opened.tabId, false), frames: false })
+          .pipe(Effect.provideService(Scope.Scope, attachedViewerScope));
+        const attachedSession = connection.context.sessions.at(-1)!;
+        yield* Scope.close(attachedViewerScope, Exit.void);
+        expect(attachedSession.detach).toHaveBeenCalledOnce();
+        expect(connection.closed).toBe(false);
+        expect(connection.context.page.close).not.toHaveBeenCalled();
+
+        const lostViewerScope = yield* Scope.make();
+        yield* browser
+          .attachViewer({ ...viewerInput(opened.tabId, false), frames: false })
+          .pipe(Effect.provideService(Scope.Scope, lostViewerScope));
+        const lostSession = connection.context.sessions.at(-1)!;
+        const detachStarted = Promise.withResolvers<void>();
+        const detachReleased = Promise.withResolvers<void>();
+        let detachCompleted = false;
+        lostSession.detach.mockImplementation(async () => {
+          detachStarted.resolve();
+          await detachReleased.promise;
+          detachCompleted = true;
+        });
+        const closing = yield* Scope.close(lostViewerScope, Exit.void).pipe(Effect.forkScoped);
+        try {
+          yield* Effect.promise(() => detachStarted.promise);
+          expect(connection.closed).toBe(false);
+          connection.disconnect();
+          yield* Fiber.join(closing);
+          expect(detachCompleted).toBe(false);
+          expect(lostSession.detach).toHaveBeenCalledOnce();
+          expect(connection.context.page.close).not.toHaveBeenCalled();
+        } finally {
+          detachReleased.resolve();
+          yield* Fiber.join(closing);
+        }
+        return opened.tabId;
+      }).pipe(Effect.provide(layer)),
+    ).pipe(
+      Effect.tap((tabId) =>
+        Effect.sync(() => {
+          expect(releasedDesktopTabs).toEqual([tabId, tabId]);
+          expect(desktopConnections.map((connection) => connection.closed)).toEqual([true, true]);
+        }),
+      ),
+    ),
 );
 
-it.live(
-  "native human fill reserves a human-opened primary tab and refuses an existing auto-taken viewer",
-  () =>
+it.live.each(["none", "key", "mouse"] as const)(
+  "native human fill refuses an occupied manual surface and waits for its confirmed release: %s failure",
+  (failure) =>
     Effect.gen(function* () {
       const browser = yield* ServerBrowser.ServerBrowser;
       const manager = yield* Manager.PreviewManager;
@@ -2585,8 +2819,11 @@ it.live(
         requestId: "native-release",
         generation: grant.generation,
       });
-      // The existing viewer path REALLY auto-takes an unclaimed human tab.
-      yield* browser.attachViewer(viewerInput(opened.tabId, true));
+      // Native surfaces still reserve the ordinary viewer even without streamed frames.
+      const viewer = yield* browser.attachViewer({
+        ...viewerInput(opened.tabId, true),
+        frames: false,
+      });
       const refusal = next();
       yield* nativeHandler!.request({
         ...binding,
@@ -2596,6 +2833,125 @@ it.live(
       expect(yield* Effect.promise(() => refusal)).toMatchObject({
         type: "private-entry-refused",
         reason: "viewer-owned",
+      });
+
+      const control = (yield* Queue.clear(viewer.output)).findLast(
+        (message) => message._tag === "control",
+      );
+      if (!control || control._tag !== "control") throw new Error("Expected viewer control");
+      expect(control.controller).toBe("you");
+      yield* viewer.input({
+        type: "releaseControl",
+        requestId: "stale-menu-release",
+        expectedGeneration: control.generation - 1,
+        preparePrivateEntry: true,
+      });
+      expect(yield* Queue.clear(viewer.output)).toContainEqual({
+        _tag: "controlReleased",
+        requestId: "stale-menu-release",
+        expectedGeneration: control.generation - 1,
+        generation: control.generation,
+        released: false,
+      });
+      yield* viewer.input({
+        type: "key",
+        action: "down",
+        key: "a",
+        code: "KeyA",
+        modifiers: 0,
+      });
+      yield* viewer.input({
+        type: "mouse",
+        action: "down",
+        button: "left",
+        buttons: 1,
+        x: 12,
+        y: 18,
+      });
+      const cdp = desktopConnections.at(-1)!.context.sessions.at(-1)!;
+      const send = cdp.send.getMockImplementation()!;
+      const drainStarted = Promise.withResolvers<void>();
+      const continueDrain = Promise.withResolvers<void>();
+      using _drain = { [Symbol.dispose]: () => continueDrain.resolve() };
+      cdp.send.mockImplementation(async (method, input) => {
+        if (method === "Input.dispatchKeyEvent" && (input as { type?: string }).type === "keyUp") {
+          drainStarted.resolve();
+          await continueDrain.promise;
+        }
+        if (
+          (failure === "key" &&
+            method === "Input.dispatchKeyEvent" &&
+            (input as { type?: string }).type === "keyUp") ||
+          (failure === "mouse" &&
+            method === "Input.dispatchMouseEvent" &&
+            (input as { type?: string }).type === "mouseReleased")
+        ) {
+          throw new Error("Input release failed");
+        }
+        return send(method, input);
+      });
+      yield* Queue.clear(viewer.output);
+      const release = yield* viewer
+        .input({
+          type: "releaseControl",
+          requestId: "native-menu-release",
+          expectedGeneration: control.generation,
+          preparePrivateEntry: true,
+        })
+        .pipe(Effect.forkScoped);
+      yield* Effect.promise(() => drainStarted.promise);
+      expect(yield* Queue.clear(viewer.output)).not.toContainEqual(
+        expect.objectContaining({ _tag: "controlReleased" }),
+      );
+      continueDrain.resolve();
+      yield* Fiber.join(release);
+      expect(yield* Queue.clear(viewer.output)).toContainEqual({
+        _tag: "controlReleased",
+        requestId: "native-menu-release",
+        expectedGeneration: control.generation,
+        generation: control.generation + 1,
+        released: failure === "none",
+      });
+      expect(cdp.send).toHaveBeenCalledWith("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        button: "left",
+        x: 12,
+        y: 18,
+        buttons: 0,
+        clickCount: 1,
+      });
+      if (failure !== "none") {
+        cdp.send.mockImplementation(send);
+        yield* viewer.input({ type: "takeControl" });
+        yield* Queue.clear(viewer.output);
+        cdp.send.mockClear();
+        yield* viewer.input({
+          type: "releaseControl",
+          requestId: "native-menu-release-recovery",
+          expectedGeneration: control.generation + 2,
+          preparePrivateEntry: true,
+        });
+        expect(yield* Queue.clear(viewer.output)).toContainEqual({
+          _tag: "controlReleased",
+          requestId: "native-menu-release-recovery",
+          expectedGeneration: control.generation + 2,
+          generation: control.generation + 3,
+          released: true,
+        });
+        expect(cdp.send).toHaveBeenCalledWith(
+          failure === "key" ? "Input.dispatchKeyEvent" : "Input.dispatchMouseEvent",
+          expect.objectContaining({ type: failure === "key" ? "keyUp" : "mouseReleased" }),
+        );
+      }
+      const afterDrain = next();
+      yield* nativeHandler!.request({
+        ...binding,
+        type: "private-entry-acquire",
+        requestId: "native-after-viewer-drain",
+      });
+      expect(yield* Effect.promise(() => afterDrain)).toMatchObject({
+        type: "private-entry-granted",
+        requestId: "native-after-viewer-drain",
       });
     }).pipe(Effect.provide(layer), Effect.scoped),
 );

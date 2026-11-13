@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 import type { AppRestoreInput, AppRestoreResult, AppRestoreState } from "./appRestore.ts";
 import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
+import { PreviewViewportSetting } from "./preview.ts";
 
 import { SnapShotSource } from "./chatAttachment.ts";
 import {
@@ -629,6 +630,7 @@ export interface DesktopPreviewTabState {
   selection?: PreviewAnnotationPayload | null;
   tabId: string;
   webContentsId: number | null;
+  hostKind?: "webview" | "offscreen";
   navStatus: DesktopPreviewNavStatus;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -977,17 +979,33 @@ export const DesktopPreviewTabInputSchema = Schema.Struct({
 /** Apply zoom and color scheme at creation to avoid flashing browser defaults. */
 export const DesktopPreviewCreateTabInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
+  initialUrl: Schema.optional(Schema.String),
   zoomFactor: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
   colorScheme: Schema.optional(DesktopPreviewColorSchemeSchema),
   serverTab: Schema.optional(
-    Schema.Struct({ threadId: TrimmedNonEmptyString, tabId: TrimmedNonEmptyString }),
+    Schema.Struct({
+      environmentId: Schema.optional(TrimmedNonEmptyString),
+      threadId: TrimmedNonEmptyString,
+      tabId: TrimmedNonEmptyString,
+      profileId: Schema.optional(BrowserProfileId),
+      viewport: Schema.optional(PreviewViewportSetting),
+    }),
   ),
 });
 
 export interface DesktopPreviewTabDefaults {
+  readonly initialUrl?: string | undefined;
   readonly zoomFactor?: number | undefined;
   readonly colorScheme?: DesktopPreviewColorScheme | undefined;
-  readonly serverTab?: { readonly threadId: string; readonly tabId: string } | undefined;
+  readonly serverTab?:
+    | {
+        readonly environmentId?: string | undefined;
+        readonly threadId: string;
+        readonly tabId: string;
+        readonly profileId?: BrowserProfileId | undefined;
+        readonly viewport?: PreviewViewportSetting | undefined;
+      }
+    | undefined;
 }
 
 export const DesktopPreviewRegisterWebviewInputSchema = Schema.Struct({
@@ -1005,6 +1023,105 @@ export const DesktopPreviewConfigInputSchema = Schema.Struct({
   /** Main must derive the partition to ensure its session has UA rewrites and permission handlers. */
   profileId: Schema.optional(BrowserProfileId),
 });
+
+export const DesktopPreviewOffscreenHostInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  environmentId: EnvironmentId,
+  profileId: Schema.optional(BrowserProfileId),
+  viewport: PreviewViewportSetting,
+});
+export type DesktopPreviewOffscreenHostInput = typeof DesktopPreviewOffscreenHostInputSchema.Type;
+
+export const DesktopPreviewSurfaceStateSchema = Schema.Struct({
+  kind: Schema.Literals(["pending", "webview", "offscreen"]),
+  webContentsId: Schema.NullOr(Schema.Int),
+  privateEntry: Schema.Boolean,
+});
+export type DesktopPreviewSurfaceState = typeof DesktopPreviewSurfaceStateSchema.Type;
+
+export const DesktopPreviewSurfacePresentationSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  surfaceId: TrimmedNonEmptyString,
+  visible: Schema.Boolean,
+  width: Schema.optional(PositiveInt),
+  height: Schema.optional(PositiveInt),
+});
+export type DesktopPreviewSurfacePresentation = typeof DesktopPreviewSurfacePresentationSchema.Type;
+
+export const DesktopPreviewSurfaceAckSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  surfaceId: TrimmedNonEmptyString,
+  webContentsId: PositiveInt,
+  sequence: NonNegativeInt,
+  generation: NonNegativeInt,
+  focused: Schema.optional(Schema.Boolean),
+});
+export type DesktopPreviewSurfaceAck = typeof DesktopPreviewSurfaceAckSchema.Type;
+
+export const DesktopPreviewSurfaceFocusInputSchema = Schema.Struct({
+  ...DesktopPreviewSurfaceAckSchema.fields,
+  focused: Schema.Boolean,
+  requestId: Schema.optional(TrimmedNonEmptyString),
+  prepared: Schema.optional(Schema.Boolean),
+});
+export type DesktopPreviewSurfaceFocusInput = typeof DesktopPreviewSurfaceFocusInputSchema.Type;
+
+export interface DesktopPreviewSurfaceFocusRequest extends DesktopPreviewSurfaceAck {
+  readonly requestId: string;
+  readonly preparation?: "begin" | "finish";
+  readonly privateEntry?: boolean;
+}
+
+const DesktopPreviewSurfacePoint = { x: Schema.Finite, y: Schema.Finite };
+export const DesktopPreviewSurfaceInputSchema = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("mouse"),
+    action: Schema.Literals(["move", "down", "up"]),
+    ...DesktopPreviewSurfacePoint,
+    button: Schema.Literals(["none", "left", "middle", "right"]),
+    buttons: NonNegativeInt,
+    clickCount: NonNegativeInt,
+    modifiers: NonNegativeInt,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("wheel"),
+    ...DesktopPreviewSurfacePoint,
+    deltaX: Schema.Finite,
+    deltaY: Schema.Finite,
+    modifiers: NonNegativeInt,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("key"),
+    action: Schema.Literals(["down", "up"]),
+    key: Schema.String,
+    code: Schema.String,
+    keyCode: Schema.optional(NonNegativeInt),
+    text: Schema.optional(Schema.String),
+    modifiers: NonNegativeInt,
+  }),
+  Schema.Struct({ type: Schema.Literal("text"), text: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("probe"), ...DesktopPreviewSurfacePoint }),
+]);
+export type DesktopPreviewSurfaceInput = typeof DesktopPreviewSurfaceInputSchema.Type;
+
+export const DesktopPreviewSurfaceInputRequestSchema = Schema.Struct({
+  ...DesktopPreviewSurfaceAckSchema.fields,
+  input: DesktopPreviewSurfaceInputSchema,
+});
+export type DesktopPreviewSurfaceInputRequest = typeof DesktopPreviewSurfaceInputRequestSchema.Type;
+
+export const DesktopPreviewSurfaceInputResultSchema = Schema.Struct({
+  editable: Schema.optional(Schema.Boolean),
+});
+export type DesktopPreviewSurfaceInputResult = typeof DesktopPreviewSurfaceInputResultSchema.Type;
+
+/** Ephemeral pixels go only to the owning desktop renderer, including during private entry. */
+export interface DesktopPreviewSurfaceFrame extends DesktopPreviewSurfaceAck {
+  readonly width: number;
+  readonly height: number;
+  readonly png: Uint8Array;
+  readonly privateEntry: boolean;
+}
 
 export const DesktopPreviewClearDataInputSchema = Schema.Struct({
   environmentId: EnvironmentId,
@@ -1359,10 +1476,23 @@ export interface DesktopBridge {
 export const DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER = "__t3DesktopPreviewRecordingCapture";
 
 export interface DesktopPreviewBridge {
+  getHostedEnvironmentIds: () => Promise<ReadonlyArray<string>>;
+  onHostedEnvironmentsChange: (listener: (ids: ReadonlyArray<string>) => void) => () => void;
   setForwardedShortcuts: (shortcuts: ReadonlyArray<PreviewForwardedShortcut>) => Promise<void>;
   createTab: (tabId: string, defaults?: DesktopPreviewTabDefaults) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
   registerWebview: (tabId: string, webContentsId: number) => Promise<void>;
+  ensureOffscreenHost: (
+    input: DesktopPreviewOffscreenHostInput,
+  ) => Promise<DesktopPreviewSurfaceState>;
+  surface: {
+    present: (input: DesktopPreviewSurfacePresentation) => Promise<DesktopPreviewSurfaceState>;
+    ack: (input: DesktopPreviewSurfaceAck) => Promise<void>;
+    focus: (input: DesktopPreviewSurfaceFocusInput) => Promise<void>;
+    onFocusRequest: (listener: (request: DesktopPreviewSurfaceFocusRequest) => void) => () => void;
+    input: (input: DesktopPreviewSurfaceInputRequest) => Promise<DesktopPreviewSurfaceInputResult>;
+    onFrame: (listener: (frame: DesktopPreviewSurfaceFrame) => void) => () => void;
+  };
   navigate: (tabId: string, url: string) => Promise<void>;
   goBack: (tabId: string) => Promise<void>;
   goForward: (tabId: string) => Promise<void>;

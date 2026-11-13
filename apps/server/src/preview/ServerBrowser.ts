@@ -421,6 +421,13 @@ export class ServerBrowserLaunchError extends Schema.TaggedError<ServerBrowserLa
 
 export type ServerBrowserViewerOutput =
   | {
+      readonly _tag: "controlReleased";
+      readonly requestId: string;
+      readonly expectedGeneration: number;
+      readonly generation: number;
+      readonly released: boolean;
+    }
+  | {
       readonly _tag: "selection";
       readonly requestId: string;
       readonly failed?: boolean;
@@ -570,7 +577,11 @@ interface ServerTab {
 
   readonly isolatedContext: boolean;
 
-  readonly desktop: { readonly close: () => Promise<void> } | null;
+  readonly desktop: {
+    readonly close: () => Promise<void>;
+    readonly closed: Promise<void>;
+    readonly isConnected: () => boolean;
+  } | null;
   readonly profileId: string | undefined;
   readonly openerTabId: string | undefined;
 
@@ -736,6 +747,7 @@ const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const previewBrowser = yield* PreviewBrowser.PreviewBrowser;
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
+  const serviceScope = yield* Scope.Scope;
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
@@ -1003,7 +1015,20 @@ const make = Effect.gen(function* () {
   const applySetting = async (tab: ServerTab, setting: PreviewViewportSetting) => {
     tab.setting = setting;
 
-    if (tab.desktop) return;
+    if (tab.desktop) {
+      const size = fixedViewportSize(setting);
+      if (size) {
+        await tab.cdp.send("Emulation.setDeviceMetricsOverride", {
+          ...size,
+          deviceScaleFactor: 0,
+          mobile: false,
+        });
+      } else {
+        await tab.cdp.send("Emulation.clearDeviceMetricsOverride");
+      }
+      await broadcastViewport(tab);
+      return;
+    }
     const size =
       fixedViewportSize(setting) ??
       [...tab.viewers]
@@ -1065,7 +1090,7 @@ const make = Effect.gen(function* () {
       : Promise.resolve(false);
 
   const connectDesktop = async (snapshot: PreviewSessionSnapshot) => {
-    const scope = await runPromise(Scope.make());
+    const scope = await runPromise(Scope.fork(serviceScope));
     try {
       const endpoint = await runPromise(
         desktopChannel
@@ -1073,12 +1098,20 @@ const make = Effect.gen(function* () {
           .pipe(Scope.provide(scope)),
       );
       const connected = await contexts.connectDesktopPage(endpoint);
+      const disconnected = Promise.withResolvers<void>();
+      connected.browser.once("disconnected", () => disconnected.resolve());
+      if (!connected.browser.isConnected()) disconnected.resolve();
+      await runPromise(
+        Scope.addFinalizer(
+          scope,
+          Effect.promise(() => connected.browser.close().catch(constVoid)),
+        ),
+      );
       return {
         page: connected.page,
-        close: async () => {
-          await connected.browser.close().catch(constVoid);
-          await runPromise(Scope.close(scope, Exit.void));
-        },
+        close: () => runPromise(Scope.close(scope, Exit.void)),
+        closed: disconnected.promise,
+        isConnected: () => connected.browser.isConnected(),
       };
     } catch (cause) {
       await runPromise(Scope.close(scope, Exit.void));
@@ -1100,7 +1133,7 @@ const make = Effect.gen(function* () {
       });
     }
     // Otherwise a desktop that attaches late shows its own page, and the agent drives another.
-    if (!desktop && desktopChannel.available) {
+    if (!desktop) {
       await runPromise(
         manager
           .markHeadless({ threadId: ThreadId.make(snapshot.threadId), tabId: snapshot.tabId })
@@ -1153,7 +1186,14 @@ const make = Effect.gen(function* () {
           .catch(constVoid);
       },
       isolatedContext,
-      desktop: desktop === null ? null : { close: desktop.close },
+      desktop:
+        desktop === null
+          ? null
+          : {
+              close: desktop.close,
+              closed: desktop.closed,
+              isConnected: desktop.isConnected,
+            },
       profileId: snapshot.profileId,
       openerTabId: adopted?.openerTabId,
       downloads: [],
@@ -1690,7 +1730,9 @@ const make = Effect.gen(function* () {
     const snapshot = sessions.find((session) => session.tabId === tabId);
     if (
       !snapshot ||
-      (snapshot.runtime !== "server" && !(yield* desktopChannel.isAttached({ threadId, tabId })))
+      (snapshot.runtime !== "server" &&
+        !(yield* desktopChannel.isAttached({ threadId, tabId })) &&
+        !(yield* Effect.promise(() => desktopRenders(snapshot))))
     )
       return yield* new ServerBrowserTabNotFoundError({ threadId, tabId });
     return yield* Effect.tryPromise({
@@ -2520,7 +2562,9 @@ const make = Effect.gen(function* () {
         return {
           tabId: tab.tabId,
           setting,
-          viewport: tab.page.viewportSize() ?? UNATTACHED_FILL_VIEWPORT,
+          viewport:
+            (tab.desktop ? await layoutSize(tab) : tab.page.viewportSize()) ??
+            UNATTACHED_FILL_VIEWPORT,
         };
       }
       case "setColorScheme": {
@@ -2666,24 +2710,40 @@ const make = Effect.gen(function* () {
       }
     });
 
-  const releaseViewerInput = async (viewer: ViewerState, session: CDPSession) => {
-    for (const { key, code } of viewer.pressedKeys.values()) {
-      await session.send("Input.dispatchKeyEvent", { type: "keyUp", key, code }).catch(constVoid);
+  const releaseViewerInput = async (
+    viewer: ViewerState,
+    session: CDPSession,
+    requireReleased = false,
+  ) => {
+    const errors: unknown[] = [];
+    for (const [id, { key, code }] of viewer.pressedKeys) {
+      try {
+        await session.send("Input.dispatchKeyEvent", { type: "keyUp", key, code });
+        viewer.pressedKeys.delete(id);
+      } catch (error) {
+        errors.push(error);
+        if (!requireReleased) viewer.pressedKeys.delete(id);
+      }
     }
-    viewer.pressedKeys.clear();
     for (const [button, point] of viewer.pressedButtons) {
-      await session
-        .send("Input.dispatchMouseEvent", {
+      try {
+        await session.send("Input.dispatchMouseEvent", {
           type: "mouseReleased",
           button,
           ...point,
           buttons: 0,
           clickCount: 1,
-        })
-        .catch(constVoid);
+        });
+        viewer.pressedButtons.delete(button);
+      } catch (error) {
+        errors.push(error);
+        if (!requireReleased) viewer.pressedButtons.delete(button);
+      }
     }
-    viewer.pressedButtons.clear();
     viewer.requestedSize = null;
+    if (requireReleased && errors.length > 0) {
+      throw new AggregateError(errors, "Browser input could not be released.");
+    }
   };
 
   const dispatchViewerInput = async (
@@ -2826,7 +2886,7 @@ const make = Effect.gen(function* () {
             tab.page,
             message.x,
             message.y,
-            tab.cdp,
+            session,
           );
           viewer.push({ _tag: "selection", requestId: message.requestId, annotation });
         } catch {
@@ -2868,8 +2928,12 @@ const make = Effect.gen(function* () {
       }),
       (session) =>
         Effect.promise(async () => {
-          if (streamsFrames) await session.send("Page.stopScreencast").catch(constVoid);
-          await session.detach().catch(constVoid);
+          if (tab.desktop && !tab.desktop.isConnected()) return;
+          const detach = async () => {
+            if (streamsFrames) await session.send("Page.stopScreencast").catch(constVoid);
+            await session.detach().catch(constVoid);
+          };
+          await (tab.desktop ? Promise.race([detach(), tab.desktop.closed]) : detach());
         }),
     );
     const quality = Math.min(100, Math.max(1, Math.round(input.quality)));
@@ -2909,9 +2973,15 @@ const make = Effect.gen(function* () {
         if (next._tag === "frame") runFork(next.ack);
         // Preserve the latest control and size when frames fill a slow viewer's queue.
         else if (
-          ["gone", "reconnect", "control", "viewport", "fileChooser", "selection"].includes(
-            next._tag,
-          )
+          [
+            "gone",
+            "reconnect",
+            "control",
+            "controlReleased",
+            "viewport",
+            "fileChooser",
+            "selection",
+          ].includes(next._tag)
         ) {
           const dropped = Effect.runSyncExit(Queue.clear(output));
           if (dropped._tag === "Failure") return;
@@ -3030,6 +3100,25 @@ const make = Effect.gen(function* () {
           if (!viewer.canOperate) return;
           const message = asRecord(raw);
           if (!message) return;
+          const correlatedRelease =
+            message.type === "releaseControl" &&
+            typeof message.requestId === "string" &&
+            message.requestId.length > 0 &&
+            message.requestId.length <= 128 &&
+            typeof message.expectedGeneration === "number" &&
+            Number.isSafeInteger(message.expectedGeneration) &&
+            message.expectedGeneration >= 0
+              ? { requestId: message.requestId, expectedGeneration: message.expectedGeneration }
+              : null;
+          const released = (success: boolean) => {
+            if (!correlatedRelease || !tab.viewers.has(viewer) || tab.closing) return;
+            viewer.push({
+              _tag: "controlReleased",
+              ...correlatedRelease,
+              generation: tab.control.generation,
+              released: success,
+            });
+          };
           try {
             if (message.type === "takeControl") {
               viewer.readyGeneration = null;
@@ -3060,11 +3149,33 @@ const make = Effect.gen(function* () {
               broadcastControl(tab);
               pushFileChooser(tab);
             } else if (message.type === "releaseControl") {
+              if (
+                !correlatedRelease &&
+                (message.requestId !== undefined ||
+                  message.expectedGeneration !== undefined ||
+                  message.preparePrivateEntry === true)
+              )
+                return;
+              if (
+                correlatedRelease &&
+                (tab.control.generation !== correlatedRelease.expectedGeneration ||
+                  tab.control.controller !== viewer.id ||
+                  (message.preparePrivateEntry === true &&
+                    (tab.control.agentId !== null || tab.control.requiresHuman)))
+              ) {
+                released(false);
+                return;
+              }
               const releasing = tab.control.release(viewer.id, () =>
-                releaseViewerInput(viewer, session),
+                releaseViewerInput(viewer, session, message.preparePrivateEntry === true),
               );
               broadcastControl(tab);
               await releasing;
+              released(
+                correlatedRelease !== null &&
+                  tab.control.generation === correlatedRelease.expectedGeneration + 1 &&
+                  tab.control.controller === null,
+              );
             } else if (
               message.type === "dialog" &&
               tab.control.controller === viewer.id &&
@@ -3090,6 +3201,7 @@ const make = Effect.gen(function* () {
               }
             }
           } catch {
+            released(false);
             broadcastControl(tab);
           }
         }),
@@ -3124,9 +3236,22 @@ const make = Effect.gen(function* () {
   yield* desktopChannel.attached.pipe(
     Stream.runForEach((key) =>
       Effect.gen(function* () {
+        if (!(yield* desktopChannel.isAttached(key))) return;
+        const threadId = ThreadId.make(key.threadId);
+        const { sessions } = yield* manager.list({ threadId });
+        if (!(yield* desktopChannel.isAttached(key))) return;
+        let snapshot = sessions.find((session) => session.tabId === key.tabId);
+        if (key.restoration) {
+          snapshot = snapshot
+            ? yield* manager.bindDesktopTab({
+                threadId,
+                tabId: key.tabId,
+                desktopHostId: key.restoration.desktopHostId,
+              })
+            : yield* manager.restoreDesktopTab({ threadId, tabId: key.tabId, ...key.restoration });
+        }
+        if (!(yield* desktopChannel.isAttached(key))) return;
         if (tabs.has(tabKey(key.threadId, key.tabId))) return;
-        const { sessions } = yield* manager.list({ threadId: ThreadId.make(key.threadId) });
-        const snapshot = sessions.find((session) => session.tabId === key.tabId);
         if (snapshot) yield* Effect.promise(() => ensureTab(snapshot).catch(constVoid));
       }).pipe(Effect.ignore),
     ),

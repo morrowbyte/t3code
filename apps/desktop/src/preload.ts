@@ -5,6 +5,8 @@ import type {
   DesktopPreviewPointerEvent,
   DesktopPreviewRecordingInputEvent,
   DesktopPreviewTabState,
+  DesktopPreviewSurfaceFrame,
+  DesktopPreviewSurfaceFocusRequest,
   DesktopSnapShotEvent,
 } from "@t3tools/contracts";
 import { exposeClerkBridge } from "@clerk/electron/preload";
@@ -330,11 +332,23 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     },
   },
   preview: {
+    getHostedEnvironmentIds: () =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_HOSTED_ENVIRONMENTS_GET_CHANNEL),
+    onHostedEnvironmentsChange: (listener) => {
+      const receive = (_event: Electron.IpcRendererEvent, ids: unknown) => {
+        if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string")) return;
+        listener(ids);
+      };
+      ipcRenderer.on(IpcChannels.PREVIEW_HOSTED_ENVIRONMENTS_CHANGE_CHANNEL, receive);
+      return () =>
+        ipcRenderer.removeListener(IpcChannels.PREVIEW_HOSTED_ENVIRONMENTS_CHANGE_CHANNEL, receive);
+    },
     setForwardedShortcuts: (shortcuts) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_SET_FORWARDED_SHORTCUTS_CHANNEL, shortcuts),
     createTab: (tabId, defaults) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_CREATE_TAB_CHANNEL, {
         tabId,
+        initialUrl: defaults?.initialUrl,
         zoomFactor: defaults?.zoomFactor,
         serverTab: defaults?.serverTab,
         colorScheme: defaults?.colorScheme,
@@ -342,6 +356,39 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     closeTab: (tabId) => ipcRenderer.invoke(IpcChannels.PREVIEW_CLOSE_TAB_CHANNEL, { tabId }),
     registerWebview: (tabId, webContentsId) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_REGISTER_WEBVIEW_CHANNEL, { tabId, webContentsId }),
+    ensureOffscreenHost: (input) =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_ENSURE_OFFSCREEN_HOST_CHANNEL, input),
+    surface: {
+      present: (input) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_LOCAL_SURFACE_PRESENT_CHANNEL, input),
+      ack: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_LOCAL_SURFACE_ACK_CHANNEL, input),
+      focus: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_LOCAL_SURFACE_FOCUS_CHANNEL, input),
+      onFocusRequest: (listener) => {
+        const receive = (
+          _event: Electron.IpcRendererEvent,
+          request: DesktopPreviewSurfaceFocusRequest,
+        ) => {
+          if (typeof request?.tabId !== "string" || typeof request.requestId !== "string") return;
+          listener(request);
+        };
+        ipcRenderer.on(IpcChannels.PREVIEW_LOCAL_SURFACE_FOCUS_REQUEST_CHANNEL, receive);
+        return () =>
+          ipcRenderer.removeListener(
+            IpcChannels.PREVIEW_LOCAL_SURFACE_FOCUS_REQUEST_CHANNEL,
+            receive,
+          );
+      },
+      input: (input) => ipcRenderer.invoke(IpcChannels.PREVIEW_LOCAL_SURFACE_INPUT_CHANNEL, input),
+      onFrame: (listener) => {
+        const receive = (_event: Electron.IpcRendererEvent, frame: DesktopPreviewSurfaceFrame) => {
+          if (typeof frame?.tabId !== "string" || !(frame.png instanceof Uint8Array)) return;
+          listener(frame);
+        };
+        ipcRenderer.on(IpcChannels.PREVIEW_LOCAL_SURFACE_FRAME_CHANNEL, receive);
+        return () =>
+          ipcRenderer.removeListener(IpcChannels.PREVIEW_LOCAL_SURFACE_FRAME_CHANNEL, receive);
+      },
+    },
     navigate: (tabId, url) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_NAVIGATE_CHANNEL, { tabId, url }),
     goBack: (tabId) => ipcRenderer.invoke(IpcChannels.PREVIEW_GO_BACK_CHANNEL, { tabId }),

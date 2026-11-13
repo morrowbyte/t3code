@@ -15,6 +15,10 @@ import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
 
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(DesktopBrowserEvent));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodePrivateCdpReply = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeBrowserAttachment = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ result: Schema.Struct({ sessionId: Schema.String }) })),
+);
 const decodeCdpReply = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Struct({ id: Schema.Number })),
 );
@@ -108,8 +112,11 @@ const takeEvents = (host: DesktopBrowserHost.DesktopBrowserHost["Service"], coun
     Effect.map((lines) => lines.map((line) => decodeEvent(new TextDecoder().decode(line)))),
   );
 
-const connect = Effect.fn(function* (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) {
-  const connection = host.createConnection();
+const connect = Effect.fn(function* (
+  host: DesktopBrowserHost.DesktopBrowserHost["Service"],
+  environmentId?: string,
+) {
+  const connection = host.createConnection(environmentId);
   const messages = yield* Queue.unbounded<typeof DesktopBrowserEvent.Type>();
   yield* connection.events.pipe(
     Stream.runForEach((line) => Queue.offer(messages, decodeEvent(new TextDecoder().decode(line)))),
@@ -196,8 +203,21 @@ describe("DesktopBrowserHost", () => {
         const host = yield* DesktopBrowserHost.make;
         const backend = yield* connect(host);
         const debuggee = makeDebuggee();
-        host.attach(key, debuggee.tab);
-        yield* Queue.take(backend.messages);
+        const restoration = {
+          desktopHostId: "native-host",
+          url: "https://example.com/current",
+          title: "Current page",
+          canGoBack: true,
+          canGoForward: false,
+          viewport: { _tag: "freeform" as const, width: 900, height: 700 },
+          profileId: "default",
+        };
+        const getRestoration = vi.fn(() => restoration);
+        host.attach(key, { ...debuggee.tab, getRestoration });
+        expect(yield* Queue.take(backend.messages)).toMatchObject({
+          type: "attached",
+          restoration,
+        });
         const { lease } = yield* grant(host, backend, debuggee.tab.webContents);
         host.setPrivateEntry(debuggee.tab.webContents, true);
         const releasing = yield* Effect.tryPromise(() => lease.release()).pipe(Effect.forkScoped);
@@ -234,13 +254,34 @@ describe("DesktopBrowserHost", () => {
     () =>
       Effect.gen(function* () {
         const host = yield* DesktopBrowserHost.make;
+        const changes = yield* Stream.toQueue(host.privateEntryChanges, { capacity: "unbounded" });
         const old = yield* connect(host);
         const debuggee = makeDebuggee();
-        host.attach(key, debuggee.tab);
-        yield* Queue.take(old.messages);
+        const getRestoration = vi.fn(() => ({
+          desktopHostId: "native-host",
+          title: "Public",
+          canGoBack: false,
+          canGoForward: false,
+        }));
+        host.attach(key, { ...debuggee.tab, getRestoration });
+        expect(yield* Queue.take(old.messages)).toHaveProperty("restoration");
         const first = yield* grant(host, old, debuggee.tab.webContents);
         host.setPrivateEntry(debuggee.tab.webContents, true);
+        expect(yield* Queue.take(changes)).toEqual({
+          source: debuggee.tab.webContents,
+          active: true,
+        });
+        host.setPrivateEntry(debuggee.tab.webContents, true);
+        host.setPrivateEntry(debuggee.tab.webContents, false);
+        expect(yield* Queue.take(changes)).toEqual({
+          source: debuggee.tab.webContents,
+          active: false,
+        });
         yield* old.connection.closed;
+        expect(yield* Queue.take(changes)).toEqual({
+          source: debuggee.tab.webContents,
+          active: true,
+        });
         expect(first.lease.current()).toBe(false);
         expect(host.canRequestPrivateEntry(debuggee.tab.webContents)).toBe(false);
         expect(host.isPrivateEntry(debuggee.tab.webContents)).toBe(true);
@@ -250,6 +291,8 @@ describe("DesktopBrowserHost", () => {
         const current = yield* connect(host);
         const attached = yield* Queue.take(current.messages);
         expect(attached.type).toBe("attached");
+        expect(attached).not.toHaveProperty("restoration");
+        expect(getRestoration).toHaveBeenCalledTimes(1);
         expect(host.canRequestPrivateEntry(debuggee.tab.webContents)).toBe(true);
         yield* old.connection.closed;
         yield* old.connection.handleCommandLine(encodeJson(first.response));
@@ -337,9 +380,23 @@ describe("DesktopBrowserHost", () => {
     () =>
       Effect.gen(function* () {
         const host = yield* DesktopBrowserHost.make;
-        const debuggee = makeDebuggee();
+        const debuggee = makeDebuggee({
+          refuse: (_method, sessionId) => sessionId?.startsWith("t3-preview-browser-") === true,
+        });
         host.attach(key, debuggee.tab);
         const { connection, messages } = yield* connect(host);
+        yield* Queue.take(messages);
+        const browserAttach = yield* connection.dispatchCommandLine!(
+          encodeJson({
+            type: "cdp",
+            ...key,
+            message: encodeJson({ id: 90, method: "Target.attachToBrowserTarget" }),
+          }),
+        );
+        yield* Effect.promise(() => browserAttach!.settled);
+        const browserEvent = yield* Queue.take(messages);
+        if (browserEvent.type !== "cdp") throw new Error("Expected browser attachment");
+        const browser = yield* decodeBrowserAttachment(browserEvent.message);
         const command = (id: number, method: string) =>
           connection.dispatchCommandLine!(
             encodeJson({
@@ -358,6 +415,19 @@ describe("DesktopBrowserHost", () => {
         yield* connection.handleCommandLine(encodeJson({ type: "release", ...key }));
         expect(host.isPrivateEntry(debuggee.tab.webContents)).toBe(true);
         host.setPrivateEntry(debuggee.tab.webContents, false);
+        const pageAttach = yield* connection.dispatchCommandLine!(
+          encodeJson({
+            type: "cdp",
+            ...key,
+            message: encodeJson({
+              id: 91,
+              method: "Target.attachToTarget",
+              params: { targetId: "GUEST", flatten: true },
+              sessionId: browser.result.sessionId,
+            }),
+          }),
+        );
+        yield* Effect.promise(() => pageAttach!.settled);
         const resumedSent = debuggee.nextSend();
         const resumed = yield* command(3, "DOM.enable");
         yield* Effect.promise(() => resumedSent);
@@ -369,63 +439,291 @@ describe("DesktopBrowserHost", () => {
           yield* Queue.take(messages),
         ];
         expect(
-          events.slice(1).map((entry) => decodeCdpReply((entry as { message: string }).message).id),
-        ).toEqual([2, 3]);
+          events.map((entry) => decodeCdpReply((entry as { message: string }).message).id),
+        ).toEqual([2, 91, 3]);
+        const resumedAttachment = events[1];
+        if (resumedAttachment?.type !== "cdp") throw new Error("Expected resumed page attachment");
+        expect(JSON.parse(resumedAttachment.message)).toMatchObject({
+          id: 91,
+          result: { sessionId: expect.stringMatching(/^t3-preview-page-/) },
+          sessionId: browser.result.sessionId,
+        });
+        const refusal = events[0];
+        expect(refusal).toMatchObject({ type: "cdp", ...key });
+        if (refusal?.type !== "cdp") throw new Error("Expected private CDP refusal");
+        const response = yield* decodePrivateCdpReply(refusal.message);
+        expect(response).toEqual({
+          id: 2,
+          sessionId: "t3-preview-page",
+          error: { code: -32000, message: "This tab is private during credential entry." },
+        });
         expect(JSON.stringify(events)).toContain("private during credential entry");
         expect(JSON.stringify(events)).not.toContain("fake-secret-must-not-relay");
         expect(debuggee.sentMethods).not.toContain("DOM.getDocument");
       }).pipe(Effect.scoped),
   );
 
-  it.effect(
-    "captures old command settlement across private resume, replacement and half-close",
-    () =>
+  it.effect.each([undefined, "environment-a"])(
+    "isolates same-ID targets across private resume, replacement and half-close: %s",
+    (environmentId) =>
       Effect.gen(function* () {
         const host = yield* DesktopBrowserHost.make;
+        expect(host.hostedEnvironmentIds()).toEqual([]);
         const debuggee = makeDebuggee();
-        host.attach(key, debuggee.tab);
-        const old = yield* connect(host);
-        yield* Queue.take(old.messages);
+        const otherDebuggee = makeDebuggee();
+        const targetKey = { ...key, ...(environmentId === undefined ? {} : { environmentId }) };
+        const otherKey = { ...key, environmentId: "environment-b" };
+        host.attach(targetKey, debuggee.tab);
+        const old = yield* connect(host, environmentId);
+        expect(host.hostedEnvironmentIds()).toEqual(
+          environmentId === undefined ? [] : [environmentId],
+        );
+        const attached = yield* Queue.take(old.messages);
+        expect(attached).toEqual({ type: "attached", ...key, privateEntry: expect.any(Object) });
+        const acquired = yield* grant(host, old, debuggee.tab.webContents);
+        host.attach(otherKey, otherDebuggee.tab);
+        const other = yield* connect(host, otherKey.environmentId);
+        const hosted = [
+          ...(environmentId === undefined ? [] : [environmentId]),
+          otherKey.environmentId,
+        ];
+        expect(host.hostedEnvironmentIds()).toEqual(hosted);
+        expect(yield* Queue.take(other.messages)).toEqual({
+          type: "attached",
+          ...key,
+          privateEntry: expect.any(Object),
+        });
+        expect(acquired.lease.current()).toBe(true);
+        expect(host.canRequestPrivateEntry(debuggee.tab.webContents)).toBe(true);
+        expect(yield* Queue.size(old.messages)).toBe(0);
+        const otherAcquired = yield* grant(host, other, otherDebuggee.tab.webContents);
+        yield* old.connection.handleCommandLine(
+          encodeJson({
+            ...otherAcquired.response,
+            type: "private-entry-revoked",
+            reason: "closed",
+          }),
+        );
+        yield* other.connection.handleCommandLine(
+          encodeJson({ ...acquired.response, type: "private-entry-revoked", reason: "closed" }),
+        );
+        expect(acquired.lease.current()).toBe(true);
+        expect(otherAcquired.lease.current()).toBe(true);
         const line = (id: number) =>
           encodeJson({
             type: "cdp",
             ...key,
             message: encodeJson({ id, method: "DOM.enable", sessionId: "t3-preview-page" }),
           });
+        const sent = debuggee.nextSend();
         const pending = yield* old.connection.dispatchCommandLine!(line(200));
         expect(pending).toBeDefined();
-        yield* settle;
+        yield* Effect.promise(() => sent);
+        const otherSent = otherDebuggee.nextSend();
+        const otherPending = yield* other.connection.dispatchCommandLine!(line(300));
+        yield* Effect.promise(() => otherSent);
+        expect(debuggee.sent).toEqual([undefined]);
+        expect(otherDebuggee.sent).toEqual([undefined]);
         host.setPrivateEntry(debuggee.tab.webContents, true);
         host.setPrivateEntry(debuggee.tab.webContents, false);
-        const replacement = yield* connect(host);
-        yield* Queue.take(replacement.messages);
+        const replacement = yield* connect(host, environmentId);
+        expect([...host.hostedEnvironmentIds()].sort()).toEqual([...hosted].sort());
+        const replacementAttached = yield* Queue.take(replacement.messages);
+        expect(replacementAttached).toMatchObject({ type: "attached", ...key });
+        expect(replacementAttached).not.toEqual(attached);
+        yield* replacement.connection.handleCommandLine(encodeJson({ type: "reattach", ...key }));
+        expect(yield* Queue.take(replacement.messages)).toMatchObject({ type: "attached", ...key });
+        expect(acquired.lease.current()).toBe(false);
+        expect(otherAcquired.lease.current()).toBe(true);
+        expect(yield* Queue.size(other.messages)).toBe(0);
+        host.setPrivateEntry(debuggee.tab.webContents, false);
+        const currentAcquired = yield* grant(host, replacement, debuggee.tab.webContents);
+        yield* replacement.connection.handleCommandLine(encodeJson(acquired.response));
+        expect(acquired.lease.current()).toBe(false);
+        expect(currentAcquired.lease.current()).toBe(true);
         yield* old.connection.closed;
         yield* old.connection.closed;
+        yield* old.connection.handleCommandLine(line(202));
         expect(yield* old.connection.dispatchCommandLine!(line(202))).toBeUndefined();
+        const currentSent = debuggee.nextSend();
         const current = yield* replacement.connection.dispatchCommandLine!(line(201));
-        yield* settle;
+        yield* Effect.promise(() => currentSent);
         debuggee.release();
         yield* Effect.promise(() => pending!.settled);
         yield* Effect.promise(() => current!.settled);
         const reply = yield* Queue.take(replacement.messages);
         expect(reply.type === "cdp" && decodeCdpReply(reply.message).id).toBe(201);
         expect(yield* Queue.size(replacement.messages)).toBe(0);
+        expect(yield* Queue.size(other.messages)).toBe(0);
+        otherDebuggee.release();
+        yield* Effect.promise(() => otherPending!.settled);
+        const otherReply = yield* Queue.take(other.messages);
+        expect(otherReply.type === "cdp" && decodeCdpReply(otherReply.message).id).toBe(300);
+        const halfClosedSent = debuggee.nextSend();
         const halfClosed = yield* replacement.connection.dispatchCommandLine!(line(203));
-        yield* settle;
+        yield* Effect.promise(() => halfClosedSent);
         yield* replacement.connection.closed;
+        expect(host.hostedEnvironmentIds()).toEqual([otherKey.environmentId]);
+        expect(currentAcquired.lease.current()).toBe(false);
+        expect(otherAcquired.lease.current()).toBe(true);
         debuggee.release();
         yield* Effect.promise(() => halfClosed!.settled);
         expect(yield* replacement.connection.dispatchCommandLine!(line(204))).toBeUndefined();
+        const survivingSent = otherDebuggee.nextSend();
+        const surviving = yield* other.connection.dispatchCommandLine!(line(301));
+        yield* Effect.promise(() => survivingSent);
+        otherDebuggee.release();
+        yield* Effect.promise(() => surviving!.settled);
+        const survivingReply = yield* Queue.take(other.messages);
+        expect(survivingReply.type === "cdp" && decodeCdpReply(survivingReply.message).id).toBe(
+          301,
+        );
+        expect(yield* Queue.size(replacement.messages)).toBe(0);
+        expect(yield* Queue.size(other.messages)).toBe(0);
+        expect(debuggee.sent).toHaveLength(3);
+        expect(otherDebuggee.sent).toHaveLength(2);
+        host.detach(targetKey);
+        expect(otherAcquired.lease.current()).toBe(true);
+        yield* other.connection.closed;
+        expect(host.hostedEnvironmentIds()).toEqual([]);
+        expect(otherAcquired.lease.current()).toBe(false);
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("binds the existing guest session before announcing its remote target", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee();
+      const entered = Promise.withResolvers<void>();
+      const applied = Promise.withResolvers<void>();
+      let beforeRequest: ((callback: (result: { cancel: boolean }) => void) => void) | undefined;
+      const requestBlocked = () => {
+        let cancelled = false;
+        beforeRequest?.((result) => {
+          cancelled = result.cancel;
+        });
+        return cancelled;
+      };
+      const session = {
+        webRequest: {
+          onBeforeRequest: vi.fn(
+            (
+              _filter: unknown,
+              listener: (
+                _request: unknown,
+                callback: (result: { cancel: boolean }) => void,
+              ) => void,
+            ) => {
+              beforeRequest = (callback) => listener({}, callback);
+            },
+          ),
+        },
+        setProxy: vi.fn(async () => {
+          entered.resolve();
+          await applied.promise;
+        }),
+        closeAllConnections: vi.fn(async () => {}),
+      };
+      Object.defineProperty(debuggee.tab.webContents, "session", { value: session });
+      const targetKey = { ...key, environmentId: "remote-network" };
+      host.attach(targetKey, debuggee.tab);
+      const connection = host.createConnection(targetKey.environmentId, "socks5://127.0.0.1:39001");
+      const messages = yield* Queue.unbounded<DesktopBrowserEvent>();
+      yield* connection.events.pipe(
+        Stream.runForEach((line) =>
+          Queue.offer(messages, decodeEvent(new TextDecoder().decode(line))),
+        ),
+        Effect.forkScoped,
+      );
+      yield* Effect.promise(() => entered.promise);
+      expect(requestBlocked()).toBe(true);
+      expect(yield* Queue.size(messages)).toBe(0);
+      applied.resolve();
+      expect(yield* Queue.take(messages)).toMatchObject({ type: "attached", ...key });
+      expect(session.setProxy).toHaveBeenCalledWith({
+        mode: "fixed_servers",
+        proxyRules: "socks5://127.0.0.1:39001",
+        proxyBypassRules: "<-loopback>",
+      });
+      yield* Effect.promise(() =>
+        host.configureTargetSession(targetKey.environmentId, debuggee.tab.webContents.session),
+      );
+      expect(session.closeAllConnections).toHaveBeenCalledTimes(1);
+      expect(session.setProxy).toHaveBeenCalledTimes(1);
+      expect(requestBlocked()).toBe(false);
+      yield* connection.closed;
+      expect(requestBlocked()).toBe(true);
+      expect(session.closeAllConnections).toHaveBeenCalledTimes(2);
+      yield* Effect.promise(() =>
+        expect(
+          host.configureTargetSession(
+            targetKey.environmentId,
+            debuggee.tab.webContents.session,
+            true,
+          ),
+        ).rejects.toThrow("The remote browser network is disconnected."),
+      );
+      const replacement = host.createConnection(
+        targetKey.environmentId,
+        "socks5://127.0.0.1:39001",
+      );
+      const replacementEntered = Promise.withResolvers<void>();
+      const replacementApplied = Promise.withResolvers<void>();
+      session.setProxy.mockImplementationOnce(async () => {
+        replacementEntered.resolve();
+        await replacementApplied.promise;
+      });
+      yield* replacement.events.pipe(
+        Stream.runForEach((line) =>
+          Queue.offer(messages, decodeEvent(new TextDecoder().decode(line))),
+        ),
+        Effect.forkScoped,
+      );
+      yield* Effect.promise(() => replacementEntered.promise);
+      expect(requestBlocked()).toBe(true);
+      expect(yield* Queue.size(messages)).toBe(0);
+      replacementApplied.resolve();
+      expect(yield* Queue.take(messages)).toMatchObject({ type: "attached", ...key });
+      expect(session.setProxy).toHaveBeenLastCalledWith({
+        mode: "fixed_servers",
+        proxyRules: "socks5://127.0.0.1:39001",
+        proxyBypassRules: "<-loopback>",
+      });
+      expect(session.closeAllConnections).toHaveBeenCalledTimes(3);
+      expect(requestBlocked()).toBe(false);
+      yield* connection.closed;
+      expect(requestBlocked()).toBe(false);
+      expect(host.canRequestPrivateEntry(debuggee.tab.webContents)).toBe(true);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("announces tabs already attached to a backend that starts later", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;
-      host.attach(key, makeDebuggee().tab);
+      const debuggee = makeDebuggee();
+      let title = "Original document";
+      let destroyed = false;
+      debuggee.tab.webContents.isDestroyed = () => destroyed;
+      const getRestoration = vi.fn(() => ({
+        desktopHostId: "native-host",
+        title,
+        canGoBack: false,
+        canGoForward: false,
+      }));
+      host.attach(key, { ...debuggee.tab, getRestoration });
       // A restarted backend subscribes after the attach and still hears it.
-      expect(yield* takeEvents(host, 1)).toMatchObject([{ type: "attached", ...key }]);
-      expect(yield* takeEvents(host, 1)).toMatchObject([{ type: "attached", ...key }]);
+      expect(yield* takeEvents(host, 1)).toMatchObject([
+        { type: "attached", ...key, restoration: { title: "Original document" } },
+      ]);
+      title = "Current document";
+      expect(yield* takeEvents(host, 1)).toMatchObject([
+        { type: "attached", ...key, restoration: { title: "Current document" } },
+      ]);
+      const reads = getRestoration.mock.calls.length;
+      destroyed = true;
+      const [attached] = yield* takeEvents(host, 1);
+      expect(attached).not.toHaveProperty("restoration");
+      expect(getRestoration).toHaveBeenCalledTimes(reads);
     }),
   );
 
@@ -457,23 +755,83 @@ describe("DesktopBrowserHost", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("sends a page one screenshot at a time", () =>
-    Effect.gen(function* () {
-      const host = yield* DesktopBrowserHost.make;
-      const debuggee = makeDebuggee();
-      host.attach(key, debuggee.tab);
-      const { connection, replies } = yield* watchReplies(host);
+  it.effect.each([false, true])(
+    "sends screenshots in order across a viewport change: %s",
+    (resize) =>
+      Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        const debuggee = makeDebuggee();
+        let revision = 0;
+        host.attach(key, { ...debuggee.tab, captureRevision: () => revision });
+        const { connection, messages } = yield* connect(host);
+        yield* Queue.take(messages);
 
-      yield* command(connection, 1, "Page.captureScreenshot");
-      yield* command(connection, 2, "Page.captureScreenshot");
-      yield* command(connection, 3, "DOM.enable");
-      yield* settle;
-      expect(debuggee.sent).toEqual([1, 3]);
+        yield* command(connection, 1, "Page.captureScreenshot");
+        yield* command(connection, 2, "Page.captureScreenshot");
+        yield* command(connection, 3, "DOM.enable");
+        yield* settle;
+        expect(debuggee.sent).toEqual([1, 3]);
 
-      debuggee.releaseFirst();
-      expect(yield* Queue.take(replies)).toBe(1);
-      expect(debuggee.sent).toEqual([1, 3, 2]);
-    }).pipe(Effect.scoped),
+        if (resize) revision += 2;
+        debuggee.releaseFirst();
+        const first = yield* Queue.take(messages);
+        expect(first.type).toBe("cdp");
+        if (first.type !== "cdp") throw new Error("Expected screenshot reply");
+        const reply: unknown = JSON.parse(first.message);
+        expect(reply).toMatchObject(
+          resize
+            ? {
+                id: 1,
+                error: { message: "The preview changed while its screenshot was being captured." },
+              }
+            : { id: 1, result: { method: "Page.captureScreenshot" } },
+        );
+        expect(debuggee.sent).toEqual([1, 3, 2]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([false, true])(
+    "waits for viewport changes on an offscreen host: %s",
+    (offscreen) =>
+      Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        const debuggee = makeDebuggee();
+        const started = Promise.withResolvers<void>();
+        const resized = Promise.withResolvers<void>();
+        const setViewport = vi.fn(async () => {
+          started.resolve();
+          await resized.promise;
+        });
+        yield* Effect.addFinalizer(() => Effect.sync(() => resized.resolve()));
+        host.attach(key, { ...debuggee.tab, ...(offscreen ? { setViewport } : {}) });
+        const { connection, messages } = yield* connect(host);
+        yield* Queue.take(messages);
+        yield* connection.handleCommandLine(
+          encodeJson({
+            type: "cdp",
+            ...key,
+            message: encodeJson({
+              id: 1,
+              method: "Emulation.setDeviceMetricsOverride",
+              params: { id: 1, width: 1440, height: 1700, deviceScaleFactor: 0, mobile: false },
+              sessionId: "t3-preview-page",
+            }),
+          }),
+        );
+        if (offscreen) {
+          yield* Effect.promise(() => started.promise);
+          expect(yield* Queue.size(messages)).toBe(0);
+          expect(debuggee.sentMethods).not.toContain("Emulation.setDeviceMetricsOverride");
+          resized.resolve();
+        } else {
+          yield* settle;
+          expect(setViewport).not.toHaveBeenCalled();
+          expect(debuggee.sentMethods).toContain("Emulation.setDeviceMetricsOverride");
+          debuggee.release();
+        }
+        const reply = yield* Queue.take(messages);
+        expect(reply.type === "cdp" && decodeCdpReply(reply.message).id).toBe(1);
+      }).pipe(Effect.scoped),
   );
 
   it.effect("stops waiting on a screenshot the page navigated away from", () =>
@@ -505,7 +863,9 @@ describe("DesktopBrowserHost", () => {
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
-      host.attach(key, debuggee.tab);
+      const releaseHold = vi.fn();
+      const acquireCaptureHold = vi.fn(() => releaseHold);
+      host.attach(key, { ...debuggee.tab, acquireCaptureHold });
 
       const { connection } = yield* watchReplies(host);
       yield* command(connection, 1, "Page.captureScreenshot");
@@ -514,11 +874,18 @@ describe("DesktopBrowserHost", () => {
       yield* connection.handleCommandLine(encodeJson({ type: "release", ...key }));
       yield* command(connection, 3, "Page.captureScreenshot");
       expect(debuggee.sent).toEqual([1]);
+      expect(acquireCaptureHold).toHaveBeenCalledTimes(1);
+      expect(releaseHold).not.toHaveBeenCalled();
 
       const sent = debuggee.nextSend();
       debuggee.release();
       yield* Effect.promise(() => sent);
       expect(debuggee.sent).toEqual([1, 3]);
+      expect(acquireCaptureHold).toHaveBeenCalledTimes(2);
+      expect(releaseHold).toHaveBeenCalledTimes(1);
+      debuggee.release();
+      yield* settle;
+      expect(releaseHold).toHaveBeenCalledTimes(2);
     }).pipe(Effect.scoped),
   );
 
@@ -527,6 +894,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
 
       yield* command(host, 1, "DOM.enable");
       yield* settle;
@@ -579,6 +947,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
 
       yield* command(host, 1, "Runtime.evaluate");
       yield* settle;
@@ -601,6 +970,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
 
       yield* command(host, 1, "Page.captureScreenshot");
       yield* command(host, 2, "Page.captureScreenshot");
@@ -617,6 +987,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee({ deferFocus: true });
       host.attach(key, debuggee.tab);
+      yield* connect(host);
 
       yield* command(host, 1, "Page.captureScreenshot");
       yield* command(host, 2, "Page.captureScreenshot");
@@ -634,6 +1005,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
       const turn = (active: boolean) =>
         host.handleCommandLine(encodeJson({ type: "turn", threadId: key.threadId, active }));
 
@@ -656,6 +1028,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
       yield* host.handleCommandLine(
         encodeJson({ type: "turn", threadId: key.threadId, active: true }),
       );
@@ -682,6 +1055,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
       const turn = (active: boolean) =>
         host.handleCommandLine(encodeJson({ type: "turn", threadId: key.threadId, active }));
 
@@ -710,6 +1084,7 @@ describe("DesktopBrowserHost", () => {
         const host = yield* DesktopBrowserHost.make;
         const debuggee = makeDebuggee();
         host.attach(key, debuggee.tab);
+        yield* connect(host);
         yield* host.handleCommandLine(
           encodeJson({ type: "turn", threadId: key.threadId, active: true }),
         );
@@ -859,6 +1234,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
       const painting = yield* watchPainting(host);
       const turn = (active: boolean) =>
         host.handleCommandLine(encodeJson({ type: "turn", threadId: key.threadId, active }));
@@ -1042,6 +1418,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
 
       yield* command(host, 1, "Page.startScreencast");
       yield* TestClock.adjust("1 minute");
@@ -1103,6 +1480,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
       const painting = yield* watchPainting(host);
 
       yield* command(host, 1, "DOM.enable");
@@ -1129,6 +1507,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
       const painting = yield* watchPainting(host);
       const turn = (active: boolean) =>
         host.handleCommandLine(encodeJson({ type: "turn", threadId: key.threadId, active }));
@@ -1238,6 +1617,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
 
       yield* host.handleCommandLine(
         encodeJson({

@@ -4,10 +4,12 @@ import * as NetService from "@t3tools/shared/Net";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
@@ -398,6 +400,276 @@ describe("ssh tunnel scripts", () => {
         }
       }).pipe(Effect.provide(layer), Effect.scoped);
     }),
+  );
+
+  it.effect.each(["absent", "exited", "unready"] as const)(
+    "refuses a desktop browser helper for an %s tunnel without launching a server",
+    (state) =>
+      Effect.gen(function* () {
+        let helperSpawns = 0;
+        let launches = 0;
+        let ready = true;
+        const target = { alias: "devbox", hostname: "devbox", username: null, port: null };
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.sync(() => {
+            const args = commandArgs(command);
+            if (args.includes("-G")) return makeSuccessfulProcess("");
+            if (args.includes("-N")) {
+              return {
+                ...makeRunningProcess(() => undefined),
+                isRunning: Effect.succeed(state !== "exited"),
+              };
+            }
+            if (args.some((arg) => arg.includes("__ssh-helper desktop-browser"))) {
+              helperSpawns += 1;
+            }
+            if (args.includes("-s")) launches += 1;
+            return makeSuccessfulProcess('{"remotePort":3773}\n');
+          }),
+        );
+        const layer = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Layer.succeed(
+            HttpClient.HttpClient,
+            HttpClient.make((request) =>
+              Effect.succeed(
+                HttpClientResponse.fromWeb(
+                  request,
+                  new Response("", { status: ready ? 200 : 503 }),
+                ),
+              ),
+            ),
+          ),
+          Layer.succeed(NetService.NetService, testNetService),
+          SshAuth.SshPasswordPrompt.disabledLayer,
+          SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
+        );
+        yield* Effect.gen(function* () {
+          const manager = yield* SshTunnel.SshEnvironmentManager;
+          if (state !== "absent") yield* manager.ensureEnvironment(target);
+          ready = state !== "unready";
+          const opening = yield* Effect.forkChild(
+            Effect.result(manager.openDesktopBrowser(target, "target-environment", Stream.empty)),
+          );
+          yield* TestClock.adjust("2 seconds");
+          const result = yield* Fiber.join(opening);
+          assert.isTrue(Result.isFailure(result));
+          if (Result.isFailure(result)) assert.instanceOf(result.failure, SshCommandError);
+          assert.equal(helperSpawns, 0);
+          assert.equal(launches, state === "absent" ? 0 : 1);
+        }).pipe(Effect.provide(layer), Effect.scoped);
+      }),
+  );
+
+  it.effect.each(["caller", "caller EOF", "tunnel", "helper exit 0", "helper exit 1"] as const)(
+    "closes the desktop browser helper and its proxy on %s closure",
+    (owner) =>
+      Effect.gen(function* () {
+        const receivedReady = yield* Deferred.make<void>();
+        const sentEvent = yield* Deferred.make<void>();
+        const endEvents = yield* Deferred.make<void>();
+        const helperExit = yield* Deferred.make<number>();
+        const fenceStarted = yield* Deferred.make<void>();
+        const finishFence = yield* Deferred.make<void>();
+        const helperShutdownStarted = yield* Deferred.make<void>();
+        const finishHelperShutdown = yield* Deferred.make<void>();
+        let helperKills = 0;
+        let tunnelKills = 0;
+        let helperSpawns = 0;
+        let helperArgs: ReadonlyArray<string> = [];
+        let portReservations = 0;
+        let reservedPort: number | undefined;
+        const target = { alias: "devbox", hostname: "devbox", username: null, port: null };
+        const otherTarget = { ...target, alias: "other", hostname: "other" };
+        const autonomousExit = owner === "helper exit 0" || owner === "helper exit 1";
+        const event = new TextEncoder().encode('{"type":"browser-event"}\n');
+        const ready = new TextEncoder().encode(
+          '{"type":"desktop-browser-ready","environmentId":"target-environment","processEpoch":"epoch"}\n',
+        );
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.sync(() => {
+            const args = commandArgs(command);
+            if (args.includes("-G")) return makeSuccessfulProcess("");
+            if (args.includes("-N")) return makeRunningProcess(() => tunnelKills++);
+            if (args.some((arg) => arg.includes("__ssh-helper desktop-browser"))) {
+              helperSpawns += 1;
+              helperArgs = args;
+              const helper = makeRunningProcess(() => helperKills++);
+              const exitsAutonomously = autonomousExit && helperSpawns === 1;
+              return {
+                ...helper,
+                exitCode: exitsAutonomously
+                  ? Deferred.await(helperExit).pipe(Effect.map(ChildProcessSpawner.ExitCode))
+                  : helper.exitCode,
+                kill: (options?: ChildProcess.KillOptions) =>
+                  Deferred.succeed(helperShutdownStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(finishHelperShutdown)),
+                    Effect.andThen(helper.kill(options)),
+                  ),
+                stdout: Stream.concat(
+                  Stream.make(ready),
+                  exitsAutonomously
+                    ? Stream.fromEffectDrain(Deferred.await(helperExit))
+                    : Stream.never,
+                ),
+                stdin: Sink.forEach((chunk: Uint8Array) => {
+                  assert.deepEqual(chunk, event);
+                  return Deferred.succeed(sentEvent, undefined);
+                }),
+              };
+            }
+            return makeSuccessfulProcess('{"remotePort":3773}\n');
+          }),
+        );
+        const layer = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Layer.succeed(HttpClient.HttpClient, testHttpClient),
+          Layer.succeed(NetService.NetService, {
+            ...testNetService,
+            reserveLoopbackPort: () =>
+              Effect.sync(() => {
+                const nextPort = 41_773 + portReservations++;
+                return reservedPort ?? nextPort;
+              }),
+          }),
+          SshAuth.SshPasswordPrompt.disabledLayer,
+          SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
+        );
+        yield* Effect.gen(function* () {
+          const manager = yield* SshTunnel.SshEnvironmentManager;
+          const environment = yield* manager.ensureEnvironment(target);
+          const callerScope = yield* Scope.make();
+          const transport = yield* manager
+            .openDesktopBrowser(
+              target,
+              "target-environment'$(false)",
+              Stream.concat(Stream.make(event), Stream.fromEffectDrain(Deferred.await(endEvents))),
+              Deferred.succeed(fenceStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(finishFence)),
+              ),
+            )
+            .pipe(Effect.provideService(Scope.Scope, callerScope));
+          const reading = yield* Effect.forkChild(
+            Stream.runForEach(transport.commands, (chunk) => {
+              assert.deepEqual(chunk, ready);
+              return Deferred.succeed(receivedReady, undefined);
+            }),
+          );
+          yield* Deferred.await(receivedReady);
+          yield* Deferred.await(sentEvent);
+          yield* manager.ensureEnvironment(otherTarget);
+          const closed = yield* Effect.forkChild(transport.closed);
+          const closing = yield* Effect.forkChild(
+            owner === "caller"
+              ? Scope.close(callerScope, Exit.void)
+              : owner === "caller EOF"
+                ? Deferred.succeed(endEvents, undefined).pipe(Effect.asVoid)
+                : autonomousExit
+                  ? Deferred.succeed(helperExit, owner === "helper exit 0" ? 0 : 1).pipe(
+                      Effect.asVoid,
+                    )
+                  : manager.disconnectEnvironment(target),
+          );
+          yield* Effect.raceFirst(
+            Deferred.await(fenceStarted),
+            Effect.raceFirst(
+              Deferred.await(helperShutdownStarted),
+              transport.closed.pipe(Effect.ignore),
+            ),
+          );
+          yield* TestClock.adjust(Duration.zero);
+          assert.isTrue(yield* Deferred.isDone(fenceStarted));
+          assert.equal(helperKills, 0);
+          assert.isFalse(yield* Deferred.isDone(helperShutdownStarted));
+          assert.isUndefined(closed.pollUnsafe());
+          assert.isUndefined(reading.pollUnsafe());
+          reservedPort = 41_774;
+          const collision = yield* Effect.result(
+            manager.openDesktopBrowser(otherTarget, "other-environment", Stream.never),
+          );
+          assert.isTrue(Result.isFailure(collision));
+          if (Result.isFailure(collision)) assert.instanceOf(collision.failure, SshCommandError);
+          const tunnelCollision = yield* Effect.result(
+            manager.ensureEnvironment({ ...target, alias: "third", hostname: "third" }),
+          );
+          assert.isTrue(Result.isFailure(tunnelCollision));
+          if (Result.isFailure(tunnelCollision))
+            assert.instanceOf(tunnelCollision.failure, SshCommandError);
+          assert.equal(helperSpawns, 1);
+          assert.equal(portReservations, 5);
+          yield* Deferred.succeed(finishFence, undefined);
+          if (owner !== "helper exit 0") yield* Deferred.await(helperShutdownStarted);
+          yield* TestClock.adjust(Duration.zero);
+          const closedBeforeShutdown = closed.pollUnsafe();
+          const commandsBeforeShutdown = reading.pollUnsafe();
+          yield* Deferred.succeed(finishHelperShutdown, undefined);
+          yield* Fiber.join(closing);
+          if (owner !== "helper exit 0") {
+            assert.isUndefined(closedBeforeShutdown);
+            assert.isUndefined(commandsBeforeShutdown);
+          }
+          const closedResult = yield* Effect.result(Fiber.join(closed));
+          const commandsResult = yield* Effect.result(Fiber.join(reading));
+          if (owner === "helper exit 0") {
+            assert.isTrue(Result.isSuccess(closedResult));
+            assert.isTrue(Result.isSuccess(commandsResult));
+          } else {
+            assert.isTrue(Result.isFailure(closedResult));
+            assert.isTrue(Result.isFailure(commandsResult));
+          }
+          assert.equal(helperKills, owner === "helper exit 0" ? 0 : 1);
+          assert.equal(tunnelKills, owner === "tunnel" ? 1 : 0);
+          assert.equal(helperSpawns, 1);
+          assert.equal(portReservations, 5);
+          assert.equal(transport.proxyUrl, "socks5://127.0.0.1:41774");
+          assert.notEqual(transport.proxyUrl, environment.httpBaseUrl);
+          assert.equal(helperArgs.filter((arg) => arg === "-D").length, 1);
+          assert.equal(helperArgs[helperArgs.indexOf("-D") + 1], "127.0.0.1:41774");
+          assert.include(helperArgs, "ExitOnForwardFailure=yes");
+          assert.notInclude(helperArgs, "ExitOnForwardFailure=no");
+          assert.include(helperArgs.at(-1) ?? "", "'target-environment'\\''$(false)'");
+          assert.include(helperArgs, "ControlPath=none");
+          assert.notInclude(helperArgs, "-N");
+          assert.notInclude(helperArgs, "-n");
+          const replacementScope = yield* Scope.make();
+          const replacement = yield* manager
+            .openDesktopBrowser(otherTarget, "other-environment", Stream.never)
+            .pipe(Effect.provideService(Scope.Scope, replacementScope));
+          assert.equal(replacement.proxyUrl, transport.proxyUrl);
+          yield* Scope.close(callerScope, Exit.void);
+          const lateCollision = yield* Effect.result(
+            manager.openDesktopBrowser(otherTarget, "late-environment", Stream.never),
+          );
+          assert.isTrue(Result.isFailure(lateCollision));
+          if (Result.isFailure(lateCollision))
+            assert.instanceOf(lateCollision.failure, SshCommandError);
+          assert.equal(helperSpawns, 2);
+          yield* Scope.close(replacementScope, Exit.void);
+          reservedPort = undefined;
+          if (owner !== "tunnel") {
+            assert.equal(
+              (yield* manager.ensureEnvironment(target)).httpBaseUrl,
+              environment.httpBaseUrl,
+            );
+          } else {
+            yield* manager.ensureEnvironment(target);
+          }
+          yield* Scope.close(callerScope, Exit.void);
+          assert.equal(tunnelKills, owner === "tunnel" ? 1 : 0);
+          assert.equal(helperKills, owner === "helper exit 0" ? 1 : 2);
+          const replay = yield* Effect.result(Stream.runCollect(transport.commands));
+          assert.isTrue(Result.isFailure(replay));
+          if (Result.isFailure(replay))
+            assert.include(replay.failure.message, "cannot be replayed");
+        }).pipe(
+          Effect.ensuring(Deferred.succeed(finishFence, undefined)),
+          Effect.ensuring(Deferred.succeed(finishHelperShutdown, undefined)),
+          Effect.provide(layer),
+          Effect.scoped,
+        );
+      }),
   );
 
   it.effect.each(["local tunnel", "remote server"] as const)(

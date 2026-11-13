@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { createCdpRelayConnection, type CdpRelayTarget } from "./CdpRelay.ts";
+import {
+  createCdpRelayConnection,
+  createCdpRelaySessionState,
+  type CdpRelayTarget,
+} from "./CdpRelay.ts";
 
 const makeTarget = (
   send: CdpRelayTarget["send"],
@@ -133,9 +137,15 @@ describe("CDP relay", () => {
 
 describe("CDP relay extra sessions", () => {
   it("gives a second page session the page's commands and events", async () => {
-    const send = vi.fn(async () => ({}));
+    const send = vi.fn<CdpRelayTarget["send"]>(async (_method, _params, sessionId) => {
+      if (sessionId?.startsWith("t3-preview-browser-")) throw new Error("Unknown native session");
+      return {};
+    });
     const written: Array<Record<string, unknown>> = [];
-    const relay = makeRelay(makeTarget(send), (raw) => written.push(JSON.parse(raw)));
+    const state = createCdpRelaySessionState();
+    const target = makeTarget(send);
+    const write = (raw: string) => written.push(JSON.parse(raw));
+    let relay = createCdpRelayConnection(target, write, () => {}, state);
     relay.receive(JSON.stringify({ id: 1, method: "Target.setAutoAttach", params: {} }));
     relay.receive(JSON.stringify({ id: 2, method: "Target.attachToBrowserTarget" }));
     await settle();
@@ -167,6 +177,33 @@ describe("CDP relay extra sessions", () => {
     written.length = 0;
     relay.event("Page.screencastFrame", { data: "x" }, undefined);
     expect(written.map((m) => m["sessionId"])).toEqual(["t3-preview-page", extra]);
+
+    relay = createCdpRelayConnection(target, write, () => {}, state);
+    await relay.receive(
+      JSON.stringify({
+        id: 7,
+        method: "Target.attachToTarget",
+        params: { targetId: "GUEST-TARGET" },
+        sessionId: browserSession,
+      }),
+    );
+    const resumed = (written.find((m) => m["id"] === 7)!["result"] as { sessionId: string })
+      .sessionId;
+    expect(resumed).not.toBe(extra);
+    written.length = 0;
+    relay.event("Page.screencastFrame", { data: "resumed" }, undefined);
+    expect(written.map((m) => m["sessionId"])).toEqual(["t3-preview-page", resumed]);
+
+    const replacement = createCdpRelayConnection(target, write, () => {});
+    await replacement.receive(
+      JSON.stringify({
+        id: 8,
+        method: "Target.attachToTarget",
+        params: { targetId: "GUEST-TARGET" },
+        sessionId: browserSession,
+      }),
+    );
+    expect(written.find((m) => m["id"] === 8)).toHaveProperty("error");
   });
 });
 

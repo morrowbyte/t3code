@@ -8,6 +8,11 @@ import {
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
+  acquireDesktopBrowserHostState,
+  subscribeDesktopBrowserHostedEnvironments,
+} from "./browser/desktopBrowserSurface";
+import { previewRuntimeTabId } from "./browser/previewRuntimeTabId";
+import {
   __testing,
   applyPreviewDesktopState,
   applyPreviewServerEvent as applyPreviewServerEventImpl,
@@ -401,6 +406,104 @@ describe("previewStateStore (single-tab)", () => {
     expect(state.sessions).toEqual({});
     expect(state.serverEpoch).toBe("server-b");
     expect(state.serverRevision).toBe(0);
+
+    const acquireBridge = () => {
+      let publish = (_ids: ReadonlyArray<string>) => {};
+      const release = subscribeDesktopBrowserHostedEnvironments({
+        getHostedEnvironmentIds: async () => [environmentId],
+        onHostedEnvironmentsChange: (listener) => {
+          publish = listener;
+          return () => {};
+        },
+      });
+      publish([environmentId]);
+      return { [Symbol.dispose]: release };
+    };
+    using _bridge = acquireBridge();
+    for (const kind of ["offscreen", "webview"] as const) {
+      for (const scenario of [
+        "confirmed",
+        "dangling",
+        "foreign",
+        "headless",
+        "wrong-thread",
+        "unknown-environment",
+        "pending",
+      ] as const) {
+        resetPreviewStateForTests();
+        const hostRef =
+          scenario === "foreign" || scenario === "unknown-environment"
+            ? scopeThreadRef("foreign-environment" as EnvironmentId, ref.threadId)
+            : ref;
+        const desktopHostId = previewRuntimeTabId(hostRef, serverEpoch, snapshot.tabId);
+        const previous = makeSnapshot({
+          runtime: "server",
+          desktopHostId,
+          ...(scenario === "headless" ? { headless: true } : {}),
+          ...(scenario === "wrong-thread" ? { threadId: "foreign-thread" } : {}),
+          automationOwner: "old-agent",
+          revealRequest: { id: "old-reveal", force: true },
+        });
+        const host = acquireDesktopBrowserHostState(desktopHostId);
+        using _host = { [Symbol.dispose]: host.release };
+        if (scenario !== "pending")
+          host.update({
+            kind,
+            webContentsId: scenario === "dangling" ? null : 73,
+            privateEntry: false,
+          });
+        const targetRef = scenario === "unknown-environment" ? hostRef : ref;
+        reconcilePreviewServerSessions(targetRef, {
+          sessions: [previous],
+          serverEpoch,
+          revision: 12,
+        });
+        applyPreviewDesktopState(targetRef, previous.tabId, {
+          hasWebContents: true,
+          canGoBack: false,
+          canGoForward: false,
+          loading: false,
+          zoomFactor: 1,
+          pictureInPicture: false,
+          colorScheme: "system",
+          audioMuted: false,
+          audible: false,
+          controller: "agent",
+          favicon: null,
+        });
+        reconcilePreviewServerSessions(targetRef, {
+          sessions: [],
+          serverEpoch: "server-b",
+          revision: 0,
+        });
+        const restarted = readThreadPreviewState(targetRef);
+        expect(restarted.desktopByTabId).toEqual({});
+        expect(restarted.desktopOverlay).toBeNull();
+        if (scenario !== "confirmed") {
+          expect(restarted.sessions).toEqual({});
+          continue;
+        }
+        const restored = makeSnapshot({ runtime: "desktop", desktopHostId });
+        expect(restarted.sessions).toEqual({ [snapshot.tabId]: restored });
+        expect(previewRuntimeTabId(ref, "server-b", snapshot.tabId, desktopHostId)).toBe(
+          desktopHostId,
+        );
+        reconcilePreviewServerSessions(ref, { sessions: [], serverEpoch: "server-b", revision: 1 });
+        expect(readThreadPreviewState(ref).sessions[snapshot.tabId]).toEqual(restored);
+        reconcilePreviewServerSessions(ref, {
+          sessions: [restored],
+          serverEpoch: "server-b",
+          revision: 2,
+        });
+        expect(readThreadPreviewState(ref).sessions[snapshot.tabId]).toEqual(restored);
+        reconcilePreviewServerSessions(ref, {
+          sessions: [],
+          serverEpoch: "server-b",
+          revision: 3,
+        });
+        expect(readThreadPreviewState(ref).sessions).toEqual({});
+      }
+    }
   });
 
   it("does not carry raw-tab state across a server restart", () => {

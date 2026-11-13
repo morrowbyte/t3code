@@ -16,6 +16,7 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { useChatCanvas } from "../chat/ChatCanvasContext";
 import type { ChatCanvasPreview } from "../chat/chatCanvasLayout";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
+import { useDesktopBrowserHostState } from "~/browser/desktopBrowserSurface";
 import {
   findActiveBrowserRecordingRuntimeTabId,
   useActiveBrowserRecordingTabIds,
@@ -23,8 +24,7 @@ import {
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import type { BrowserViewportResizeDirection } from "~/browser/browserViewportLayout";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
-import { rendersServerTabNatively } from "~/browser/previewRuntime";
-import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
+import { useControlsNativePreviewTab } from "~/browser/previewRuntime";
 import { type ServerBrowserHandle, ServerBrowserSurface } from "~/browser/ServerBrowserSurface";
 import {
   closeServerPictureInPicture,
@@ -130,18 +130,22 @@ function useBrowserMiniPlayerSource(threadRef: ScopedThreadRef | null, tabId: st
   const snapshot = tabId === null ? null : (previewState.sessions[tabId] ?? null);
   const runtimeTabId =
     threadRef && tabId !== null
-      ? previewRuntimeTabId(threadRef, previewState.serverEpoch, tabId)
+      ? previewRuntimeTabId(
+          threadRef,
+          previewState.serverEpoch,
+          tabId,
+          !snapshot?.headless && snapshot?.threadId === threadRef.threadId
+            ? snapshot.desktopHostId
+            : undefined,
+        )
       : null;
   const desktopOverlay = tabId === null ? null : (previewState.desktopByTabId[tabId] ?? null);
   const layoutZoomFactor = useBrowserLayoutZoomFactor(desktopOverlay?.zoomFactor ?? 1);
   const fittedSourceContent = useBrowserSurfaceStore((state) =>
     runtimeTabId === null ? null : (state.byTabId[runtimeTabId]?.fittedSourceContent ?? null),
   );
-  const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
-  const serverTab =
-    threadRef !== null &&
-    snapshot?.runtime === "server" &&
-    !rendersServerTabNatively(threadRef.environmentId, primaryEnvironmentId, snapshot);
+  const nativeControlsTab = useControlsNativePreviewTab(threadRef?.environmentId ?? null, snapshot);
+  const serverTab = threadRef !== null && snapshot?.runtime === "server" && !nativeControlsTab;
   const streamViewport = useStreamedSourceSize((state) =>
     threadRef &&
     tabId !== null &&
@@ -158,7 +162,14 @@ function useBrowserMiniPlayerSource(threadRef: ScopedThreadRef | null, tabId: st
           fittedSourceContent,
           layoutZoomFactor,
         );
-  return { serverEpoch: previewState.serverEpoch, snapshot, desktopOverlay, serverTab, sourceSize };
+  return {
+    serverEpoch: previewState.serverEpoch,
+    snapshot,
+    desktopOverlay,
+    serverTab,
+    nativeControlsTab,
+    sourceSize,
+  };
 }
 
 /** The mini player as the chat canvas lays it out; null when no player renders. */
@@ -212,9 +223,17 @@ export function ThreadPreviewMiniPlayer({ threadRef, miniPlayer }: Props) {
 
 function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly tabId: string }) {
   const httpBaseUrl = useEnvironmentHttpBaseUrl(threadRef.environmentId);
-  const { serverEpoch, snapshot, desktopOverlay, serverTab, sourceSize } =
+  const { serverEpoch, snapshot, desktopOverlay, serverTab, nativeControlsTab, sourceSize } =
     useBrowserMiniPlayerSource(threadRef, tabId);
-  const runtimeTabId = previewRuntimeTabId(threadRef, serverEpoch, tabId);
+  const runtimeTabId = previewRuntimeTabId(
+    threadRef,
+    serverEpoch,
+    tabId,
+    !snapshot?.headless && snapshot?.threadId === threadRef.threadId
+      ? snapshot.desktopHostId
+      : undefined,
+  );
+  const localHost = useDesktopBrowserHostState(runtimeTabId);
   const recordingTabIds = useActiveBrowserRecordingTabIds();
   const recording =
     recordingTabIds.has(runtimeTabId) ||
@@ -258,6 +277,8 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
   };
 
   if (!snapshot) return null;
+  const nativeSurface =
+    nativeControlsTab || snapshot.runtime === "server" || localHost?.kind === "offscreen";
   const pdfUrl =
     snapshot.navStatus._tag === "Success"
       ? previewPdfAssetUrl(snapshot.navStatus.url, httpBaseUrl)
@@ -312,6 +333,7 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
               environmentId={threadRef.environmentId}
               threadId={threadRef.threadId}
               tabId={tabId}
+              runtimeTabId={runtimeTabId}
               pdfUrl={pdfUrl}
               visible
               followSize={false}
@@ -333,7 +355,7 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
           </div>
         ) : (
           <>
-            {snapshot.runtime === "server" ? (
+            {nativeSurface ? (
               <div
                 className="pointer-events-auto absolute inset-0 overflow-hidden rounded-[inherit]"
                 style={{ zIndex: PREVIEW_MINI_PLAYER_WEBVIEW_Z_INDEX }}
@@ -344,6 +366,10 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
                   environmentId={threadRef.environmentId}
                   threadId={threadRef.threadId}
                   tabId={tabId}
+                  runtimeTabId={runtimeTabId}
+                  viewport={snapshot.viewport ?? FILL_PREVIEW_VIEWPORT}
+                  zoomFactor={desktopOverlay?.zoomFactor ?? 1}
+                  fitSourceContent
                   visible
                   controlPosition="bottom"
                   onPopup={(popupTabId) => showPreviewPopup(threadRef, popupTabId, "floating")}

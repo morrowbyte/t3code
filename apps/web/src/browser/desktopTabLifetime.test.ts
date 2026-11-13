@@ -65,12 +65,14 @@ describe("desktopTabLifetime", () => {
       "tab_1",
     );
 
-    const first = acquireDesktopTab(tabA);
-    const second = acquireDesktopTab(tabB);
+    const keyA = { environmentId: "environment-a", threadId: "thread", tabId: "tab_1" };
+    const keyB = { environmentId: "environment-b", threadId: "thread", tabId: "tab_1" };
+    const first = acquireDesktopTab(tabA, keyA);
+    const second = acquireDesktopTab(tabB, keyB);
     await Promise.all([first.ready, second.ready]);
 
-    expect(createTab).toHaveBeenCalledWith(tabA, DEFAULT_TAB_STATE);
-    expect(createTab).toHaveBeenCalledWith(tabB, DEFAULT_TAB_STATE);
+    expect(createTab).toHaveBeenCalledWith(tabA, { ...DEFAULT_TAB_STATE, serverTab: keyA });
+    expect(createTab).toHaveBeenCalledWith(tabB, { ...DEFAULT_TAB_STATE, serverTab: keyB });
     expect(createTab).toHaveBeenCalledTimes(2);
 
     first.release();
@@ -81,19 +83,44 @@ describe("desktopTabLifetime", () => {
   it("binds an existing desktop lease once when its native environment becomes known", async () => {
     vi.useFakeTimers();
     createTab.mockResolvedValue(undefined);
-    const initial = acquireDesktopTab("late_native_binding");
+    const initial = acquireDesktopTab(
+      "late_native_binding",
+      undefined,
+      "https://example.com/initial",
+    );
     await initial.ready;
-    const key = { threadId: "thread-native", tabId: "tab-native" };
+    expect(createTab).toHaveBeenCalledWith("late_native_binding", {
+      ...DEFAULT_TAB_STATE,
+      initialUrl: "https://example.com/initial",
+    });
+    const key = {
+      environmentId: "remote-native",
+      threadId: "thread-native",
+      tabId: "tab-native",
+    };
     const bound = acquireDesktopTab("late_native_binding", key);
     await bound.ready;
     expect(createTab).toHaveBeenLastCalledWith("late_native_binding", { serverTab: key });
     expect(createTab).toHaveBeenCalledTimes(2);
-    const reused = acquireDesktopTab("late_native_binding", key);
+    const reused = acquireDesktopTab(
+      "late_native_binding",
+      key,
+      "https://example.com/do-not-reload",
+    );
     await reused.ready;
     expect(createTab).toHaveBeenCalledTimes(2);
+    expect(() =>
+      acquireDesktopTab("late_native_binding", { ...key, environmentId: "another-remote" }),
+    ).toThrow("Desktop browser tab is already bound to another server tab");
+    const remoteReused = acquireDesktopTab("late_native_binding", { ...key });
+    await remoteReused.ready;
+    expect(remoteReused.ready).toBe(bound.ready);
+    expect(createTab).toHaveBeenCalledTimes(2);
+    expect(closeTab).not.toHaveBeenCalled();
     initial.release();
     bound.release();
     reused.release();
+    remoteReused.release();
     await vi.advanceTimersByTimeAsync(0);
   });
 

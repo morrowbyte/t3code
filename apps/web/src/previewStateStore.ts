@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
+import { isConfirmedPreviewDesktopHostId } from "./browser/previewRuntimeTabId";
 import { PREVIEW_RECENT_URL_LIMIT } from "./components/preview/previewConstants";
 import { usePreviewSelectionStore } from "./previewSelectionStore";
 import { appAtomRegistry } from "./rpc/atomRegistry";
@@ -35,6 +36,7 @@ export interface ThreadPreviewState {
   sessions: Record<string, PreviewSessionSnapshot>;
   /** Tabs intentionally closed by this client. Stale list snapshots must not resurrect them. */
   suppressedTabIds: ReadonlySet<string>;
+  restoringDesktopTabIds?: ReadonlySet<string>;
   activeTabId: string | null;
   desktopOverlay: DesktopPreviewOverlay | null;
   desktopByTabId: Record<string, DesktopPreviewOverlay>;
@@ -229,6 +231,11 @@ export function applyPreviewServerEvent(ref: ScopedThreadRef, event: PreviewEven
           return {
             ...current,
             sessions,
+            restoringDesktopTabIds: new Set(
+              [...(current.restoringDesktopTabIds ?? [])].filter(
+                (tabId) => tabId !== snapshot.tabId,
+              ),
+            ),
             activeTabId: activeTabId ?? snapshot.tabId,
             snapshot: activeSnapshot,
             desktopOverlay: current.desktopByTabId[activeSnapshot.tabId] ?? null,
@@ -344,11 +351,34 @@ export function reconcilePreviewServerSessions(
     const sessions: Record<string, PreviewSessionSnapshot> = {};
     const currentSuppressedTabIds = sameServer ? current.suppressedTabIds : new Set<string>();
     let recentlySeenUrls = current.recentlySeenUrls;
+    const restoringDesktopTabIds = new Set<string>();
+    if (!sameServer || current.restoringDesktopTabIds?.size) {
+      for (const snapshot of Object.values(current.sessions)) {
+        if (
+          (sameServer && !current.restoringDesktopTabIds?.has(snapshot.tabId)) ||
+          snapshot.threadId !== ref.threadId ||
+          snapshot.headless ||
+          current.suppressedTabIds.has(snapshot.tabId) ||
+          !snapshot.desktopHostId ||
+          !isConfirmedPreviewDesktopHostId(ref, snapshot.tabId, snapshot.desktopHostId)
+        ) {
+          continue;
+        }
+        const {
+          automationOwner: _automationOwner,
+          revealRequest: _revealRequest,
+          ...retained
+        } = snapshot;
+        sessions[snapshot.tabId] = { ...retained, runtime: "desktop" };
+        restoringDesktopTabIds.add(snapshot.tabId);
+      }
+    }
     for (const snapshot of snapshots) {
       if (currentSuppressedTabIds.has(snapshot.tabId)) continue;
       const existing = sameServer ? current.sessions[snapshot.tabId] : undefined;
       const next = existing && existing.updatedAt > snapshot.updatedAt ? existing : snapshot;
       sessions[next.tabId] = next;
+      restoringDesktopTabIds.delete(next.tabId);
       recentlySeenUrls = rememberSnapshotUrl(recentlySeenUrls, next);
     }
 
@@ -379,6 +409,8 @@ export function reconcilePreviewServerSessions(
       current.recentlySeenUrls === recentlySeenUrls &&
       haveSameValues(current.sessions, sessions) &&
       haveSameValues(current.desktopByTabId, desktopByTabId) &&
+      (current.restoringDesktopTabIds?.size ?? 0) === restoringDesktopTabIds.size &&
+      [...restoringDesktopTabIds].every((tabId) => current.restoringDesktopTabIds?.has(tabId)) &&
       current.suppressedTabIds.size === suppressedTabIds.size
     ) {
       return current;
@@ -386,6 +418,7 @@ export function reconcilePreviewServerSessions(
     return {
       ...current,
       sessions,
+      restoringDesktopTabIds,
       suppressedTabIds,
       activeTabId,
       snapshot,

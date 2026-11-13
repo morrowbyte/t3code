@@ -72,10 +72,17 @@ const ACKNOWLEDGED = new Set([
   "Browser.cancelDownload",
 ]);
 
+export const createCdpRelaySessionState = () => ({
+  browserSessions: new Set<string>(),
+  sequence: 0,
+  attached: false,
+});
+
 export function createCdpRelayConnection(
   target: CdpRelayTarget,
   write: (message: string) => unknown,
   close: () => void,
+  sessionState = createCdpRelaySessionState(),
 ): CdpRelayConnection {
   let closed = false;
   const send = (message: Record<string, unknown>) => {
@@ -101,14 +108,17 @@ export function createCdpRelayConnection(
     // The sink handles connection failure; debugger events have no completion caller.
     void Promise.resolve(send(message)).catch(() => {});
   };
-  let attached = false;
+  let attached = sessionState.attached;
   let downloadEventsEnabled = false;
   /** Relay-created page sessions share one real debugger; child frame sessions retain their own ids. */
-  const sessions = new Map<string, "browser" | "page">([[PAGE_SESSION_ID, "page"]]);
-  let sessionSequence = 0;
+  const sessions = new Map<string, "browser" | "page">([
+    [PAGE_SESSION_ID, "page"],
+    ...Array.from(sessionState.browserSessions, (id) => [id, "browser"] as const),
+  ]);
   const newSession = (kind: "browser" | "page") => {
-    const sessionId = `t3-preview-${kind}-${++sessionSequence}`;
+    const sessionId = `t3-preview-${kind}-${++sessionState.sequence}`;
     sessions.set(sessionId, kind);
+    if (kind === "browser") sessionState.browserSessions.add(sessionId);
     return sessionId;
   };
   const targetInfo = async () => ({
@@ -172,6 +182,7 @@ export function createCdpRelayConnection(
         const sessionId = command.params?.["sessionId"];
         if (typeof sessionId === "string" && sessionId !== PAGE_SESSION_ID) {
           sessions.delete(sessionId);
+          sessionState.browserSessions.delete(sessionId);
           target.sessionDetached?.(sessionId);
         }
         return {};
@@ -179,6 +190,7 @@ export function createCdpRelayConnection(
       case "Target.setAutoAttach": {
         if (attached) return {};
         attached = true;
+        sessionState.attached = true;
         const info = await targetInfo();
         return {
           [ANNOUNCE]: {

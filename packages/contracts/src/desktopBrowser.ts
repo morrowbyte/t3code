@@ -1,6 +1,8 @@
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { BrowserProfileId } from "./browserProfile.ts";
+import { PreviewViewportSetting } from "./preview.ts";
 
 const TabKey = {
   threadId: TrimmedNonEmptyString,
@@ -68,6 +70,17 @@ export const DesktopBrowserPrivateEntryResponse = Schema.Union([
 ]);
 export type DesktopBrowserPrivateEntryResponse = typeof DesktopBrowserPrivateEntryResponse.Type;
 
+export const DesktopBrowserTabRestoration = Schema.Struct({
+  desktopHostId: TrimmedNonEmptyString,
+  profileId: Schema.optional(BrowserProfileId),
+  viewport: Schema.optional(PreviewViewportSetting),
+  url: Schema.optional(Schema.String),
+  title: Schema.String.check(Schema.isMaxLength(512)),
+  canGoBack: Schema.Boolean,
+  canGoForward: Schema.Boolean,
+});
+export type DesktopBrowserTabRestoration = typeof DesktopBrowserTabRestoration.Type;
+
 /** Desktop -> server. */
 export const DesktopBrowserEvent = Schema.Union([
   DesktopBrowserPrivateEntryRequest,
@@ -75,6 +88,7 @@ export const DesktopBrowserEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("attached"),
     ...TabKey,
+    restoration: Schema.optional(DesktopBrowserTabRestoration),
     privateEntry: Schema.optionalKey(DesktopBrowserPrivateEntryAttachment),
   }),
   /** Its `<webview>` went away: closed, crashed, swapped, or devtools took the debugger. */
@@ -93,6 +107,7 @@ export const DesktopBrowserCommand = Schema.Union([
   /** One CDP message for the tab's relay. */
   Schema.Struct({ type: Schema.Literal("cdp"), ...TabKey, message: Schema.String }),
   Schema.Struct({ type: Schema.Literal("release"), ...TabKey }),
+  Schema.Struct({ type: Schema.Literal("reattach"), ...TabKey }),
   Schema.Struct({
     type: Schema.Literal("pointer"),
     ...TabKey,
@@ -108,3 +123,34 @@ export const DesktopBrowserCommand = Schema.Union([
   }),
 ]);
 export type DesktopBrowserCommand = typeof DesktopBrowserCommand.Type;
+
+export const DESKTOP_BROWSER_REGISTRATION_FILE = "desktop-browser-control.json";
+export const DESKTOP_BROWSER_REGISTRATION_MAX_BYTES = 8192;
+
+const RegistrationId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128));
+const RegistrationBinding = {
+  environmentId: RegistrationId,
+  processEpoch: RegistrationId,
+};
+
+/** OS-private discovery only; never part of the browser event or command streams. */
+export const DesktopBrowserRegistrationDescriptor = strictControl({
+  ...RegistrationBinding,
+  endpoint: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+  token: RegistrationId,
+  processId: PositiveInt,
+});
+export type DesktopBrowserRegistrationDescriptor = typeof DesktopBrowserRegistrationDescriptor.Type;
+
+export const DesktopBrowserRegistration = strictControl({
+  type: Schema.Literal("desktop-browser-register"),
+  ...RegistrationBinding,
+  token: RegistrationId,
+});
+export type DesktopBrowserRegistration = typeof DesktopBrowserRegistration.Type;
+
+export const DesktopBrowserReady = strictControl({
+  type: Schema.Literal("desktop-browser-ready"),
+  ...RegistrationBinding,
+});
+export type DesktopBrowserReady = typeof DesktopBrowserReady.Type;

@@ -3,18 +3,19 @@ import {
   AuthPreviewOperateScope,
   type DesktopPreviewBridge,
   type DesktopPreviewOpenLinkEvent,
-  type EnvironmentId,
+  EnvironmentId,
   FILL_PREVIEW_VIEWPORT,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
-import { type ComponentProps, useState } from "react";
+import { type ComponentProps, useEffect, useState } from "react";
 
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 
 import { isElectron } from "~/env";
 import { useClientSettingsHydrated } from "~/hooks/useSettings";
 import { useDesktopHostedPreviewSessions } from "~/components/preview/usePreviewSession";
+import { previewBridge } from "~/components/preview/previewBridge";
 import {
   readActivePreviewSessions,
   type ThreadPreviewState,
@@ -27,29 +28,44 @@ import { useEnvironmentScope } from "~/state/session";
 import { readPreviewAnnotationTheme } from "./annotationTheme";
 import { useBrowserDefaults } from "./browserDefaults";
 import { useBrowserPointerStore } from "./browserPointerStore";
+import {
+  subscribeDesktopBrowserHostedEnvironments,
+  useDesktopBrowserHostedEnvironmentIds,
+} from "./desktopBrowserSurface";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
 import { openUrlInPreview } from "./openFileInPreview";
-import { rendersServerTabNatively } from "./previewRuntime";
+import { hostsPreviewTabLocally } from "./previewRuntime";
 import { previewRuntimeTabId } from "./previewRuntimeTabId";
 
 /** Every session this window renders as a hosted webview, in a fixed (non-display) order. */
 function hostedBrowserSessions(
   previewByThreadKey: Record<string, ThreadPreviewState>,
   primaryEnvironmentId: EnvironmentId | null,
+  hostedEnvironmentIds?: ReadonlyArray<string>,
 ) {
   const activeSessions = Object.entries(previewByThreadKey).flatMap(([threadKey, previewState]) => {
     const threadRef = parseScopedThreadKey(threadKey);
     return threadRef
       ? Object.values(previewState.sessions)
-          .filter(
-            (snapshot) =>
-              snapshot.runtime !== "server" ||
-              rendersServerTabNatively(threadRef.environmentId, primaryEnvironmentId, snapshot),
+          .filter((snapshot) =>
+            hostsPreviewTabLocally(
+              threadRef.environmentId,
+              primaryEnvironmentId,
+              snapshot,
+              hostedEnvironmentIds,
+            ),
           )
           .map((snapshot) => ({
             threadRef,
             snapshot,
-            runtimeTabId: previewRuntimeTabId(threadRef, previewState.serverEpoch, snapshot.tabId),
+            runtimeTabId: previewRuntimeTabId(
+              threadRef,
+              previewState.serverEpoch,
+              snapshot.tabId,
+              !snapshot.headless && snapshot.threadId === threadRef.threadId
+                ? snapshot.desktopHostId
+                : undefined,
+            ),
             pictureInPicture:
               previewState.desktopByTabId[snapshot.tabId]?.pictureInPicture ?? false,
             zoomFactor: previewState.desktopByTabId[snapshot.tabId]?.zoomFactor ?? 1,
@@ -128,8 +144,18 @@ export function startElectronBrowserHost(): () => void {
 export function ElectronBrowserHost() {
   const previewByThreadKey = useActivePreviewSessions();
   const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
+  const hostedEnvironmentIds = useDesktopBrowserHostedEnvironmentIds();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- observes Main's ready target connections for this desktop bridge mount
+  useEffect(() => {
+    if (!isElectron || !previewBridge) return;
+    return subscribeDesktopBrowserHostedEnvironments(previewBridge);
+  }, []);
   useDesktopHostedPreviewSessions(primaryEnvironmentId);
-  const sessions = hostedBrowserSessions(previewByThreadKey, primaryEnvironmentId);
+  const sessions = hostedBrowserSessions(
+    previewByThreadKey,
+    primaryEnvironmentId,
+    hostedEnvironmentIds,
+  );
 
   if (!isElectron) return null;
   return (
@@ -160,8 +186,21 @@ export function ElectronBrowserHost() {
           />
         );
       })}
+      {hostedEnvironmentIds
+        .filter((environmentId) => environmentId !== primaryEnvironmentId)
+        .map((environmentId) => (
+          <DesktopHostedPreviewDiscovery
+            key={environmentId}
+            environmentId={EnvironmentId.make(environmentId)}
+          />
+        ))}
     </div>
   );
+}
+
+function DesktopHostedPreviewDiscovery({ environmentId }: { environmentId: EnvironmentId }) {
+  useDesktopHostedPreviewSessions(environmentId);
+  return null;
 }
 
 function AuthorizedBrowserWebview(props: ComponentProps<typeof HostedBrowserWebview>) {
