@@ -375,7 +375,9 @@ export function createLocalBrowserFrameReceiver(input: {
       while (pending) {
         const next = pending;
         pending = null;
+        let paintStarted = false;
         const paint = async () => {
+          paintStarted = true;
           let bitmap: ImageBitmap | null = null;
           let ackAttempted = false;
           try {
@@ -411,7 +413,8 @@ export function createLocalBrowserFrameReceiver(input: {
           }
         };
         if (input.queue)
-          await input.queue.run(paint).catch(() => {
+          await input.queue.run(paint).catch(async () => {
+            if (!paintStarted) await acknowledge(next);
             if (!disposed) input.onError();
           });
         else await paint();

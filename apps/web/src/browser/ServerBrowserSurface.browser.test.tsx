@@ -71,6 +71,7 @@ import { ServerBrowserSurface, type ServerBrowserHandle } from "./ServerBrowserS
 import {
   acquireDesktopBrowserHostState,
   createLocalBrowserFrameReceiver,
+  createLocalBrowserSurfaceQueue,
 } from "./desktopBrowserSurface";
 
 function setup() {
@@ -627,20 +628,26 @@ describe("ServerBrowserSurface native controls", () => {
   });
 
   it.each([false, true])(
-    "discards an older local decode and acknowledges both frames (stopped=%s)",
+    "acknowledges a full queue and an older local decode (stopped=%s)",
     async (stopped) => {
       setup();
       const canvas = document.createElement("canvas");
       const png = await canvasPng(canvas);
       const bitmap = await createImageBitmap(canvas);
       let finishDecode: ((value: ImageBitmap) => void) | undefined;
+      let markDecodeStarted: (() => void) | undefined;
+      const decodeStarted = new Promise<void>((resolve) => {
+        markDecodeStarted = resolve;
+      });
       using _decode = vi.spyOn(globalThis, "createImageBitmap").mockImplementationOnce(
         () =>
           new Promise<ImageBitmap>((resolve) => {
             finishDecode = resolve;
+            markDecodeStarted?.();
           }),
       );
       using closed = vi.spyOn(bitmap, "close");
+      using drawn = vi.spyOn(canvas.getContext("2d")!, "drawImage");
       let markAckStarted: (() => void) | undefined;
       let releaseAck: (() => void) | undefined;
       const ackStarted = new Promise<void>((resolve) => {
@@ -656,6 +663,8 @@ describe("ServerBrowserSurface native controls", () => {
       });
       const onPainted = vi.fn();
       const onError = vi.fn();
+      const queue = createLocalBrowserSurfaceQueue();
+      using _queue = { [Symbol.dispose]: queue.stop };
       const receiver = createLocalBrowserFrameReceiver({
         canvas,
         bridge: {
@@ -670,9 +679,10 @@ describe("ServerBrowserSurface native controls", () => {
         surfaceId: "surface-decode",
         webContentsId: 8,
         onPrivateEntry: vi.fn(),
-        isFocused: () => false,
+        isFocused: () => true,
         onPainted,
         onError,
+        queue,
       });
       using _receiver = { [Symbol.dispose]: receiver.stop };
       const first: DesktopPreviewSurfaceFrame = {
@@ -686,12 +696,39 @@ describe("ServerBrowserSurface native controls", () => {
         privateEntry: false,
         png,
       };
+      let releaseInput: (() => void) | undefined;
+      const inputPending = new Promise<void>((resolve) => {
+        releaseInput = resolve;
+      });
+      const inputs = Array.from({ length: 128 }, () => queue.run(() => inputPending));
+      try {
+        await receiver.receive({ ...first, sequence: 0, privateEntry: true });
+        expect(mocks.ack).toHaveBeenCalledExactlyOnceWith({
+          tabId: first.tabId,
+          surfaceId: first.surfaceId,
+          webContentsId: first.webContentsId,
+          sequence: 0,
+          generation: 1,
+          focused: false,
+        });
+        expect(_decode).not.toHaveBeenCalled();
+        expect(drawn).not.toHaveBeenCalled();
+        expect(onPainted).not.toHaveBeenCalled();
+        expect(onError).toHaveBeenCalledOnce();
+      } finally {
+        releaseInput?.();
+        await Promise.all(inputs);
+      }
+      mocks.ack.mockClear();
+      onError.mockClear();
       const decoding = receiver.receive(first);
+      await decodeStarted;
       await receiver.receive({ ...first, sequence: 2, generation: 2 });
       expect(mocks.ack).not.toHaveBeenCalled();
       if (stopped) receiver.stop();
       finishDecode?.(bitmap);
       await ackStarted;
+      expect(drawn).toHaveBeenCalledTimes(stopped ? 0 : 1);
       expect(onPainted).not.toHaveBeenCalled();
       releaseAck?.();
       await decoding;
@@ -702,6 +739,7 @@ describe("ServerBrowserSurface native controls", () => {
         );
       expect(onError).not.toHaveBeenCalled();
       expect(closed).toHaveBeenCalledOnce();
+      expect(mocks.ack).toHaveBeenCalledTimes(2);
       expect(mocks.ack).toHaveBeenCalledWith(
         expect.objectContaining({ sequence: 1, generation: 1 }),
       );
