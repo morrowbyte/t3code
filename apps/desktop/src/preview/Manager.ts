@@ -1175,7 +1175,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       current();
       const releaseFrame = host!.holdInputFrame();
       try {
-        if (input.input.type === "text" || (input.input.type === "key" && input.input.action === "down")) {
+        if (
+          input.input.type === "text" ||
+          (input.input.type === "key" && input.input.action === "down")
+        ) {
           const ready: unknown = await wc!.executeJavaScriptInIsolatedWorld(
             PROTON_PASS_AUTOFILL_WORLD_ID,
             [{ code: protonPassAutofillScripts.ready }],
