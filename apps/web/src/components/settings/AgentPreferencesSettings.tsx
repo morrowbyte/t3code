@@ -1,14 +1,10 @@
 import { useId, useState } from "react";
+import { AgentPreferences, MAX_AGENT_PREFERENCES, type AgentPreference } from "@t3tools/contracts";
 import {
-  AgentPreferences,
-  MAX_AGENT_PREFERENCES,
-  ThreadId,
-  type AgentPreference,
-} from "@t3tools/contracts";
-import {
-  normalizeAgentPreference,
+  parseAgentPreferenceDraft,
   replaceAgentPreference,
   scopedAgentPreferences,
+  type AgentPreferenceDraft,
 } from "@t3tools/shared/agentPreferences";
 import * as Schema from "effect/Schema";
 
@@ -75,7 +71,7 @@ function PreferenceEditor({
   onChange: (entries: ReadonlyArray<AgentPreference>) => void;
 }) {
   const id = useId();
-  const [draft, setDraft] = useState<AgentPreference | null>(null);
+  const [draft, setDraft] = useState<AgentPreferenceDraft | null>(null);
   const [removed, setRemoved] = useState<AgentPreference | null>(null);
   const [error, setError] = useState("");
   const edit = (entry: AgentPreference) => {
@@ -179,8 +175,8 @@ function PreferenceEditor({
           className="space-y-3 rounded-lg border border-border p-3"
           onSubmit={(event) => {
             event.preventDefault();
-            const next = normalizeAgentPreference(draft);
-            const updated = replaceAgentPreference(entries, next);
+            const next = parseAgentPreferenceDraft(draft);
+            const updated = next === null ? null : replaceAgentPreference(entries, next);
             if (!isAgentPreferences(updated)) {
               setError(
                 "Enter a topic, preference and source within the field limits. A task decision needs its thread ID.",
@@ -232,10 +228,7 @@ function PreferenceEditor({
                 onValueChange={(kind) =>
                   setDraft({
                     ...draft,
-                    appliesTo:
-                      kind === "task"
-                        ? { kind, threadId: ThreadId.make("") }
-                        : { kind: "preference" },
+                    appliesTo: kind === "task" ? { kind, threadId: "" } : { kind: "preference" },
                   })
                 }
               >
@@ -284,7 +277,7 @@ function PreferenceEditor({
                 onChange={(event) =>
                   setDraft({
                     ...draft,
-                    appliesTo: { kind: "task", threadId: ThreadId.make(event.target.value) },
+                    appliesTo: { kind: "task", threadId: event.target.value },
                   })
                 }
               />

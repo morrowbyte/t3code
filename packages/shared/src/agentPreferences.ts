@@ -1,10 +1,14 @@
 import {
-  type AgentPreference,
+  AgentPreference,
   type ProjectId,
   type ServerSettings,
-  ThreadId,
+  type ThreadId,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { parseThreadLinkHref } from "./threadLinks.ts";
+
+const decodeAgentPreference = Schema.decodeUnknownSync(AgentPreference);
+const isAgentPreference = Schema.is(AgentPreference);
 
 export function mergeAgentPreferences(
   environment: ReadonlyArray<AgentPreference>,
@@ -31,7 +35,11 @@ export function scopedAgentPreferences(settings: ServerSettings, projectId: Proj
 
 type PreferenceScope = "environment" | "project" | ReadonlyArray<string>;
 
-export function normalizeAgentPreference(entry: AgentPreference): AgentPreference {
+export type AgentPreferenceDraft = Omit<AgentPreference, "appliesTo"> & {
+  appliesTo: { kind: "preference" } | { kind: "task"; threadId: string };
+};
+
+function normalizeAgentPreferenceDraft(entry: AgentPreferenceDraft) {
   const taskRef =
     entry.appliesTo.kind === "task" ? entry.appliesTo.threadId.trim().replace(/^<|>$/g, "") : null;
   return {
@@ -43,10 +51,19 @@ export function normalizeAgentPreference(entry: AgentPreference): AgentPreferenc
       taskRef === null
         ? entry.appliesTo
         : {
-            kind: "task",
-            threadId: parseThreadLinkHref(taskRef)?.threadId ?? ThreadId.make(taskRef),
+            kind: "task" as const,
+            threadId: parseThreadLinkHref(taskRef)?.threadId ?? taskRef,
           },
   };
+}
+
+export function normalizeAgentPreference(entry: AgentPreference): AgentPreference {
+  return decodeAgentPreference(normalizeAgentPreferenceDraft(entry));
+}
+
+export function parseAgentPreferenceDraft(entry: AgentPreferenceDraft): AgentPreference | null {
+  const normalized = normalizeAgentPreferenceDraft(entry);
+  return isAgentPreference(normalized) ? normalized : null;
 }
 
 export function replaceAgentPreference(

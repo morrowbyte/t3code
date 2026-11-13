@@ -1,12 +1,11 @@
 import { useState } from "react";
 import { View } from "react-native";
+import { AgentPreferences, MAX_AGENT_PREFERENCES, type AgentPreference } from "@t3tools/contracts";
 import {
-  AgentPreferences,
-  MAX_AGENT_PREFERENCES,
-  ThreadId,
-  type AgentPreference,
-} from "@t3tools/contracts";
-import { normalizeAgentPreference, replaceAgentPreference } from "@t3tools/shared/agentPreferences";
+  parseAgentPreferenceDraft,
+  replaceAgentPreference,
+  type AgentPreferenceDraft,
+} from "@t3tools/shared/agentPreferences";
 import * as Schema from "effect/Schema";
 
 import { AppText as Text, AppTextInput } from "../../../components/ui/AppText";
@@ -25,7 +24,7 @@ export function AgentPreferencesSettings(props: {
   disabled: boolean;
   onChange: (entries: ReadonlyArray<AgentPreference>) => void;
 }) {
-  const [draft, setDraft] = useState<AgentPreference | null>(null);
+  const [draft, setDraft] = useState<AgentPreferenceDraft | null>(null);
   const [removed, setRemoved] = useState<AgentPreference | null>(null);
   const [error, setError] = useState("");
   const entries = props.entries;
@@ -157,7 +156,7 @@ export function AgentPreferencesSettings(props: {
                     appliesTo:
                       draft.appliesTo.kind === "task"
                         ? draft.appliesTo
-                        : { kind: "task", threadId: ThreadId.make("") },
+                        : { kind: "task", threadId: "" },
                   })
                 }
               />
@@ -173,7 +172,7 @@ export function AgentPreferencesSettings(props: {
                     onChangeText={(threadId) =>
                       setDraft({
                         ...draft,
-                        appliesTo: { kind: "task", threadId: ThreadId.make(threadId) },
+                        appliesTo: { kind: "task", threadId },
                       })
                     }
                     className="min-h-12 rounded-lg bg-subtle px-3 text-foreground"
@@ -200,8 +199,8 @@ export function AgentPreferencesSettings(props: {
                 tone="primary"
                 disabled={props.disabled || JSON.stringify(existing) === JSON.stringify(draft)}
                 onPress={() => {
-                  const next = normalizeAgentPreference(draft);
-                  const updated = replaceAgentPreference(entries, next);
+                  const next = parseAgentPreferenceDraft(draft);
+                  const updated = next === null ? null : replaceAgentPreference(entries, next);
                   if (!isAgentPreferences(updated)) {
                     setError(
                       "Enter a topic, preference and source within the field limits. A task decision needs its thread ID.",
