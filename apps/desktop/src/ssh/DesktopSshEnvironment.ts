@@ -175,6 +175,11 @@ export const make = Effect.gen(function* () {
           const stopped = yield* Deferred.make<void>();
           const binding = { environmentId: descriptor.environmentId, scope, stopped };
           let connection: ReturnType<typeof browserHost.createConnection> | undefined;
+          let connectionStopped = false;
+          const closeConnection = Effect.suspend(() => {
+            connectionStopped = true;
+            return connection?.closed ?? Effect.void;
+          });
           const outgoing = yield* Queue.bounded<Uint8Array>(32);
           const events = Stream.fromQueue(outgoing);
           const start = Effect.gen(function* () {
@@ -182,7 +187,7 @@ export const make = Effect.gen(function* () {
               Effect.sync(() => {
                 if (browserConnections.get(key) === binding) browserConnections.delete(key);
               }).pipe(
-                Effect.andThen(Effect.suspend(() => connection?.closed ?? Effect.void)),
+                Effect.andThen(closeConnection),
                 Effect.andThen(
                   Deferred.fail(ready, new Error("The browser target connection closed.")),
                 ),
@@ -193,8 +198,10 @@ export const make = Effect.gen(function* () {
               bootstrap.target,
               descriptor.environmentId,
               events,
-              Effect.suspend(() => connection?.closed ?? Effect.void),
+              closeConnection,
             );
+            if (connectionStopped)
+              return yield* Effect.fail(new Error("The browser target connection closed."));
             const activeConnection = browserHost.createConnection(
               descriptor.environmentId,
               transport.proxyUrl,
@@ -221,6 +228,10 @@ export const make = Effect.gen(function* () {
                 return decodeBrowserReady(line).pipe(
                   Effect.flatMap((receipt) =>
                     Effect.gen(function* () {
+                      if (connectionStopped)
+                        return yield* Effect.fail(
+                          new Error("The browser target connection closed."),
+                        );
                       if (receipt.environmentId !== descriptor.environmentId)
                         return yield* new SshCommandError({
                           command: ["desktop-browser"],
@@ -245,7 +256,8 @@ export const make = Effect.gen(function* () {
               Effect.forkScoped,
             );
             yield* transport.closed.pipe(
-              Effect.catchCause(() => Deferred.succeed(stopped, undefined)),
+              Effect.onExit(() => Deferred.succeed(stopped, undefined)),
+              Effect.ignore,
               Effect.forkScoped,
             );
           }).pipe(Scope.provide(scope));
