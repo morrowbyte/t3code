@@ -179,6 +179,10 @@
       "types": "./src/serverSettings.ts",
       "import": "./src/serverSettings.ts"
     },
+    "./agentPreferences": {
+      "types": "./src/agentPreferences.ts",
+      "import": "./src/agentPreferences.ts"
+    },
     "./backgroundActivitySettings": {
       "types": "./src/backgroundActivitySettings.ts",
       "import": "./src/backgroundActivitySettings.ts"

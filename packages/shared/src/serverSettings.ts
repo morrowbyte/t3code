@@ -26,6 +26,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { deepMerge } from "./Struct.ts";
 import { fromLenientJson } from "./schemaJson.ts";
+import { agentPreferenceReplacements, mergeAgentPreferences } from "./agentPreferences.ts";
 import { createModelSelection, readCustomModelEntries } from "./model.ts";
 import {
   getBackgroundActivityBaseProfile,
@@ -354,7 +355,40 @@ export function applyServerSettingsPatch(
   current: ServerSettings,
   rawPatch: ServerSettingsPatch,
 ): ServerSettings {
-  const translatedPatch = translateLegacyProjectOverridePatch(current, rawPatch);
+  const translated = translateLegacyProjectOverridePatch(current, rawPatch);
+  const translatedPatch = {
+    ...translated,
+    ...(translated.agentPreferences === undefined
+      ? {}
+      : {
+          agentPreferences: agentPreferenceReplacements(
+            current.agentPreferences,
+            translated.agentPreferences,
+          ),
+        }),
+    ...(translated.projectSettingsOverrides === undefined
+      ? {}
+      : {
+          projectSettingsOverrides: Object.fromEntries(
+            Object.entries(translated.projectSettingsOverrides).map(([projectId, overrides]) => [
+              projectId,
+              overrides?.agentPreferences === undefined
+                ? overrides
+                : {
+                    ...overrides,
+                    agentPreferences: agentPreferenceReplacements(
+                      mergeAgentPreferences(
+                        current.agentPreferences,
+                        current.projectSettingsOverrides[projectId as ProjectId]
+                          ?.agentPreferences ?? [],
+                      ),
+                      overrides.agentPreferences,
+                    ),
+                  },
+            ]),
+          ),
+        }),
+  };
   // Older clients still write the Windows-named switch. Keep both representations
   // in sync; an explicit cross-platform setting wins when a client supplies both.
   const computerUse = rawPatch.enableComputerUse ?? rawPatch.enableWindowsCua;

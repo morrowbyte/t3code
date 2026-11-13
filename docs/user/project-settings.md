@@ -46,6 +46,21 @@ Settings that are environment-wide stay read-only while a project is selected. W
 targets disagree, a control shows **Mixed** until you choose one value. Appearance, keyboard,
 and other phone-only settings ignore the filter.
 
+## Confirmed agent preferences
+
+In **Settings → Threads → Confirmed agent preferences**, save a recurring preference with the
+user message or thread link that confirmed it. The settings filter chooses its project or
+environment. New matching threads receive the current active entries. Editing a topic replaces
+its previous value; the previous preference and source remain available for inspection.
+
+Projects inherit current environment preferences by topic. **Override** saves a project-specific
+value; an inactive project override suppresses that topic in the project. Removing the override
+uses the environment value again. Adding a project preference keeps other inherited topics current.
+
+Use **One task only** for a temporary decision and paste that task's thread link or ID. Mark it completed
+when the task finishes. Inactive and completed entries are not passed to agents. Removing an
+entry offers Undo. Each scope holds at most eight entries; feedback is not saved automatically.
+
 ## Cloud development with Boat
 
 Connect your Boat account in **Settings → Integrations** on the environment that owns

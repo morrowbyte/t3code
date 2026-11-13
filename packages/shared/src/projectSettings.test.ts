@@ -3,6 +3,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ThreadId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { createModelSelection } from "./model.ts";
@@ -15,6 +16,7 @@ import {
   resolveWorktreeCleanup,
 } from "./projectSettings.ts";
 import { applyServerSettingsPatch } from "./serverSettings.ts";
+import { agentPreferenceContext, scopedAgentPreferences } from "./agentPreferences.ts";
 
 const projectId = ProjectId.make("project-a");
 const otherProjectId = ProjectId.make("project-b");
@@ -34,6 +36,94 @@ describe("resolveSendEnvMode", () => {
 });
 
 describe("resolveProjectSettings", () => {
+  it("inherits current preferences by topic while project additions and deactivations stay scoped", () => {
+    const preference = {
+      key: "answer-format",
+      text: "Answer briefly.",
+      source: "message:confirmation",
+      appliesTo: { kind: "preference" as const },
+      status: "active" as const,
+    };
+    const projectPreference = { ...preference, key: "test-command", text: "Use focused tests." };
+    const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      agentPreferences: [preference],
+      projectSettingsOverrides: { [projectId]: { agentPreferences: [projectPreference] } },
+    });
+    expect(resolveProjectSettings(settings, projectId).settings.agentPreferences).toEqual([
+      preference,
+      projectPreference,
+    ]);
+    const corrected = applyServerSettingsPatch(settings, {
+      agentPreferences: [
+        { ...preference, text: "Answer in detail.", source: "message:correction" },
+      ],
+    });
+    const resolved = resolveProjectSettings(corrected, projectId);
+    expect(scopedAgentPreferences(resolved.settings, projectId)).toEqual({
+      entries: [projectPreference],
+      inheritedEntries: corrected.agentPreferences,
+    });
+    const context = agentPreferenceContext(
+      resolved.settings.agentPreferences,
+      ThreadId.make("thread:next"),
+      [projectPreference.key],
+    );
+    expect(JSON.parse(context.split("\n")[1]!)).toMatchObject([
+      { topic: preference.key, preference: "Answer in detail.", scope: "environment" },
+      { topic: projectPreference.key, scope: "project" },
+    ]);
+    expect(resolved.settings.agentPreferences.map((entry) => entry.text)).toEqual([
+      "Answer in detail.",
+      projectPreference.text,
+    ]);
+    expect(corrected.projectSettingsOverrides[projectId]?.agentPreferences).toEqual([
+      projectPreference,
+    ]);
+    const disabled = applyServerSettingsPatch(corrected, {
+      projectSettingsOverrides: {
+        [projectId]: {
+          agentPreferences: [
+            projectPreference,
+            { ...corrected.agentPreferences[0]!, status: "inactive" },
+          ],
+        },
+      },
+    });
+    const projectEntries = resolveProjectSettings(disabled, projectId).settings.agentPreferences;
+    expect(projectEntries.filter((entry) => entry.key === preference.key)).toMatchObject([
+      { text: "Answer in detail.", status: "inactive" },
+    ]);
+    expect(resolveProjectSettings(disabled, otherProjectId).settings.agentPreferences).toEqual(
+      corrected.agentPreferences,
+    );
+    const reset = applyServerSettingsPatch(disabled, {
+      projectSettingsOverrides: { [projectId]: { agentPreferences: [projectPreference] } },
+    });
+    expect(resolveProjectSettings(reset, projectId).settings.agentPreferences).toEqual(
+      resolved.settings.agentPreferences,
+    );
+    const full = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      agentPreferences: Array.from({ length: 8 }, (_, index) => ({
+        ...preference,
+        key: `env-${index}`,
+      })),
+      projectSettingsOverrides: {
+        [projectId]: {
+          agentPreferences: Array.from({ length: 8 }, (_, index) => ({
+            ...preference,
+            key: `project-${index}`,
+          })),
+        },
+      },
+    });
+    const fullResolved = resolveProjectSettings(full, projectId);
+    expect(fullResolved.settings.agentPreferences).toHaveLength(16);
+    expect(scopedAgentPreferences(fullResolved.settings, projectId).entries).toHaveLength(8);
+    expect(scopedAgentPreferences(fullResolved.settings, projectId).inheritedEntries).toHaveLength(
+      8,
+    );
+  });
+
   it("ignores an override left undefined by a forward-compatible decode", () => {
     const resolved = resolveProjectSettings(
       {

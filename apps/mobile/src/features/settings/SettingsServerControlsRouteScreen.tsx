@@ -4,6 +4,7 @@ import { AuthSettingsWriteScope } from "@t3tools/contracts";
 import { readEnvironmentScope, useEnvironmentsWithScope } from "../../state/session";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { AppText as Text } from "../../components/ui/AppText";
+import { scopedAgentPreferences } from "@t3tools/shared/agentPreferences";
 import {
   type ResponseStreamingMode,
   type ServerSettings,
@@ -27,6 +28,7 @@ import {
   SettingsEnvironmentFilterHeader,
 } from "./components/SettingsEnvironmentFilterHeader";
 import { BranchNamingSettings } from "./components/BranchNamingSettings";
+import { AgentPreferencesSettings } from "./components/AgentPreferencesSettings";
 import { DatabaseStorageNotice } from "./components/DatabaseStorageNotice";
 import { ListChoiceRow as SettingsChoiceRow } from "../../components/ui/ListChoiceRow";
 import { SettingsSection } from "./components/SettingsSection";
@@ -58,6 +60,7 @@ const PAGE_TITLES: Record<SettingsPage, string> = {
 
 const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettingKey[]> = {
   threads: [
+    "agentPreferences",
     "defaultThreadEnvMode",
     "defaultRuntimeMode",
     "responseStreamingMode",
@@ -203,6 +206,10 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
   const displayTargets = pendingWrites > 0 && pendingTargets !== null ? pendingTargets : targets;
   const hasConnectedSelection = targets.length > 0;
   const reference = displayTargets[0] ?? null;
+  const preferenceCollections = displayTargets.map((target) =>
+    scopedAgentPreferences(target.settings, target.projectId),
+  );
+  const preferenceCollection = preferenceCollections[0];
   const uniform = <K extends keyof ServerSettings>(key: K) =>
     uniformMobileSetting(displayTargets, key);
   // `uniform` folds a real null into "mixed"; nullable keys need the distinction.
@@ -402,6 +409,21 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     />
                   </SettingsSection>
                   <AutoSettleSettingsRows write={write} pending={pendingWrites > 0} />
+                  <AgentPreferencesSettings
+                    key={targetsKey}
+                    entries={
+                      preferenceCollections.every(
+                        (collection) =>
+                          JSON.stringify(collection) === JSON.stringify(preferenceCollection),
+                      )
+                        ? (preferenceCollection?.entries ?? [])
+                        : null
+                    }
+                    inheritedEntries={preferenceCollection?.inheritedEntries ?? []}
+                    projectSelected={projectSelected}
+                    disabled={disabledFor("agentPreferences")}
+                    onChange={(agentPreferences) => write({ agentPreferences })}
+                  />
                 </>
               ) : null}
 

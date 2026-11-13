@@ -69,7 +69,25 @@ vi.mock("../threads/thread-settings-options", () => ({
   withManagedRuntimeModeLimits: (choices: readonly unknown[]) => choices,
 }));
 vi.mock("../../components/ui/ScreenScrollView", () => ({ ScreenScrollView: Children }));
-vi.mock("../../components/ui/AppText", () => ({ AppText: Children }));
+vi.mock("../../components/ui/AppText", () => ({
+  AppText: Children,
+  AppTextInput: ({
+    accessibilityLabel,
+    value,
+    onChangeText,
+  }: {
+    accessibilityLabel: string;
+    value: string;
+    onChangeText: (value: string) => void;
+  }) => (
+    <input
+      aria-label={accessibilityLabel}
+      value={value}
+      onInput={(event) => onChangeText(event.currentTarget.value)}
+      readOnly={false}
+    />
+  ),
+}));
 vi.mock("../../components/ui/Button", () => ({
   Button: ({
     label,
@@ -92,7 +110,21 @@ vi.mock("./components/SettingsEnvironmentFilterHeader", () => ({
 }));
 vi.mock("./components/DatabaseStorageNotice", () => ({ DatabaseStorageNotice: () => null }));
 vi.mock("./components/SettingsSection", () => ({ SettingsSection: Children }));
-vi.mock("../../components/ui/ListChoiceRow", () => ({ ListChoiceRow: () => null }));
+vi.mock("../../components/ui/ListChoiceRow", () => ({
+  ListChoiceRow: ({
+    label,
+    selected,
+    onPress,
+  }: {
+    label: string;
+    selected: boolean;
+    onPress: () => void;
+  }) => (
+    <button aria-pressed={selected} onClick={onPress}>
+      {label}
+    </button>
+  ),
+}));
 vi.mock("./components/SettingsSwitchRow", () => ({
   SettingsSwitchRow: ({
     label,
@@ -181,6 +213,53 @@ afterEach(() => {
 });
 
 describe("SettingsServerControlsRouteScreen", () => {
+  it("keeps an unfinished task preference editable and validates it before saving", async () => {
+    act(() => root.render(<SettingsThreadsRouteScreen />));
+    const button = (label: string) =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+        (element) => element.textContent === label,
+      )!;
+    const input = (label: string) =>
+      container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+    const enter = (label: string, value: string) =>
+      act(() => {
+        input(label).value = value;
+        input(label).dispatchEvent(new Event("input", { bubbles: true }));
+      });
+
+    act(() => button("Add preference").click());
+    enter("Preference topic", "build-location");
+    enter("Preference", "Use Boat for this task.");
+    enter("Confirmation source", "User confirmation in this task");
+    act(() => button("One task only").click());
+    expect(input("Task thread")).not.toBeNull();
+    enter("Task thread", "thread:task");
+    enter("Task thread", "");
+    act(() => button("Save preference").click());
+    expect(container.textContent).toContain("A task decision needs its thread ID.");
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+
+    enter("Task thread", "thread:task");
+    act(() => button("Completed").click());
+    await act(async () => button("Save preference").click());
+    expect(mocks.updateSettings).toHaveBeenCalledWith({
+      environmentId: "local",
+      input: {
+        patch: {
+          agentPreferences: [
+            {
+              key: "build-location",
+              text: "Use Boat for this task.",
+              source: "User confirmation in this task",
+              appliesTo: { kind: "task", threadId: "thread:task" },
+              status: "completed",
+            },
+          ],
+        },
+      },
+    });
+  });
+
   it("sends a draft saved during a pending write once that write settles", async () => {
     const pending = Promise.withResolvers<AsyncResult.Success<void>>();
     mocks.updateSettings.mockReturnValueOnce(pending.promise);

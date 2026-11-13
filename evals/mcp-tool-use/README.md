@@ -46,6 +46,10 @@ The result contains the exit code, counts and private paths. Boat results are un
 
 ## Add a case
 
+`cases/preferences.ndjson` covers #101's confirmed preferences, replacement and task isolation.
+Its `agentPreferences` data is rendered through the same bounded prompt helper as a real turn.
+Run `--case PREF-01,PREF-02,PREF-03` after changes to that helper.
+
 Cases are JSON lines in `cases/`, one file per area. The case schema in `run.ts` (`McpToolUseCase`) documents every field.
 
 - `kind`: `bad` reproduces a mistake, `guard` protects correct behavior, `control` is ordinary work.

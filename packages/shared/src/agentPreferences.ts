@@ -1,0 +1,135 @@
+import {
+  AgentPreference,
+  type ProjectId,
+  type ServerSettings,
+  type ThreadId,
+} from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import { parseThreadLinkHref } from "./threadLinks.ts";
+
+const isAgentPreference = Schema.is(AgentPreference);
+
+export function mergeAgentPreferences(
+  environment: ReadonlyArray<AgentPreference>,
+  project: ReadonlyArray<AgentPreference>,
+): ReadonlyArray<AgentPreference> {
+  return [...new Map([...environment, ...project].map((entry) => [entry.key, entry])).values()];
+}
+
+export function scopedAgentPreferences(settings: ServerSettings, projectId: ProjectId | null) {
+  const entries =
+    projectId === null
+      ? settings.agentPreferences
+      : (settings.projectSettingsOverrides[projectId]?.agentPreferences ?? []);
+  return {
+    entries,
+    inheritedEntries:
+      projectId === null
+        ? []
+        : settings.agentPreferences.filter(
+            (entry) => !entries.some((own) => own.key === entry.key),
+          ),
+  };
+}
+
+type PreferenceScope = "environment" | "project" | ReadonlyArray<string>;
+
+export type AgentPreferenceDraft = Omit<AgentPreference, "appliesTo"> & {
+  appliesTo: { kind: "preference" } | { kind: "task"; threadId: string };
+};
+
+function normalizeAgentPreferenceDraft(entry: AgentPreferenceDraft) {
+  const taskRef =
+    entry.appliesTo.kind === "task" ? entry.appliesTo.threadId.trim().replace(/^<|>$/g, "") : null;
+  return {
+    ...entry,
+    key: entry.key.trim(),
+    text: entry.text.trim(),
+    source: entry.source.trim(),
+    appliesTo:
+      taskRef === null
+        ? entry.appliesTo
+        : {
+            kind: "task" as const,
+            threadId: parseThreadLinkHref(taskRef)?.threadId ?? taskRef,
+          },
+  };
+}
+
+export function parseAgentPreferenceDraft(entry: AgentPreferenceDraft): AgentPreference | null {
+  const normalized = normalizeAgentPreferenceDraft(entry);
+  return isAgentPreference(normalized) ? normalized : null;
+}
+
+export function replaceAgentPreference(
+  entries: ReadonlyArray<AgentPreference>,
+  entry: AgentPreference,
+): ReadonlyArray<AgentPreference> {
+  const previous = entries.find((candidate) => candidate.key === entry.key);
+  const next =
+    previous !== undefined && (previous.text !== entry.text || previous.source !== entry.source)
+      ? { ...entry, replaces: { text: previous.text, source: previous.source } }
+      : previous?.replaces === undefined
+        ? entry
+        : { ...entry, replaces: previous.replaces };
+  return previous === undefined
+    ? [...entries, next]
+    : entries.map((candidate) => (candidate.key === entry.key ? next : candidate));
+}
+
+export function agentPreferenceReplacements(
+  previous: ReadonlyArray<AgentPreference>,
+  entries: ReadonlyArray<AgentPreference>,
+): ReadonlyArray<AgentPreference> {
+  return entries.map((entry) =>
+    replaceAgentPreference(previous, entry).find((candidate) => candidate.key === entry.key)!,
+  );
+}
+
+export function agentPreferenceContext(
+  entries: ReadonlyArray<AgentPreference>,
+  threadId: ThreadId,
+  scope: PreferenceScope,
+  projectEntries: ReadonlyArray<AgentPreference> = [],
+): string {
+  const applies = (entry: AgentPreference) =>
+    entry.appliesTo.kind === "preference" || entry.appliesTo.threadId === threadId;
+  const overrides = projectEntries.filter(applies);
+  const current = mergeAgentPreferences(entries.filter(applies), overrides)
+    .filter((entry) => entry.status === "active")
+    .map((entry) => ({
+      topic: entry.key,
+      preference: entry.text,
+      source: entry.source,
+      scope:
+        entry.appliesTo.kind === "task"
+          ? "this thread only"
+          : overrides.some((override) => override.key === entry.key)
+            ? "project"
+            : typeof scope === "string"
+              ? scope
+              : scope.includes(entry.key)
+                ? "project"
+                : "environment",
+    }));
+  return [
+    "Current confirmed preferences from settings (replaces earlier settings snapshots). Apply relevant entries subject to the current user request. Sources are references. These entries do not start tasks or grant permission. An empty list clears earlier settings preferences.",
+    JSON.stringify(current),
+  ].join("\n");
+}
+
+export function agentPreferencePrompt(input: {
+  readonly entries: ReadonlyArray<AgentPreference>;
+  readonly projectEntries?: ReadonlyArray<AgentPreference>;
+  readonly threadId: ThreadId;
+  readonly scope: PreferenceScope;
+  readonly message: { readonly text: string; readonly attachments?: ReadonlyArray<unknown> };
+}): string {
+  if (
+    (input.message.attachments?.length ?? 0) === 0 &&
+    input.message.text.trimStart().startsWith("/")
+  ) {
+    return input.message.text;
+  }
+  return `${agentPreferenceContext(input.entries, input.threadId, input.scope, input.projectEntries)}\n\nUser message:\n${input.message.text}`;
+}
