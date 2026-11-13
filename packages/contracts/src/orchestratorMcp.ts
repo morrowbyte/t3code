@@ -589,7 +589,7 @@ export const OrchestratorMcpConversationDelegation = Schema.Struct({
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
 }).annotate({
   description:
-    "Explicit independent work: admit a fresh real child immediately, even while this conversation has an active provider run. For a new destination worktree, set workspaceStrategy and explicitly select target.providerInstanceId and target.model; projectId selects the local destination. Use a stable clientRequestId. Follow-ups should target the existing task/child instead.",
+    "New independent child of threadId: results are published there; no automatic MCP caller resume. Omit delegation for follow-ups; for caller-owned work use delegate_task. For a new worktree set workspaceStrategy, target.providerInstanceId and target.model; projectId sets the local project. Use a stable clientRequestId.",
 });
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
