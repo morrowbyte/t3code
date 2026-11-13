@@ -18,6 +18,12 @@ import {
   v2ThreadId,
 } from "../state/orchestrationV2TestFixtures.ts";
 
+import {
+  COMPACT_THREAD_CACHE_SCHEMA_VERSION,
+  decodeStoredThreadSnapshot,
+  encodeStoredThreadSnapshot,
+} from "./threadCacheEncoding.ts";
+
 import { applyOrchestrationV2ProjectionEvent } from "../state/orchestrationV2Projection.ts";
 
 const environmentId = EnvironmentId.make("environment-cache-test");
@@ -74,14 +80,14 @@ describe("orchestration cache envelopes", () => {
     expect(decoded.visibleTurnItems.find((entry) => entry.item.id === item.id)?.item).toEqual(item);
   });
 
-  it("rejects thread snapshots saved before human history was bounded, but not shells", () => {
+  it("rejects thread snapshots saved before bounded delivery and reply metadata, but not shells", () => {
     const currentThread = encodeStoredThreadSnapshotJson({
       schemaVersion: ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
       environmentId,
       threadId: v2ThreadId,
       snapshot: { snapshotSequence: 4, projection: v2Projection },
     });
-    for (const staleVersion of [3, 4]) {
+    for (const staleVersion of [3, 4, 5, 6]) {
       const staleThread = currentThread.replace(
         `"schemaVersion":${ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION}`,
         `"schemaVersion":${staleVersion}`,
@@ -95,6 +101,38 @@ describe("orchestration cache envelopes", () => {
     });
     expect(decodeStoredShellSnapshotSync(shell).schemaVersion).toBe(3);
   });
+
+  it.effect("discards obsolete full and compact thread formats and round-trips current ones", () =>
+    Effect.gen(function* () {
+      const stored = {
+        environmentId,
+        threadId: v2ThreadId,
+        snapshot: { snapshotSequence: 4, projection: v2Projection },
+      };
+      const full = encodeStoredThreadSnapshotJson({
+        ...stored,
+        schemaVersion: ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
+      });
+      const compact = yield* encodeStoredThreadSnapshot(stored);
+      expect((yield* decodeStoredThreadSnapshot(full)).snapshot).toEqual(stored.snapshot);
+      expect((yield* decodeStoredThreadSnapshot(compact)).snapshot).toEqual(stored.snapshot);
+      expect(JSON.parse(compact).schemaVersion).toBe(COMPACT_THREAD_CACHE_SCHEMA_VERSION);
+      let discardCount = 0;
+      for (const raw of [full, compact]) {
+        for (const staleVersion of [5, 6]) {
+          const obsolete = JSON.stringify({ ...JSON.parse(raw), schemaVersion: staleVersion });
+          const decoded = yield* decodeOrDiscardOrchestrationCache(
+            decodeStoredThreadSnapshot(obsolete).pipe(Effect.asSome),
+            Effect.sync(() => {
+              discardCount += 1;
+            }),
+          );
+          expect(Option.isNone(decoded)).toBe(true);
+        }
+      }
+      expect(discardCount).toBe(4);
+    }),
+  );
 
   it.effect("discards V1-versioned cache envelopes after a decode failure", () =>
     Effect.gen(function* () {

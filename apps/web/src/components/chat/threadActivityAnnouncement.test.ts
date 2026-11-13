@@ -10,11 +10,7 @@ import {
 import { mergeOlderHistoryIntoProjection } from "@t3tools/client-runtime/state/thread-history-merge";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
-import {
-  v2Projection,
-  v2ThreadId,
-  v2Now,
-} from "../../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures";
+import { makeThreadProjectionFixture } from "../../test-fixtures";
 
 import {
   announcedRun,
@@ -173,13 +169,15 @@ describe("nextThreadAnnouncement", () => {
   it("stays silent when a thread opens mid-turn or after one", () => {
     expect(speak([idle(firstRun, "completed"), idle(firstRun, "completed")])).toEqual([]);
     expect(speak([busy(), busy()])).toEqual([]);
+    const initialProjection = makeThreadProjectionFixture();
     const row = (
       ordinal: number,
       position: number,
       visibility: "local" | "inherited" = "local",
     ): OrchestrationV2ProjectedTurnItem => {
       const id = TurnItemId.make(`turn-item:steering-delivery-failure:message-${ordinal}`);
-      const sourceThreadId = visibility === "local" ? v2ThreadId : ThreadId.make("other-thread");
+      const sourceThreadId =
+        visibility === "local" ? initialProjection.thread.id : ThreadId.make("other-thread");
       return {
         position,
         visibility,
@@ -197,9 +195,9 @@ describe("nextThreadAnnouncement", () => {
           ordinal,
           status: "failed",
           title: "Correction delivery not confirmed",
-          startedAt: v2Now,
-          completedAt: v2Now,
-          updatedAt: v2Now,
+          startedAt: initialProjection.updatedAt,
+          completedAt: initialProjection.updatedAt,
+          updatedAt: initialProjection.updatedAt,
           type: "error",
           failure: {
             class: "transport_error",
@@ -212,7 +210,7 @@ describe("nextThreadAnnouncement", () => {
     };
     const historicalFailure = row(100, 0);
     const initial = {
-      ...v2Projection,
+      ...initialProjection,
       turnItems: [historicalFailure.item],
       visibleTurnItems: [historicalFailure, row(200, 1, "inherited")],
     };

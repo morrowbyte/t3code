@@ -1,9 +1,10 @@
 import { useState } from "react";
 import type { EnvironmentShellStatus } from "@t3tools/client-runtime/state/shell";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { RuntimeRequestId, ScopedThreadRef } from "@t3tools/contracts";
 
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
+import { attentionRequestHref } from "./attentionRequestTarget";
 import {
   ATTENTION_CATEGORIES,
   attentionCoverageLabel,
@@ -27,7 +28,7 @@ export function AttentionInboxView({
   hasSnapshot: boolean;
   synchronizationError: string | null;
   navigationError: string | null;
-  onOpenThread: (ref: ScopedThreadRef) => void;
+  onOpenThread: (ref: ScopedThreadRef, requestId?: RuntimeRequestId) => void;
 }) {
   const [filter, setFilter] = useState<AttentionFilter>("all");
   const [shown, setShown] = useState(50);
@@ -107,12 +108,24 @@ export function AttentionInboxView({
                   {new Date(entry.occurredAt).toLocaleString()}
                 </time>
                 <Button
+                  render={<a href={attentionRequestHref(entry.threadRef, entry.requestId)} />}
                   size="sm"
                   variant="outline"
-                  aria-label={`Open source conversation: ${entry.threadTitle}`}
-                  onClick={() => onOpenThread(entry.threadRef)}
+                  aria-label={`${entry.requestId ? "Open request" : "Open thread"}: ${entry.title} (${entry.threadTitle})`}
+                  onClick={(event) => {
+                    if (
+                      event.button !== 0 ||
+                      event.metaKey ||
+                      event.ctrlKey ||
+                      event.shiftKey ||
+                      event.altKey
+                    )
+                      return;
+                    event.preventDefault();
+                    onOpenThread(entry.threadRef, entry.requestId);
+                  }}
                 >
-                  Open thread
+                  {entry.requestId ? "Open request" : "Open thread"}
                 </Button>
               </div>
             </li>

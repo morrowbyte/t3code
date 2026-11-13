@@ -4,6 +4,7 @@ import {
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
+import { isOrchestrationV2ThreadSnoozed } from "@t3tools/shared/orchestrationV2ThreadSnooze";
 import {
   CommandId,
   isOrchestrationV2WorkActive,
@@ -177,17 +178,7 @@ export function isSnoozed(
   >,
   nowMs: number,
 ): boolean {
-  const snoozedUntilMs = toMillis(thread.snoozedUntil);
-  if (snoozedUntilMs === null || snoozedUntilMs <= nowMs) return false;
-  if (thread.pendingRuntimeRequest !== null) return false;
-  // Same as the client: a waiting guest message wakes the thread, and the snooze stays stored.
-  if ((thread.pendingGuestMessageCount ?? 0) > 0) return false;
-  const snoozedAtMs = toMillis(thread.snoozedAt);
-  const completedAtMs = toMillis(thread.latestRunCompletedAt);
-  const wokeOnError =
-    thread.status === "failed" &&
-    (snoozedAtMs === null || (completedAtMs !== null && completedAtMs > snoozedAtMs));
-  return !wokeOnError;
+  return isOrchestrationV2ThreadSnoozed(thread, nowMs);
 }
 
 export function resolveAutoSettlementAt(input: {
@@ -678,7 +669,7 @@ export const make = Effect.gen(function* () {
       const thread = yield* projections.getThread(threadId);
       if (thread.settledOverride !== "settled") return;
       const canCleanUp = Effect.fn("ThreadSettlementServiceV2.canCleanUpWorktree")(
-        function* (stoppingRunner = false) {
+        function* (stoppingRunner: boolean) {
           const owner = yield* projections.getThread(threadId);
           if (
             owner.settledOverride !== "settled" ||
@@ -744,9 +735,9 @@ export const make = Effect.gen(function* () {
         : stopRunners;
       if (!runnersStopped) return;
       // Stop confirmation only covers the captured child; the prune script still checks process refs.
-      if (!(yield* canCleanUp())) return;
+      if (!(yield* canCleanUp(false))) return;
       yield* terminals.closeIdle({ threadId });
-      if (!(yield* canCleanUp())) return;
+      if (!(yield* canCleanUp(false))) return;
       if ((yield* workspacePeers(worktreePath)).projectRoot) {
         settleActionRunAt.set(threadId, settledAtMs);
         return;

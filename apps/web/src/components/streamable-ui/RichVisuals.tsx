@@ -1,4 +1,4 @@
-import { lazy, Suspense, useId, useState, type KeyboardEvent } from "react";
+import { lazy, Suspense, useId, type KeyboardEvent } from "react";
 import {
   type RichVisualComponent,
   type VisualChart,
@@ -10,6 +10,7 @@ import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { CheckIcon, CircleDotIcon, CircleIcon, BanIcon } from "lucide-react";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { useVisualInteraction } from "./useVisualInteraction";
 
 const Chart = lazy(() => import("./RichChart").then((module) => ({ default: module.RichChart })));
 const Workflow = lazy(() =>
@@ -64,7 +65,7 @@ function Facts({ facts }: { facts: VisualFact[] }) {
             {fact.label}
           </dt>
           <dd className="ml-auto min-w-0 max-w-full text-right tabular-nums [overflow-wrap:anywhere]">
-            {fact.value ?? "—"}
+            {fact.value ?? "N/A"}
           </dd>
         </div>
       ))}
@@ -74,8 +75,12 @@ function Facts({ facts }: { facts: VisualFact[] }) {
 
 function Report({ report }: { report: VisualReport }) {
   const id = useId();
-  const [selected, setSelected] = useState<string>();
-  const active = selected ?? report.sections[0]?.key;
+  const [interaction, update] = useVisualInteraction(report.id, `report:${report.layout}`);
+  const selected = interaction.selected;
+  const setSelected = (key: string) => update((previous) => ({ ...previous, selected: key }));
+  const active = report.sections.some((section) => section.key === selected)
+    ? selected
+    : report.sections[0]?.key;
   const moveTab = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     const count = report.sections.length;
     const next =
@@ -97,7 +102,22 @@ function Report({ report }: { report: VisualReport }) {
     return (
       <div className="divide-y divide-border">
         {report.sections.map((section) => (
-          <details data-iui-entry="" key={section.key} className="py-3 first:pt-0 last:pb-0">
+          <details
+            data-iui-entry=""
+            key={section.key}
+            open={interaction.openSections?.includes(section.key) ?? false}
+            onToggle={(event) => {
+              const open = event.currentTarget.open;
+              if (open === (interaction.openSections?.includes(section.key) ?? false)) return;
+              update((previous) => ({
+                ...previous,
+                openSections: open
+                  ? [...(previous.openSections ?? []), section.key]
+                  : previous.openSections?.filter((key) => key !== section.key),
+              }));
+            }}
+            className="py-3 first:pt-0 last:pb-0"
+          >
             <summary className="cursor-pointer text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">
               {section.title}
             </summary>

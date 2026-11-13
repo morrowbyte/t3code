@@ -1205,6 +1205,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
   readonly markdown: string;
   readonly isStreaming?: boolean;
   readonly environmentId: EnvironmentId;
+  readonly threadId?: ThreadId | undefined;
   readonly markdownStyles: MarkdownStyleSet;
   readonly linkHandlers: MarkdownLinkHandlers;
   readonly onUseArtifactTemplate?: ((template: CodexArtifactTemplate) => void) | undefined;
@@ -1223,6 +1224,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
     <AssistantMarkdownBlocks
       markdown={liveMarkdown}
       environmentId={props.environmentId}
+      threadId={props.threadId}
       isStreaming={props.isStreaming}
       markdownStyles={props.markdownStyles}
       linkHandlers={linkHandlers}
@@ -1237,6 +1239,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
 function AssistantMarkdownBlocks(props: {
   readonly markdown: string;
   readonly environmentId: EnvironmentId;
+  readonly threadId?: ThreadId | undefined;
   readonly isStreaming?: boolean | undefined;
   readonly markdownStyles: MarkdownStyleSet;
   readonly linkHandlers: MarkdownLinkHandlers;
@@ -1281,6 +1284,7 @@ function AssistantMarkdownBlocks(props: {
         <StreamableAssistantMarkdown
           key={`markdown:${offset}`}
           environmentId={props.environmentId}
+          scope={props.threadId ? JSON.stringify([props.environmentId, props.threadId]) : undefined}
           isStreaming={props.isStreaming ?? false}
           markdown={renderCodexInlineDirectivesAsMarkdown(segment.markdown)}
           skills={props.skills}
@@ -2114,6 +2118,7 @@ function renderFeedEntry(
             environmentId={props.environmentId}
             senderThreadId={message.remoteSender?.threadId ?? message.senderThreadId}
             senderEnvironmentId={message.remoteSender?.environmentId}
+            replyTo={message.replyTo}
             attachments={attachmentContent}
             timestampLabel={timestampLabel}
             streaming={message.streaming}
@@ -2420,6 +2425,7 @@ function renderFeedEntry(
               markdown={renderedText}
               isStreaming={message.streaming}
               environmentId={props.environmentId}
+              threadId={props.threadId}
               markdownStyles={styles}
               linkHandlers={props.markdownLinkHandlers}
               onUseArtifactTemplate={props.onUseArtifactTemplate}
@@ -3356,6 +3362,7 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
     <AssistantMarkdownContent
       markdown={text}
       environmentId={props.environmentId}
+      threadId={props.threadId}
       markdownStyles={markdownStyles.assistant}
       linkHandlers={markdownLinkHandlers}
       renderImage={renderMarkdownImage}
@@ -3982,9 +3989,8 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
     }
     switch (entry.type) {
       case "run-fold":
-        return resolveThreadFeedFixedItemSize(entry.type);
       case "work-toggle":
-        return entry.thought ? undefined : WORK_GROUP_TOGGLE_HEIGHT;
+        return resolveThreadFeedFixedItemSize(entry.type);
       case "thinking":
         return WORK_GROUP_TOGGLE_HEIGHT;
       case "activity-group":

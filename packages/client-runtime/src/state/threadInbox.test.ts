@@ -99,13 +99,13 @@ describe("Working membership", () => {
     { hasPendingUserInput: true },
     { pendingSubagentRequest: "approval" as const },
     { pendingSubagentRequest: "user_input" as const },
-  ])("keeps input in Inbox and suppresses settled old input: %s", (request) => {
+  ])("tracks input independently from work and suppresses settled old input: %s", (request) => {
     const waiting = {
       ...running,
       ...request,
       runtime: { ...running.runtime!, status: "waiting" as const },
     };
-    expect(isThreadWorking(waiting)).toBe(false);
+    expect(isThreadWorking(waiting)).toBe(true);
     expect(isThreadAwaitingInput(waiting)).toBe(true);
     expect(isThreadAwaitingInput({ ...waiting, settledOverride: "settled" })).toBe(false);
   });

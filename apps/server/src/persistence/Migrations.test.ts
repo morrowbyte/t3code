@@ -69,17 +69,65 @@ describe("runMigrations", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect.each([63, 64, 65, 68, 69, 70, 71, 72, 73, 74, 75, 76])(
+  it.effect.each([63, 64, 65, 68, 69, 70, 71, 72, 73, 74, 75, 76, 82, 83])(
     "appends upstream migrations after the shipped fork prefix %s",
     (id) =>
       Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
         yield* runMigrations({ toMigrationInclusive: id });
+        if (id === 82) {
+          yield* sql`DROP INDEX orchestration_v2_projection_runs_usage_history_idx`;
+          yield* sql`CREATE INDEX orchestration_v2_projection_runs_usage_history_idx
+            ON orchestration_v2_projection_runs(requested_at DESC, run_id DESC)
+            WHERE json_extract(payload_json, '$.delegationAdmission') IS NULL`;
+          yield* sql`INSERT INTO orchestration_v2_projection_runs
+            (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
+            VALUES ('history-run', 'history-thread', 1, 'codex', 'completed', 'now', '{}')`;
+        }
+        if (id === 83) {
+          for (const enabled of [0, 1]) {
+            yield* sql`INSERT INTO scheduled_tasks (
+              task_id, title, prompt, enabled, schedule_json, project_id,
+              workspace_strategy_json, model_selection_json, runtime_mode, interaction_mode,
+              created_by, creation_source, created_at, updated_at, last_run_status, run_count
+            ) VALUES (
+              ${`legacy-${enabled}`}, 'Legacy', 'Preserve this prompt', ${enabled}, '{}',
+              'project', '{}', '{}', 'full-access', 'default', 'agent', 'server',
+              'now', 'now', 'idle', 0
+            )`;
+          }
+        }
         assert.deepStrictEqual(
           yield* runMigrations(),
           migrationManifest.filter(([migrationId]) => migrationId > id),
         );
         assert.deepStrictEqual(yield* history, migrationManifest);
         assert.deepStrictEqual(yield* runMigrations(), []);
+        if (id === 83) {
+          const rows = yield* sql<{ enabled: number; delivery_generation: string; prompt: string }>`
+            SELECT enabled, delivery_generation, prompt FROM scheduled_tasks ORDER BY enabled
+          `;
+          assert.isNotEmpty(rows[0]!.delivery_generation);
+          assert.equal(rows[1]!.delivery_generation, "");
+          assert.deepStrictEqual(
+            rows.map((row) => row.prompt),
+            ["Preserve this prompt", "Preserve this prompt"],
+          );
+          yield* sql`UPDATE scheduled_tasks SET enabled = 1 WHERE task_id = 'legacy-0'`;
+          assert.deepStrictEqual(
+            yield* sql`SELECT delivery_generation FROM scheduled_tasks WHERE task_id = 'legacy-0'`,
+            [{ delivery_generation: rows[0]!.delivery_generation }],
+          );
+        }
+        if (id === 82) {
+          yield* sql`UPDATE orchestration_v2_projection_runs
+            SET payload_json = '{broken' WHERE run_id = 'history-run'`;
+          assert.deepStrictEqual(
+            yield* sql`SELECT payload_json FROM orchestration_v2_projection_runs
+              WHERE run_id = 'history-run'`,
+            [{ payload_json: "{broken" }],
+          );
+        }
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
@@ -136,6 +184,8 @@ describe("runMigrations", () => {
         [80, "ProjectionProjectsPinArchive"],
         [81, "PrivilegedRecoveryIndexes"],
         [82, "ExecutionUsageIndexes"],
+        [83, "RepairExecutionHistoryIndex"],
+        [84, "ScheduledTaskDeliveryGeneration"],
       ]);
       assert.deepStrictEqual(yield* retained, before);
       assert.deepStrictEqual(yield* runMigrations(), []);

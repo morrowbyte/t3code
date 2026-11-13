@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Source identity needs a fixed-size digest of the full call.
+import * as NodeCrypto from "node:crypto";
 import {
   type OrchestrationV2TurnItem,
   type ProviderInstanceId,
@@ -71,6 +73,18 @@ export function toolIntentInput(item: ToolItem): string {
   }).slice(0, 4_096);
 }
 
+function toolIntentSourceIdentity(item: ToolItem): string {
+  return NodeCrypto.createHash("sha256")
+    .update(
+      ActivityTextGeneration.encodeInput({
+        type: item.type,
+        tool: item.type === "dynamic_tool" ? item.toolName : "shell",
+        input: item.input,
+      }),
+    )
+    .digest("hex");
+}
+
 type ActivityPresentation = NonNullable<ToolItem["activityPresentation"]>;
 
 type Observation = {
@@ -127,7 +141,7 @@ export const make = Effect.gen(function* () {
     | undefined;
   const pendingItems = new Set<string>();
   const admissions = new Map<string, Deferred.Deferred<void>>();
-  type Work = { input: Observation; revision: number; source: string };
+  type Work = { input: Observation; revision: number; source: string; sourceIdentity: string };
   const latest = new Map<string, Work>();
   const queued = new Map<string, Work>();
   let revision = 0;
@@ -135,7 +149,10 @@ export const make = Effect.gen(function* () {
   const cache = new Map<string, string>();
   const retained = new Map<string, string>();
   const authored = new Set<string>();
-  const presentations = new Map<string, ActivityPresentation>();
+  const presentations = new Map<
+    string,
+    { presentation: ActivityPresentation; sourceIdentity: string; contextKey: string }
+  >();
   const retainedInputs = new Map<string, string>();
   const itemKey = (item: ToolItem) => `${item.threadId}:${item.id}`;
   const release = Effect.fn("ToolIntentGeneration.release")(function* (id: string) {
@@ -148,7 +165,7 @@ export const make = Effect.gen(function* () {
     if (authoritative) authored.add(id);
     else if (authored.has(id)) return;
     retained.set(id, title);
-    retainedInputs.set(id, toolIntentInput(item));
+    retainedInputs.set(id, toolIntentSourceIdentity(item));
     if (retained.size > 512) {
       const oldest = retained.keys().next().value!;
       retained.delete(oldest);
@@ -164,12 +181,24 @@ export const make = Effect.gen(function* () {
       if (latest.get(id)?.revision !== work.revision) return;
       if (!context) continue;
       const sourceTitle = toolActivitySourceTitle(input.item);
+      const contextKey = ActivityTextGeneration.encodeInput(context);
+      const previousPresentation = presentations.get(id);
       if (sourceTitle && context.language === "auto" && !context.languageContext) {
         presentations.delete(id);
         yield* input.commitPresentation?.(undefined) ?? Effect.void;
         return;
       }
-      if (sourceTitle && presentations.get(id)?.language !== context.language) {
+      if (
+        sourceTitle &&
+        previousPresentation?.sourceIdentity === work.sourceIdentity &&
+        previousPresentation.contextKey === contextKey
+      ) {
+        const presentation = { ...previousPresentation.presentation, sourceTitle };
+        presentations.set(id, { ...previousPresentation, presentation });
+        yield* input.commitPresentation?.(presentation) ?? Effect.void;
+        return;
+      }
+      if (sourceTitle && previousPresentation?.contextKey !== contextKey) {
         presentations.delete(id);
         yield* input.commitPresentation?.(undefined) ?? Effect.void;
       }
@@ -187,7 +216,6 @@ export const make = Effect.gen(function* () {
             : undefined) ?? "Boat environment")
         : sourceTitle;
       const request = activityLabel ?? work.source;
-      const contextKey = ActivityTextGeneration.encodeInput(context);
       const key = ActivityTextGeneration.encodeInput([context, request, Boolean(sourceTitle)]);
       let title = cache.get(key);
       if (!title) {
@@ -231,10 +259,10 @@ export const make = Effect.gen(function* () {
         continue;
       cache.set(key, title);
       if (cache.size > 256) cache.delete(cache.keys().next().value!);
+      const presentation = { title, sourceTitle: sourceTitle ?? title, language: context.language };
+      presentations.set(id, { presentation, sourceIdentity: work.sourceIdentity, contextKey });
+      if (presentations.size > 512) presentations.delete(presentations.keys().next().value!);
       if (sourceTitle) {
-        const presentation = { title, sourceTitle, language: context.language };
-        presentations.set(id, presentation);
-        if (presentations.size > 512) presentations.delete(presentations.keys().next().value!);
         yield* input.commitPresentation?.(presentation) ?? Effect.void;
       } else {
         remember(input.item, title);
@@ -296,7 +324,8 @@ export const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const id = itemKey(input.item);
           const source = toolIntentInput(input.item);
-          if (retainedInputs.has(id) && retainedInputs.get(id) !== source) {
+          const sourceIdentity = toolIntentSourceIdentity(input.item);
+          if (retainedInputs.has(id) && retainedInputs.get(id) !== sourceIdentity) {
             retained.delete(id);
             authored.delete(id);
             retainedInputs.delete(id);
@@ -315,14 +344,14 @@ export const make = Effect.gen(function* () {
           }
           const previous = latest.get(id);
           if (
-            previous?.source === source &&
+            previous?.sourceIdentity === sourceIdentity &&
             toolActivitySourceTitle(previous.input.item) === sourceTitle &&
             previous.input.item.title === input.item.title &&
             previous.input.providerInstanceId === input.providerInstanceId &&
             previous.input.driverKind === input.driverKind
           )
             return;
-          const work = { input, revision: ++revision, source };
+          const work = { input, revision: ++revision, source, sourceIdentity };
           const admission = Deferred.makeUnsafe<void>();
           const waiting = admissions.get(id);
           admissions.set(id, admission);
@@ -373,12 +402,16 @@ export const make = Effect.gen(function* () {
   });
   return {
     retainedTitle: (item: ToolItem) =>
-      isToolIntentMissing(item) && retainedInputs.get(itemKey(item)) === toolIntentInput(item)
+      isToolIntentMissing(item) &&
+      retainedInputs.get(itemKey(item)) === toolIntentSourceIdentity(item)
         ? retained.get(itemKey(item))
         : undefined,
     retainedPresentation: (item: ToolItem) => {
-      const presentation = presentations.get(itemKey(item));
-      return presentation?.sourceTitle === toolActivitySourceTitle(item) ? presentation : undefined;
+      const retained = presentations.get(itemKey(item));
+      const sourceTitle = toolActivitySourceTitle(item);
+      return sourceTitle && retained?.sourceIdentity === toolIntentSourceIdentity(item)
+        ? { ...retained.presentation, sourceTitle }
+        : undefined;
     },
     observe: (input: Observation) => observe(input).pipe(Effect.asVoid),
     observeStored,

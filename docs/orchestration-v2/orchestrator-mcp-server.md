@@ -245,12 +245,12 @@ that driver; an explicit `providerInstanceId` is honored exactly and fails
 when unavailable. Selecting a different provider without a model uses that
 provider's first advertised model.
 
-A provider runs a runtime mode it does not offer as `approval-required`, so a
-child would ask for approval on every command. `orchestrator_capabilities`
-lists `runtimeModes` only for a provider that offers some of the modes, and
-omits it for a provider that offers all of them. When the target lists
-`runtimeModes`, an explicit `runtimeMode` outside that list is refused, and an
-inherited mode steps down to the broadest mode the target offers.
+`orchestrator_capabilities` lists `runtimeModes` only for a provider that offers
+some of the modes, and omits it for a provider that offers all of them. When the
+target lists `runtimeModes`, an explicit or inherited mode outside that list is
+refused before creating the child. Choose a provider supporting the requested
+mode or explicitly select a supported mode; inheritance never silently adds
+approval requirements.
 
 Each independent delegated review round uses a new `delegate_task` call with the
 original brief, prior findings, responses, and unresolved objections. Track each
@@ -365,9 +365,9 @@ workspace does not. `scratch: true` launches without a project, in a folder of
 its own under the environment's Scratch project. For stacked PRs, use the parent branch as `baseRef` with
 `startFromOrigin: false`. The new thread may not run with broader runtime or
 interaction modes than the caller. As for `delegate_task`, a runtime mode the
-provider does not offer is refused, and an inherited or default one steps down
-to the broadest mode it offers. Launch has no retry key, so inspect existing threads after a failed or lost response before
-launching again. `create_threads` remains the batch option for a shared checkout.
+provider does not offer is refused, including inherited and default modes.
+Retry a failed or lost response with the same `clientRequestId`; do not create a
+second launch. `create_threads` remains the batch option for a shared checkout.
 
 ### `t3_thread_list`
 

@@ -3,6 +3,7 @@ import type {
   ThreadPendingUserInput,
 } from "@t3tools/client-runtime/state/thread-requests";
 import { turnItemIsWorkspacePreparation } from "@t3tools/client-runtime/state/turn-item-presentation";
+import { parseApprovalReviewDetail } from "@t3tools/client-runtime/approvalReview";
 import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
 import { isLiveSubagentTurnItem } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -55,6 +56,7 @@ import type {
 } from "@t3tools/contracts";
 import { idleCompactionOf, isCompactionCommandMessage, RunId, ThreadId } from "@t3tools/contracts";
 import {
+  authoredCodeIntent,
   classifyToolActivity,
   collectToolFilePaths,
   dynamicToolTitle,
@@ -270,11 +272,28 @@ function compactWorkEntryText(value: string): string {
   return truncate(value.replace(/\s+/gu, " "), WORK_LOG_LABEL_MAX_LENGTH);
 }
 
+function approvalCommandIntent(entry: WorkLogPresentationEntry): string | undefined {
+  const approval = entry.structuredPayload;
+  if (
+    approval?.type === "approval_request" &&
+    approval.requestKind === "command" &&
+    !approval.privilegedCommand &&
+    parseApprovalReviewDetail(approval.prompt).kind === "none"
+  ) {
+    return authoredCodeIntent(approval.prompt ?? "");
+  }
+  return undefined;
+}
+
 export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = false): string {
   if (entry.itemType === "fork") return entry.label;
-  if (expanded && entry.itemType === "reasoning")
-    return entry.toolLifecycleStatus === "inProgress" ? "Thinking" : "Thought";
-  const explicitIntent = workEntryExplicitIntentLabel(entry);
+  if (entry.itemType === "reasoning") {
+    const summary = entry.structuredPayload?.title?.trim();
+    if (summary) return compactWorkEntryText(summary);
+    if (expanded) return entry.toolLifecycleStatus === "inProgress" ? "Thinking" : "Thought";
+    return compactWorkEntryText(entry.detail ?? "") || entry.label;
+  }
+  const explicitIntent = approvalCommandIntent(entry) ?? workEntryExplicitIntentLabel(entry);
   if (explicitIntent) return compactWorkEntryText(explicitIntent);
   const presentation = resolveWorkEntryToolPresentation(entry);
   if (presentation) return presentation.displayName;
@@ -842,6 +861,12 @@ function toFeedActivity(
           )
           .join("\n"),
   );
+  const completeShortReasoning =
+    item.type === "reasoning" &&
+    item.text.trim().length > 0 &&
+    item.text.trim().length <= 180 &&
+    !/[\r\n<[]/u.test(item.text.trim()) &&
+    (!item.title?.trim() || item.title.trim() === item.text.trim());
   return {
     id: `${row.visibility}:${row.sourceThreadId}:${row.sourceItemId}`,
     createdAt,
@@ -851,6 +876,7 @@ function toFeedActivity(
     detail,
     canExpand:
       !(item.type === "error" && item.status === "failed") &&
+      !completeShortReasoning &&
       (readPaths
         ? readPaths.length > 0 || turnItemNeedsDetailFetch(item)
         : turnItemHasDetail(item) || workEntry.questionAnswer !== undefined),
@@ -874,11 +900,15 @@ function toFeedActivity(
 }
 
 function singleToolCallLabel(activity: ThreadFeedActivity, expanded: boolean): string {
-  if (activity.workEntry.itemType === "reasoning")
+  if (activity.workEntry.itemType === "reasoning") {
+    const summary = activity.workEntry.structuredPayload?.title?.trim();
+    if (summary) return compactWorkEntryText(summary);
     return expanded
       ? "Thought"
       : compactWorkEntryText(activity.workEntry.detail ?? "") || "Thought";
-  const explicitIntent = workEntryExplicitIntentLabel(activity.workEntry);
+  }
+  const explicitIntent =
+    approvalCommandIntent(activity.workEntry) ?? workEntryExplicitIntentLabel(activity.workEntry);
   if (explicitIntent) return compactWorkEntryText(explicitIntent);
   const presentation = resolveWorkEntryToolPresentation(activity.workEntry, "completed");
   if (presentation) return presentation.displayName;
@@ -1813,8 +1843,12 @@ function appendToolGroupRows(
   const shimmer = activeTail && (active || latestActivity.status === "success");
   const singleActivity = activities.length === 1 ? latestActivity : null;
   const groupSummary = summarizeToolGroup(activities.map((activity) => activity.workEntry));
+  const reasoningSummary =
+    (live || singleActivity !== null) && latestActivity.workEntry.itemType === "reasoning"
+      ? latestActivity.workEntry.structuredPayload?.title?.trim()
+      : undefined;
   const latestThought =
-    live && !expanded
+    live && !expanded && !reasoningSummary
       ? activities.findLast(
           (activity) =>
             activity.workEntry.itemType === "reasoning" &&
@@ -1822,9 +1856,16 @@ function appendToolGroupRows(
         )?.workEntry.detail
       : undefined;
   const thought = latestThought ? compactWorkEntryText(liveThoughtLine(latestThought)) : "";
-  const groupIntent = live && activityIntent ? compactWorkEntryText(activityIntent) : undefined;
+  const groupIntent =
+    live &&
+    activityIntent &&
+    latestActivity.toolLike &&
+    latestActivity.workEntry.itemType !== "reasoning"
+      ? liveToolActivitySummary(latestActivity, live)
+      : undefined;
   const summary =
     groupIntent ??
+    (reasoningSummary ? compactWorkEntryText(reasoningSummary) : undefined) ??
     (live
       ? (expanded || thought) && latestActivity.workEntry.itemType === "reasoning"
         ? latestActivity.lifecycleStatus === "inProgress"
@@ -1839,18 +1880,30 @@ function appendToolGroupRows(
           ? singleActivity.workEntry.label
           : groupSummary.summary);
   const id = shimmer ? LIVE_ACTIVITY_ROW_ID : `${live ? "work-live" : "work-toggle"}:${groupId}`;
-  // Lone calls replace the header; group intent and lone thoughts still need it.
+  // Lone calls and complete thoughts do not need a second disclosure row.
   if (
     singleActivity !== null &&
     !groupIntent &&
-    singleActivity.workEntry.itemType !== "reasoning"
+    (singleActivity.workEntry.itemType !== "reasoning" || !singleActivity.canExpand)
   ) {
     result.push({
       type: "activity-group",
       id,
       createdAt: singleActivity.createdAt,
       runId: singleActivity.runId,
-      activities: [{ ...singleActivity, live: shimmer, groupStandIn: { groupId, label: summary } }],
+      activities: [
+        {
+          ...singleActivity,
+          live: shimmer,
+          groupStandIn: {
+            groupId,
+            label:
+              singleActivity.workEntry.itemType === "reasoning"
+                ? workEntryRowLabel(singleActivity.workEntry)
+                : summary,
+          },
+        },
+      ],
       // No trailing margin lets Thinking or a growing group replace the row without shifting the feed.
       continuesWorkLog: true,
     });
@@ -1931,7 +1984,8 @@ function liveToolActivitySummary(activity: ThreadFeedActivity, presentTense: boo
       activity.workEntry.detail?.trim() || (status === "inProgress" ? "Thinking" : "Thought"),
     );
   }
-  const explicitIntent = workEntryExplicitIntentLabel(activity.workEntry);
+  const explicitIntent =
+    approvalCommandIntent(activity.workEntry) ?? workEntryExplicitIntentLabel(activity.workEntry);
   if (explicitIntent) return compactWorkEntryText(explicitIntent);
   const presentation = resolveWorkEntryToolPresentation({
     ...activity.workEntry,
@@ -2180,7 +2234,10 @@ export function buildThreadFeed(
     }
     const createdAt = DateTime.formatIso(item.startedAt ?? item.updatedAt);
     if (
-      (item.type === "dynamic_tool" && resolveT3McpToolId(item.toolName) === "t3_thread_send") ||
+      (item.type === "dynamic_tool" &&
+        ["t3_thread_send", "t3_connected_thread_send"].includes(
+          resolveT3McpToolId(item.toolName) ?? "",
+        )) ||
       (item.type === "subagent" && item.delegationMessage !== undefined)
     ) {
       const entry: RawThreadFeedEntry = {
@@ -2252,6 +2309,7 @@ export function buildThreadFeed(
                 ...(item.scheduledTaskId ? { scheduledTaskId: item.scheduledTaskId } : {}),
                 ...(item.senderThreadId ? { senderThreadId: item.senderThreadId } : {}),
                 ...(item.remoteSender ? { remoteSender: item.remoteSender } : {}),
+                ...(item.replyTo ? { replyTo: item.replyTo } : {}),
                 ...(item.idleCompaction ? { idleCompaction: item.idleCompaction } : {}),
               }
             : {}),

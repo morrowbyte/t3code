@@ -4,6 +4,7 @@ import type {
   EnvironmentId,
   OrchestrationV2ThreadShell,
   ScopedThreadRef,
+  RuntimeRequestId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -20,6 +21,7 @@ export interface AttentionEntry {
   readonly id: string;
   readonly category: AttentionCategory;
   readonly threadRef: ScopedThreadRef;
+  readonly requestId?: RuntimeRequestId;
   readonly threadTitle: string;
   readonly title: string;
   readonly description: string;
@@ -39,8 +41,11 @@ export function deriveAttentionInbox(
     const threadRef = scopeThreadRef(environmentId, thread.id);
     const key = scopedThreadKey(threadRef);
     const base = { threadRef, threadTitle: thread.title };
-    const request = thread.pendingRuntimeRequest;
-    if (request !== null && request.kind !== "dynamic_tool_call") {
+    const requests =
+      thread.pendingRuntimeRequests ??
+      (thread.pendingRuntimeRequest ? [thread.pendingRuntimeRequest] : []);
+    for (const request of requests) {
+      if (request.kind === "dynamic_tool_call") continue;
       const category =
         request.kind === "user_input"
           ? "questions"
@@ -50,13 +55,15 @@ export function deriveAttentionInbox(
       entries.push({
         ...base,
         id: `${key}:request:${request.id}`,
+        requestId: request.id,
         category,
         title:
-          category === "questions"
+          (request.kind === "auth_refresh" ? undefined : request.label?.trim()) ||
+          (category === "questions"
             ? "Question awaiting your answer"
             : category === "approvals"
               ? "Approval needed"
-              : "Authentication required",
+              : "Authentication required"),
         description:
           category === "questions"
             ? "Read and answer the pending question in its conversation."
@@ -64,6 +71,18 @@ export function deriveAttentionInbox(
               ? "Review the request using the original approval controls."
               : "Open the conversation to review the authentication request.",
         occurredAt: DateTime.formatIso(request.createdAt),
+      });
+    }
+    if (thread.requestDeliveryFailure) {
+      const failure = thread.requestDeliveryFailure;
+      entries.push({
+        ...base,
+        id: `${key}:delivery:${failure.itemId}`,
+        requestId: failure.requestId,
+        category: "warnings",
+        title: "Answer delivery not confirmed",
+        description: failure.message,
+        occurredAt: DateTime.formatIso(failure.occurredAt),
       });
     }
     if (thread.status === "failed") {

@@ -5,6 +5,7 @@ import type {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 
 /**
  * Every window stops at the byte budget. A window that holds a user turn also
@@ -502,13 +503,38 @@ function isLocalProjectedRow(
 }
 
 function pendingRequestIdsOf(
-  projection: Pick<OrchestrationV2ThreadProjection, "runtimeRequests">,
+  projection: Pick<
+    OrchestrationV2ThreadProjection,
+    "runtimeRequests" | "turnItems" | "runs" | "messages"
+  >,
 ): ReadonlySet<string> {
-  return new Set(
+  const ids = new Set(
     projection.runtimeRequests
       .filter((request) => request.status === "pending")
       .map((request) => String(request.id)),
   );
+  const activeRuns = new Set(
+    projection.runs
+      .filter((run) => ["preparing", "starting", "running", "waiting"].includes(run.status))
+      .map((run) => run.id),
+  );
+  const latestUserMessageAt = projection.messages
+    .filter((message) => message.role === "user" && message.createdBy === "user")
+    .reduce(
+      (latest, message) => Math.max(latest, DateTime.toEpochMillis(message.updatedAt)),
+      -Infinity,
+    );
+  for (const item of projection.turnItems) {
+    if (item.status !== "waiting") continue;
+    if (
+      (item.type === "secret_request" && item.runId !== null && activeRuns.has(item.runId)) ||
+      (item.type === "link_request" &&
+        latestUserMessageAt <= DateTime.toEpochMillis(item.startedAt ?? item.updatedAt))
+    ) {
+      ids.add(String(item.id));
+    }
+  }
+  return ids;
 }
 
 // Clients build the answer panel of an open question or approval from its row,
@@ -519,6 +545,8 @@ function isRetainedDependency(
 ): boolean {
   return (
     item.type === "run_interrupt_request" ||
+    ((item.type === "secret_request" || item.type === "link_request") &&
+      pendingRequestIds.has(String(item.id))) ||
     ((item.type === "user_input_request" || item.type === "approval_request") &&
       pendingRequestIds.has(String(item.requestId)))
   );

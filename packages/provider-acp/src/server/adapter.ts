@@ -777,13 +777,17 @@ function makeProviderThread(input: {
   };
 }
 
-function acpMcpToolCallOutput(rawOutput: unknown): unknown {
+function acpMcpToolCallOutput(rawOutput: unknown, preserveEnvelope = false): unknown {
   const record = unknownRecord(rawOutput);
   if (record === undefined) return rawOutput;
   if (!("result" in record) && !("error" in record)) return rawOutput;
   const result = unknownRecord(record.result);
   const resultOutput =
-    result === undefined ? undefined : (result.structuredContent ?? result.content ?? undefined);
+    result === undefined
+      ? undefined
+      : preserveEnvelope
+        ? result
+        : (result.structuredContent ?? result.content ?? undefined);
   const errorMessage = unknownRecord(record.error)?.message;
   if (typeof errorMessage !== "string") {
     return resultOutput ?? rawOutput;
@@ -2176,7 +2180,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           };
         };
         let runtimeScope: Scope.Closeable | undefined;
-        let runtimeThreadId = input.threadId;
+        let runtimeThreadId: ThreadId | null = input.threadId;
         let runtime!: AcpSessionRuntime.AcpSessionRuntime["Service"];
         let runtimeMcpBridge: AcpMcpOverAcpBridge | undefined;
         yield* Effect.addFinalizer(() =>
@@ -3786,7 +3790,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const toolName = `${mcpIdentity.server}.${mcpIdentity.tool}`;
             const input =
               mcpIdentity.input ?? unknownRecord(rawInputRecord?.arguments) ?? rawInputRecord ?? {};
-            let output = rawOutput === undefined ? undefined : acpMcpToolCallOutput(rawOutput);
+            const nativeReceipt =
+              mcpIdentity.server === "weasel_desktop" &&
+              ["desktop_act", "desktop_status", "desktop_set_observation_mode"].includes(
+                mcpIdentity.tool,
+              );
+            let output =
+              rawOutput === undefined ? undefined : acpMcpToolCallOutput(rawOutput, nativeReceipt);
             const isHtmlRender = resolveT3McpToolId(toolName) === HTML_RENDER_TOOL_NAME;
             const isError =
               compactDynamicToolOutput(output)?.isError === true ||

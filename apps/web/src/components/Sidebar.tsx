@@ -3384,7 +3384,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           EMPTY_PROVIDER_ENTRIES
                         }
                         isHighlighted={activeSearchResultIndex === index}
-                        isRouteActive={routeRowThreadKey === threadKey}
+                        isRouteActive={routeThreadKey === threadKey}
                         resultId={threadSearchResultId(index)}
                         searchMatch={
                           threadSearchMatchByKey.get(

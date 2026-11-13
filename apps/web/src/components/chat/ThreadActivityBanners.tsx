@@ -11,6 +11,7 @@ import {
   type RunStopPresentation,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { childThreadInputsTitle } from "@t3tools/client-runtime/state/threads";
+import { presentTaskInterruption } from "@t3tools/client-runtime/observatory";
 import { commandDisplayText } from "@t3tools/client-runtime/work-log/command-label";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import * as DateTime from "effect/DateTime";
@@ -87,6 +88,7 @@ export function goalBannerItem(input: {
 }): ComposerBannerStackItem {
   const { isWorking, onSendCommand } = input;
   const presentation = presentProviderGoal(input.goal, isWorking);
+  const interruption = isWorking ? null : presentTaskInterruption(input.goal);
   const title =
     presentation.usage === null
       ? presentation.title
@@ -122,6 +124,11 @@ export function goalBannerItem(input: {
             </Button>
           </ComposerBanner.Actions>
         </ComposerBanner.Row>
+        {interruption && (
+          <p className="px-2 pb-1 text-muted-foreground">
+            {interruption.reason} {interruption.nextStep}
+          </p>
+        )}
         <details className="min-w-0 px-2 pb-1">
           <summary className="cursor-pointer truncate text-muted-foreground">
             {presentation.objective}
