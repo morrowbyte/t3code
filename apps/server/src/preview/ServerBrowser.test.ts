@@ -2689,9 +2689,10 @@ it.live("a desktop page that comes back reconnects without waiting for a viewer"
       const lostSession = connection.context.sessions.at(-1)!;
       const detachStarted = yield* Deferred.make<void>();
       const detachReleased = yield* Deferred.make<void>();
+      const services = yield* Effect.context<never>();
       lostSession.detach.mockImplementation(async () => {
-        Effect.runSync(Deferred.succeed(detachStarted, undefined));
-        await Effect.runPromise(Deferred.await(detachReleased));
+        Effect.runSyncWith(services)(Deferred.succeed(detachStarted, undefined));
+        await Effect.runPromiseWith(services)(Deferred.await(detachReleased));
       });
       const closing = yield* Scope.close(lostViewerScope, Exit.void).pipe(Effect.forkScoped);
       try {
