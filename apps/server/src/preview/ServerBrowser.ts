@@ -1094,15 +1094,15 @@ const make = Effect.gen(function* () {
           .pipe(Scope.provide(scope)),
       );
       const connected = await contexts.connectDesktopPage(endpoint);
+      await runPromise(
+        Scope.addFinalizer(
+          scope,
+          Effect.promise(() => connected.browser.close().catch(constVoid)),
+        ),
+      );
       return {
         page: connected.page,
-        close: async () => {
-          try {
-            await runPromise(Scope.close(scope, Exit.void));
-          } finally {
-            await connected.browser.close().catch(constVoid);
-          }
-        },
+        close: () => runPromise(Scope.close(scope, Exit.void)),
       };
     } catch (cause) {
       await runPromise(Scope.close(scope, Exit.void));

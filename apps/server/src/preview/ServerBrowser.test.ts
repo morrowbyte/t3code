@@ -62,9 +62,17 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
     async connectDesktopPage(endpoint: string) {
       const context = makeContext(undefined, desktopPageUrl);
       context.page.viewportSize.mockReturnValue(null);
-      desktopConnections.push({ endpoint, context });
+      const connection = { endpoint, context, closed: false };
+      desktopConnections.push(connection);
       desktopDetaches.emit("connected");
-      return { browser: { close: async () => {} }, page: context.page as unknown as Page };
+      return {
+        browser: {
+          close: async () => {
+            connection.closed = true;
+          },
+        },
+        page: context.page as unknown as Page,
+      };
     }
     async close() {
       for (const context of contexts) await context.close();
@@ -330,7 +338,11 @@ const desktopRenders = (tabId: string) => {
 };
 const releasedDesktopTabs: Array<string> = [];
 const desktopTurns = new NodeEvents.EventEmitter();
-const desktopConnections: Array<{ endpoint: string; context: ReturnType<typeof makeContext> }> = [];
+const desktopConnections: Array<{
+  endpoint: string;
+  context: ReturnType<typeof makeContext>;
+  closed: boolean;
+}> = [];
 let nativeHandler: DesktopChannel.DesktopPrivateEntryHandler | undefined;
 let nativeReplyWaiter: ((response: DesktopBrowserPrivateEntryResponse) => void) | undefined;
 const testThread = {
@@ -2645,7 +2657,12 @@ it.live("a desktop page that comes back reconnects without waiting for a viewer"
       return opened.tabId;
     }).pipe(Effect.provide(layer)),
   ).pipe(
-    Effect.tap((tabId) => Effect.sync(() => expect(releasedDesktopTabs).toEqual([tabId, tabId]))),
+    Effect.tap((tabId) =>
+      Effect.sync(() => {
+        expect(releasedDesktopTabs).toEqual([tabId, tabId]);
+        expect(desktopConnections.map((connection) => connection.closed)).toEqual([true, true]);
+      }),
+    ),
   ),
 );
 
