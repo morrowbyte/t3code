@@ -369,6 +369,42 @@ it.effect("reports an unmapped Crew shell as a fixture error and cancels its eva
   }).pipe(Effect.provide(crewFixtureServices));
 });
 
+it.effect.each([true, false])("validates source-backed native routes: valid=%s", (valid) => {
+  const client: CrewProviderClient = {
+    run: (request) =>
+      Effect.sync(() => {
+        if (request.action === "start")
+          return {
+            type: "tool_call",
+            evaluationId: "crew-route",
+            callId: "route-call",
+            name: "crew_fixture_exec",
+            arguments: {
+              code: `text(await tools.mcp__t3_code__computer_route(${JSON.stringify(
+                valid ? { target: { kind: "desktop" } } : {},
+              )}));`,
+            },
+          };
+        if (request.action === "respond") {
+          assert.include(
+            request.contentItems[0]!.text,
+            valid ? "observationGuidance" : "InputValidationError",
+          );
+          return { type: "complete", evaluationId: request.evaluationId, text: "Route checked." };
+        }
+        return { type: "cancelled", evaluationId: request.evaluationId };
+      }),
+  };
+  return runCrewSample(
+    {
+      ...childCase,
+      setup: { role: "top", mocks: { computer_route: "source:linux-desktop-route" } },
+    },
+    crewBase(),
+    client,
+  ).pipe(Effect.provide(crewFixtureServices));
+});
+
 it("rebuilds the template from this checkout and sends a child T3's task prompt", () => {
   const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
   const system = base.system.map((block) => String(block.text));

@@ -7,6 +7,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import type * as EffectCodexSchema from "effect-codex-app-server/schema";
+import { dynamicToolSurface } from "@t3tools/shared/toolActivity";
 
 import {
   mcpToolPresentation as integrationToolPresentation,
@@ -192,15 +193,23 @@ export const mcpToolPresentation = Effect.fn("CodexToolPresentation.mcpToolPrese
         },
       };
     }
-    if (surface?.kind === "computerUse") {
-      const app = nativeAppReference(surface.app);
+    if (
+      surface?.kind === "computerUse" ||
+      dynamicToolSurface(`${item.server}.${item.tool}`, item.arguments) === "computer"
+    ) {
+      const contextAppName = normalizedDisplayName(appContext?.appName);
+      const app =
+        nativeAppReference(surface?.app) ??
+        (contextAppName
+          ? { _tag: "display-name" as const, displayName: contextAppName }
+          : undefined);
       const args = asUnknownRecord(item.arguments);
       const argumentAppName =
         normalizedDisplayName(args?.appName) ??
         normalizedDisplayName(args?.application) ??
         normalizedDisplayName(typeof args?.app === "string" ? args.app : undefined);
       const name =
-        normalizedDisplayName(appContext?.appName) ??
+        contextAppName ??
         argumentAppName ??
         (app?._tag === "display-name" ? app.displayName : undefined) ??
         (app?._tag === "app-id" ? appDisplayNameFromId(app.appId) : undefined) ??
@@ -211,7 +220,9 @@ export const mcpToolPresentation = Effect.fn("CodexToolPresentation.mcpToolPrese
           ? yield* nativeAppSourceKey(app.appId)
           : `native-app-name:${normalizedSourceKeyPart(app.displayName)}`
         : "computer-use";
+      const actionName = normalizedDisplayName(appContext?.actionName);
       return {
+        ...(actionName ? { title: actionName } : {}),
         toolSurface: "computer",
         ...(app ? { toolIcon: { _tag: "native-app", app } as const } : {}),
         toolSource: {
