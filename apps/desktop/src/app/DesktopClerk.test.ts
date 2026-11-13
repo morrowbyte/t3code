@@ -117,6 +117,69 @@ describe("DesktopClerk", () => {
     storageMock.mockReset();
   });
 
+  it.effect.each(["before handler", "before configure", "after configure"] as const)(
+    "consumes the pet toggle without revealing or navigating the window %s",
+    (entry) => {
+      createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
+      const listeners = new Map<string, (...args: unknown[]) => void>();
+      const toggle = vi.fn();
+      const reveal = vi.fn();
+      const receive = vi.fn();
+      const invoke = () =>
+        listeners.get("second-instance")!({}, [
+          "crew",
+          "--toggle-desktop-pet",
+          "t3code://new?prompt=ignored",
+        ]);
+      return Effect.gen(function* () {
+        const clerk = yield* DesktopClerk.DesktopClerk;
+        if (entry === "before handler") invoke();
+        yield* clerk.onPetToggle(toggle);
+        if (entry === "before configure") invoke();
+        yield* clerk.configure;
+        if (entry === "after configure") invoke();
+        assert.equal(toggle.mock.calls.length, 1);
+        assert.equal(reveal.mock.calls.length, 0);
+        assert.equal(receive.mock.calls.length, 0);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(layerDesktopClerk(true, [], "linux", undefined, undefined, listeners)),
+        Effect.provideService(HostProcess.Arguments, ["crew"]),
+        Effect.provideService(ElectronApp.ElectronApp, {
+          on: () => Effect.void,
+        } as unknown as ElectronApp.ElectronApp["Service"]),
+        Effect.provideService(ElectronWindow.ElectronWindow, {
+          currentMainOrFirst: Effect.succeedSome({ id: 1 }),
+          reveal: () => Effect.sync(reveal),
+        } as unknown as ElectronWindow.ElectronWindow["Service"]),
+        Effect.provideService(DesktopWebLinks.DesktopWebLinks, {
+          receive: () => Effect.sync(receive),
+          setRendererReady: () => Effect.void,
+        }),
+      );
+    },
+  );
+
+  it.effect(
+    "does not start a second pet or open a window when a toggle has no running owner",
+    () => {
+      const events: string[] = [];
+      return Effect.gen(function* () {
+        const result = yield* Effect.exit(Layer.build(layerDesktopClerk(true, events, "linux")));
+        assert.isTrue(Exit.isFailure(result));
+        assert.deepEqual(events, [
+          "setPath:userData:/tmp/app-data/t3code-dev",
+          "requestSingleInstanceLock",
+          "quit",
+        ]);
+        assert.equal(createClerkBridgeMock.mock.calls.length, 0);
+      }).pipe(
+        Effect.scoped,
+        Effect.provideService(HostProcess.Arguments, ["crew", "--toggle-desktop-pet"]),
+      );
+    },
+  );
+
   it.each([
     {
       name: "packaged macOS",

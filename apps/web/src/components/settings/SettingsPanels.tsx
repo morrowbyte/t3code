@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { NotificationSettings } from "./NotificationSettings";
+import { DesktopPetSettings } from "./DesktopPetSettings";
 import { PRIVACY_POLICY_URL } from "../../legalLinks";
 import { CheckIcon } from "lucide-react";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -801,6 +802,7 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
+      {isElectron ? <DesktopPetSettings /> : null}
       <SettingsSection id="sidebar" title="Sidebar">
         <SettingsRow
           {...searchableSetting("project-grouping")}

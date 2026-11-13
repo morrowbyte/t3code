@@ -5,6 +5,7 @@ import { listAppRestores, restoreAppVersion, resumeAppUpdates } from "./methods/
 import { receiveProviderAuthCallback, cancelProviderAuthCallback } from "./methods/providerAuth.ts";
 import * as DesktopIpc from "./DesktopIpc.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
+import { installPet } from "./methods/pet.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
 import { getConnectionCatalog, setConnectionCatalog } from "./methods/connectionCatalog.ts";
 import {
@@ -88,6 +89,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(MainRendererDiagnostics.respond);
   yield* ipc.handle(MainRendererDiagnostics.invalidate);
   yield* installNotificationBadge();
+  yield* installPet();
   yield* PreviewIpc.installPreviewEventForwarding();
 
   yield* ipc.handle(AppActivationIpc.setReady);

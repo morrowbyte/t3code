@@ -1218,6 +1218,19 @@ export const DesktopPrivilegedDecision = Schema.Struct({
 export type DesktopPrivilegedDecision = typeof DesktopPrivilegedDecision.Type;
 
 export interface DesktopBridge {
+  getPetStatus: () => Promise<import("./desktopPet.ts").DesktopPetStatus>;
+  setPetSettings: (
+    settings: import("./desktopPet.ts").DesktopPetSettings,
+  ) => Promise<import("./desktopPet.ts").DesktopPetStatus>;
+  reconnectPet: () => Promise<import("./desktopPet.ts").DesktopPetStatus>;
+  setPetProjection: (projection: import("./desktopPet.ts").DesktopPetProjection) => Promise<void>;
+  setPetSpecies: (
+    species: import("./desktopPet.ts").DesktopPetSpecies | null,
+  ) => Promise<import("./desktopPet.ts").DesktopPetStatus>;
+  togglePet: () => Promise<void>;
+  importPet: () => Promise<import("./desktopPet.ts").DesktopPetStatus>;
+  resetPet: () => Promise<import("./desktopPet.ts").DesktopPetStatus>;
+  onPetEvent: (listener: (event: import("./desktopPet.ts").DesktopPetEvent) => void) => () => void;
   /** Passive, finite request only; absence means no diagnostic capability. */
   onMainRendererDiagnosticsRequest?: (
     listener: (request: MainRendererDiagnosticsRequest) => void,

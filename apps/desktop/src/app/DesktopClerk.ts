@@ -23,6 +23,7 @@ import * as DesktopUserData from "./DesktopUserData.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { openClerkTokenStorage } from "./ClerkTokenStore.ts";
 import * as DesktopWebLinks from "./DesktopWebLinks.ts";
+import { DESKTOP_PET_TOGGLE_ARGUMENT } from "../pet/PetNiriShortcut.ts";
 
 declare const __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: string | undefined;
 
@@ -55,6 +56,7 @@ export class DesktopClerkBridgeCleanupError extends Schema.TaggedError<DesktopCl
 export class DesktopClerk extends Context.Service<
   DesktopClerk,
   {
+    readonly onPetToggle: (handler: () => void) => Effect.Effect<void, never, Scope.Scope>;
     readonly configure: Effect.Effect<
       void,
       never,
@@ -116,12 +118,23 @@ export const make = Effect.gen(function* () {
     yield* electronApp.quit;
     return yield* Effect.interrupt;
   }
+  if ((yield* HostProcess.Arguments).includes(DESKTOP_PET_TOGGLE_ARGUMENT)) {
+    yield* electronApp.quit;
+    return yield* Effect.interrupt;
+  }
 
   const pendingSecondInstances: Array<readonly string[]> = [];
+  let togglePet: (() => void) | undefined;
+  let pendingPetToggle = false;
   let handleSecondInstance = (argv: readonly string[]) => {
     pendingSecondInstances.push(argv);
   };
   yield* electronApp.on("second-instance", (_event: unknown, argv: readonly string[]) => {
+    if (argv.includes(DESKTOP_PET_TOGGLE_ARGUMENT)) {
+      if (togglePet) togglePet();
+      else pendingPetToggle = !pendingPetToggle;
+      return;
+    }
     handleSecondInstance(argv);
   });
   // macOS hands a launch link to open-url, which can fire before configure runs.
@@ -158,6 +171,21 @@ export const make = Effect.gen(function* () {
   );
 
   return DesktopClerk.of({
+    onPetToggle: Effect.fn("desktop.clerk.onPetToggle")((handler: () => void) =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          togglePet = handler;
+          if (pendingPetToggle) {
+            pendingPetToggle = false;
+            handler();
+          }
+        }),
+        () =>
+          Effect.sync(() => {
+            if (togglePet === handler) togglePet = undefined;
+          }),
+      ),
+    ),
     configure: Effect.gen(function* () {
       const electronApp = yield* ElectronApp.ElectronApp;
       const electronWindow = yield* ElectronWindow.ElectronWindow;
