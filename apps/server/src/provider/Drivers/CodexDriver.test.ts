@@ -281,9 +281,9 @@ it.layer(layerTest)("CodexDriver", (it) => {
     }).pipe(Effect.scoped, Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn)),
   );
 
-  it.effect(
-    "default Codex respects the instance PATH without acquiring the global installation",
-    () =>
+  it.effect.each(["0.163.0", "0.163.0-morrowbyte.1", "0.163.0-morrowbyte.2"])(
+    "Codex %s respects the instance PATH without acquiring the global installation",
+    (version) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: "native-instance-path-" });
@@ -310,7 +310,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
               kill: () => Effect.void,
               unref: Effect.succeed(Effect.void),
               stdin: Sink.drain,
-              stdout: Stream.encodeText(Stream.make("codex-cli 0.163.0\n")),
+              stdout: Stream.encodeText(Stream.make(`codex-cli ${version}\n`)),
               stderr: Stream.empty,
               all: Stream.empty,
               getInputFd: () => Sink.drain,
@@ -361,6 +361,10 @@ it.layer(layerTest)("CodexDriver", (it) => {
         expect(launches[0]?.environment?.PATH).toBe(directory);
         expect(launches[0]?.settings.setupMode).toBe("existing");
         expect((yield* instance.snapshot.getSnapshot).setup?.canInstall).toBe(false);
+        if (!instance.auth?.refreshMethods) throw new Error("Missing native auth method refresh");
+        yield* instance.auth.refreshMethods;
+        const auth = yield* instance.auth.subscribe("owner").pipe(Stream.runHead);
+        expect(Option.isSome(auth) && auth.value.methods.length).toBeGreaterThan(0);
         expect(process.env.PATH).not.toBe(directory);
       }).pipe(Effect.scoped),
   );

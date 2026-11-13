@@ -1,0 +1,556 @@
+diff --git a/codex-rs/keyring-store/src/lib.rs b/codex-rs/keyring-store/src/lib.rs
+--- a/codex-rs/keyring-store/src/lib.rs
++++ b/codex-rs/keyring-store/src/lib.rs
+@@ -71,6 +71,14 @@
+ pub trait KeyringStore: Debug + Send + Sync {
+     fn load(&self, service: &str, account: &str) -> Result<Option<String>, CredentialStoreError>;
+     fn save(&self, service: &str, account: &str, value: &str) -> Result<(), CredentialStoreError>;
++    fn save_for_refresh(
++        &self,
++        service: &str,
++        account: &str,
++        value: &str,
++    ) -> Result<(), CredentialStoreError> {
++        self.save(service, account, value)
++    }
+     fn delete(&self, service: &str, account: &str) -> Result<bool, CredentialStoreError>;
+ }
+ 
+@@ -117,6 +125,22 @@
+         }
+     }
+ 
++    fn save_for_refresh(
++        &self,
++        service: &str,
++        account: &str,
++        value: &str,
++    ) -> Result<(), CredentialStoreError> {
++        #[cfg(target_os = "linux")]
++        {
++            linux::save_for_refresh(service, account, value).map_err(CredentialStoreError::new)
++        }
++        #[cfg(not(target_os = "linux"))]
++        {
++            self.save(service, account, value)
++        }
++    }
++
+     fn delete(&self, service: &str, account: &str) -> Result<bool, CredentialStoreError> {
+         trace!("keyring.delete start");
+         let entry = Entry::new(service, account).map_err(CredentialStoreError::new)?;
+@@ -151,6 +175,7 @@
+     #[derive(Default, Clone, Debug)]
+     pub struct MockKeyringStore {
+         credentials: Arc<Mutex<HashMap<String, Arc<MockCredential>>>>,
++        refresh_errors: Arc<Mutex<HashMap<String, KeyringError>>>,
+     }
+ 
+     impl MockKeyringStore {
+@@ -179,6 +204,13 @@
+         pub fn set_error(&self, account: &str, error: KeyringError) {
+             let credential = self.credential(account);
+             credential.set_error(error);
++        }
++
++        pub fn set_refresh_error(&self, account: &str, error: KeyringError) {
++            self.refresh_errors
++                .lock()
++                .unwrap_or_else(PoisonError::into_inner)
++                .insert(account.to_string(), error);
+         }
+ 
+         pub fn contains(&self, account: &str) -> bool {
+@@ -227,6 +259,23 @@
+                 .map_err(CredentialStoreError::new)
+         }
+ 
++        fn save_for_refresh(
++            &self,
++            service: &str,
++            account: &str,
++            value: &str,
++        ) -> Result<(), CredentialStoreError> {
++            let error = self
++                .refresh_errors
++                .lock()
++                .unwrap_or_else(PoisonError::into_inner)
++                .remove(account);
++            if let Some(error) = error {
++                return Err(CredentialStoreError::new(error));
++            }
++            self.save(service, account, value)
++        }
++
+         fn delete(&self, _service: &str, account: &str) -> Result<bool, CredentialStoreError> {
+             let credential = {
+                 let guard = self
+diff --git a/codex-rs/keyring-store/src/linux.rs b/codex-rs/keyring-store/src/linux.rs
+--- a/codex-rs/keyring-store/src/linux.rs
++++ b/codex-rs/keyring-store/src/linux.rs
+@@ -1,11 +1,15 @@
++use crate::CredentialStoreError;
+ use keyring::Error as KeyringError;
+ use keyring::credential::CredentialApi as _;
+ use keyring::keyutils::KeyutilsCredential;
+ use secret_service::EncryptionType;
+ use secret_service::Error as SecretServiceError;
++use secret_service::Item;
+ use secret_service::SearchItemsResult;
+ use secret_service::SecretService;
++use std::cell::Cell;
+ use std::collections::HashMap;
++use std::fmt;
+ use std::future::Future;
+ use std::future::poll_fn;
+ use std::io;
+@@ -28,18 +32,189 @@
+     Ok(password)
+ }
+ 
++pub(super) fn save_for_refresh(
++    service: &str,
++    account: &str,
++    value: &str,
++) -> keyring::Result<()> {
++    if value.is_empty() {
++        return Err(KeyringError::Invalid(
++            "secret".to_string(),
++            "cannot be empty".to_string(),
++        ));
++    }
++    let cache = KeyutilsCredential::new_with_target(None, service, account)?;
++    let write_started = Cell::new(false);
++    let result = with_deadline(write_password(service, account, value, &write_started), async {
++        async_io::Timer::after(READ_TIMEOUT).await;
++    });
++    finish_refresh_save(&cache, value, write_started.get(), result)
++}
++
++fn finish_refresh_save(
++    cache: &impl keyring::credential::CredentialApi,
++    value: &str,
++    write_started: bool,
++    result: keyring::Result<()>,
++) -> keyring::Result<()> {
++    match result {
++        Ok(()) => cache.set_password(value).map_err(|error| {
++            refresh_save_error(
++                cache,
++                "Secret Service refresh write acknowledged; kernelcache update failed",
++                error,
++            )
++        }),
++        Err(error) if write_started => Err(refresh_save_error(
++            cache,
++            "Secret Service refresh write outcome unknown; no persistence success acknowledged",
++            error,
++        )),
++        Err(error) => Err(error),
++    }
++}
++
++#[derive(Debug)]
++struct RefreshSaveError {
++    message: &'static str,
++    cause: CredentialStoreError,
++    cleanup_error: Option<CredentialStoreError>,
++}
++
++impl fmt::Display for RefreshSaveError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(formatter, "{}: {}; ", self.message, self.cause)?;
++        if let Some(error) = &self.cleanup_error {
++            write!(formatter, "targeted kernelcache invalidation failed: {error}")
++        } else {
++            formatter.write_str(
++                "targeted kernelcache invalidation accepted or entry absent; immediate cache coherence is unconfirmed",
++            )
++        }
++    }
++}
++
++impl std::error::Error for RefreshSaveError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        Some(&self.cause)
++    }
++}
++
++fn refresh_save_error(
++    cache: &impl keyring::credential::CredentialApi,
++    message: &'static str,
++    error: KeyringError,
++) -> KeyringError {
++    let cause = CredentialStoreError::new(error);
++    let kind = crate::error_kind::classify(&cause);
++    let cleanup_error = match cache.delete_credential() {
++        Ok(()) | Err(KeyringError::NoEntry) => None,
++        Err(error) => Some(CredentialStoreError::new(error)),
++    };
++    KeyringError::PlatformFailure(Box::new(io::Error::new(
++        kind,
++        RefreshSaveError {
++            message,
++            cause,
++            cleanup_error,
++        },
++    )))
++}
++
++async fn write_password(
++    service: &str,
++    account: &str,
++    value: &str,
++    write_started: &Cell<bool>,
++) -> keyring::Result<()> {
++    let ss = SecretService::connect(EncryptionType::Dh)
++        .await
++        .map_err(decode_error)?;
++    let attributes = HashMap::from([
++        ("target", "default"),
++        ("service", service),
++        ("username", account),
++    ]);
++    let matches = ss.search_items(attributes).await.map_err(decode_error)?;
++    if let Some(item) = unique_unlocked(matches)? {
++        return write_item(&item, value, write_started).await;
++    }
++    let collection = match ss.get_default_collection().await {
++        Ok(collection) => collection,
++        Err(SecretServiceError::NoResult) => return Err(KeyringError::NoEntry),
++        Err(error) => return Err(decode_error(error)),
++    };
++    let attributes = HashMap::from([("service", service), ("username", account)]);
++    let items = collection
++        .search_items(attributes)
++        .await
++        .map_err(decode_error)?;
++    let item = unique_unlocked(SearchItemsResult {
++        unlocked: items,
++        locked: Vec::new(),
++    })?
++    .ok_or(KeyringError::NoEntry)?;
++    write_item(&item, value, write_started).await
++}
++
++async fn write_item(
++    item: &Item<'_>,
++    value: &str,
++    write_started: &Cell<bool>,
++) -> keyring::Result<()> {
++    item.ensure_unlocked().await.map_err(decode_error)?;
++    // A missing SetSecret reply cannot undo a write already received by the service.
++    write_started.set(true);
++    match item.set_secret(value.as_bytes(), "text/plain").await {
++        Ok(()) => Ok(()),
++        Err(error) => {
++            if rejected_write(&error) {
++                write_started.set(false);
++            }
++            Err(decode_error(error))
++        }
++    }
++}
++
++fn rejected_write(error: &SecretServiceError) -> bool {
++    match error {
++        SecretServiceError::Locked => true,
++        SecretServiceError::Zbus(zbus::Error::MethodError(name, _, _)) => matches!(
++            name.as_str(),
++            "org.freedesktop.Secret.Error.IsLocked"
++                | "org.freedesktop.Secret.Error.NoSuchObject"
++                | "org.freedesktop.DBus.Error.UnknownObject"
++                | "org.freedesktop.DBus.Error.AccessDenied"
++                | "org.freedesktop.DBus.Error.AuthFailed"
++        ),
++        SecretServiceError::ZbusFdo(error) => matches!(
++            error,
++            zbus::fdo::Error::AccessDenied(_)
++                | zbus::fdo::Error::AuthFailed(_)
++                | zbus::fdo::Error::UnknownObject(_)
++        ),
++        SecretServiceError::Zbus(zbus::Error::FDO(error)) => matches!(
++            error.as_ref(),
++            zbus::fdo::Error::AccessDenied(_)
++                | zbus::fdo::Error::AuthFailed(_)
++                | zbus::fdo::Error::UnknownObject(_)
++        ),
++        _ => false,
++    }
++}
++
+ fn with_deadline<T>(
+     operation: impl Future<Output = keyring::Result<T>>,
+     deadline: impl Future<Output = ()>,
+ ) -> keyring::Result<T> {
+     let mut operation = pin!(operation);
+     let mut deadline = pin!(deadline);
+-    // The deadline drops the actual async read instead of detaching a blocking job.
++    // The deadline drops the actual async operation instead of detaching a blocking job.
+     async_io::block_on(poll_fn(|context| {
+         if deadline.as_mut().poll(context).is_ready() {
+             return Poll::Ready(Err(platform_error(
+                 io::ErrorKind::TimedOut,
+-                "Secret Service credential read timed out",
++                "Secret Service credential operation timed out",
+             )));
+         }
+         operation.as_mut().poll(context)
+diff --git a/codex-rs/keyring-store/src/linux_tests.rs b/codex-rs/keyring-store/src/linux_tests.rs
+--- a/codex-rs/keyring-store/src/linux_tests.rs
++++ b/codex-rs/keyring-store/src/linux_tests.rs
+@@ -1,5 +1,7 @@
+ use super::*;
+ use crate::CredentialStoreError;
++use keyring::credential::CredentialApi;
++use keyring::mock::MockCredential;
+ use std::cell::Cell;
+ use std::future::pending;
+ use std::rc::Rc;
+@@ -88,7 +90,7 @@
+ }
+ 
+ #[test]
+-fn deadline_drops_a_pending_read_instead_of_leaving_a_blocking_job() {
++fn deadline_drops_a_pending_operation_instead_of_leaving_a_blocking_job() {
+     struct ReadGuard(Rc<Cell<bool>>);
+     impl Drop for ReadGuard {
+         fn drop(&mut self) {
+@@ -112,8 +114,95 @@
+             Poll::Pending
+         }
+     });
+-    assert_eq!(io_kind(with_deadline(read, deadline).unwrap_err()), io::ErrorKind::TimedOut);
++    let cache = MockCredential::default();
++    cache.set_password("previous").unwrap();
++    let result = with_deadline(read, deadline);
+     assert!(started.get());
+     assert!(dropped.get());
++    let error = finish_refresh_save(&cache, "rotated", started.get(), result).unwrap_err();
++    assert!(error.to_string().contains("write outcome unknown"));
++    assert_eq!(io_kind(error), io::ErrorKind::TimedOut);
++    assert!(matches!(cache.get_secret(), Err(KeyringError::NoEntry)));
+     assert_eq!(with_deadline(async { Ok(42) }, pending()).unwrap(), 42);
+ }
++
++#[test]
++fn refresh_save_rejects_empty_values_before_accessing_the_cache_or_bus() {
++    assert!(matches!(
++        save_for_refresh("unused-service", "unused-account", ""),
++        Err(KeyringError::Invalid(field, _)) if field == "secret"
++    ));
++}
++
++#[test]
++fn refresh_save_updates_cache_only_after_confirmed_persistence() {
++    let cache = MockCredential::default();
++    cache.set_password("previous").unwrap();
++    for error in [
++        KeyringError::NoEntry,
++        decode_error(SecretServiceError::Locked),
++        decode_error(SecretServiceError::Unavailable),
++        platform_error(io::ErrorKind::PermissionDenied, "denied"),
++        platform_error(io::ErrorKind::TimedOut, "before SetSecret"),
++        platform_error(io::ErrorKind::InvalidData, "ambiguous"),
++    ] {
++        finish_refresh_save(&cache, "unconfirmed", false, Err(error)).unwrap_err();
++        assert_eq!(cache.get_password().unwrap(), "previous");
++    }
++    let original = "  rotated\nvalue 🦀\0";
++    finish_refresh_save(&cache, original, true, Ok(())).unwrap();
++    assert_eq!(cache.get_secret().unwrap(), original.as_bytes());
++}
++
++#[test]
++fn acknowledged_write_with_partial_cache_failure_remains_an_error() {
++    struct PartialCache {
++        credential: MockCredential,
++        fail_cleanup: bool,
++    }
++    impl CredentialApi for PartialCache {
++        fn set_secret(&self, value: &[u8]) -> keyring::Result<()> {
++            self.credential.set_secret(value)?;
++            Err(platform_error(io::ErrorKind::PermissionDenied, "link failed"))
++        }
++
++        fn get_secret(&self) -> keyring::Result<Vec<u8>> {
++            self.credential.get_secret()
++        }
++
++        fn delete_credential(&self) -> keyring::Result<()> {
++            if self.fail_cleanup {
++                Err(platform_error(io::ErrorKind::PermissionDenied, "invalidate failed"))
++            } else {
++                self.credential.delete_credential()
++            }
++        }
++
++        fn as_any(&self) -> &dyn std::any::Any {
++            self
++        }
++    }
++
++    for fail_cleanup in [false, true] {
++        let cache = PartialCache {
++            credential: MockCredential::default(),
++            fail_cleanup,
++        };
++        cache.credential.set_password("previous").unwrap();
++        let error = finish_refresh_save(&cache, "rotated", true, Ok(())).unwrap_err();
++        let message = error.to_string();
++        assert!(message.contains("write acknowledged; kernelcache update failed"));
++        assert_eq!(message.contains("invalidation failed"), fail_cleanup);
++        assert_eq!(io_kind(error), io::ErrorKind::PermissionDenied);
++        if !fail_cleanup {
++            assert!(matches!(cache.get_secret(), Err(KeyringError::NoEntry)));
++        }
++    }
++    assert!(rejected_write(&SecretServiceError::Locked));
++    assert!(rejected_write(&SecretServiceError::ZbusFdo(
++        zbus::fdo::Error::AccessDenied("denied".to_string())
++    )));
++    assert!(!rejected_write(&SecretServiceError::ZbusFdo(
++        zbus::fdo::Error::NoReply("unknown".to_string())
++    )));
++}
+diff --git a/codex-rs/rmcp-client/src/oauth.rs b/codex-rs/rmcp-client/src/oauth.rs
+--- a/codex-rs/rmcp-client/src/oauth.rs
++++ b/codex-rs/rmcp-client/src/oauth.rs
+@@ -36,6 +36,7 @@
+ use anyhow::Result;
+ use codex_config::types::AuthKeyringBackendKind;
+ use codex_config::types::OAuthCredentialsStoreMode;
++use codex_keyring_store::CredentialStoreError;
+ use codex_otel::auth_storage::Operation;
+ use codex_otel::auth_storage::Store;
+ use codex_secrets::LocalSecretsNamespace;
+@@ -519,7 +520,7 @@
+     // policy resolution may clean up or update the non-selected store.
+     match keyring_backend_kind {
+         AuthKeyringBackendKind::Direct => {
+-            save_oauth_tokens_to_direct_keyring(keyring_store, server_name, tokens)
++            save_oauth_tokens_to_direct_keyring(keyring_store, server_name, tokens, K::save)
+         }
+         AuthKeyringBackendKind::Secrets => {
+             save_oauth_tokens_to_secrets_keyring(keyring_store, server_name, tokens)
+@@ -531,12 +532,12 @@
+     keyring_store: &K,
+     server_name: &str,
+     tokens: &StoredOAuthTokens,
++    write: impl FnOnce(&K, &str, &str, &str) -> std::result::Result<(), CredentialStoreError>,
+ ) -> Result<()> {
+     let serialized = serde_json::to_string(tokens).context("failed to serialize OAuth tokens")?;
+ 
+     let key = compute_store_key(server_name, &tokens.url)?;
+-    keyring_store
+-        .save(KEYRING_SERVICE, &key, &serialized)
++    write(keyring_store, KEYRING_SERVICE, &key, &serialized)
+         .map_err(std::io::Error::from)
+         .context("failed to write OAuth tokens to keyring")
+ }
+diff --git a/codex-rs/rmcp-client/src/oauth/resolved_store.rs b/codex-rs/rmcp-client/src/oauth/resolved_store.rs
+--- a/codex-rs/rmcp-client/src/oauth/resolved_store.rs
++++ b/codex-rs/rmcp-client/src/oauth/resolved_store.rs
+@@ -6,6 +6,7 @@
+ use anyhow::Result;
+ use codex_config::types::AuthKeyringBackendKind;
+ use codex_config::types::OAuthCredentialsStoreMode;
++use codex_keyring_store::CredentialStoreError;
+ use codex_keyring_store::KeyringStore;
+ use codex_otel::auth_storage::AuthStorageOriginator;
+ use codex_otel::auth_storage::Operation;
+@@ -24,6 +25,7 @@
+ use super::load_oauth_tokens_from_file_with_lock_held;
+ use super::load_oauth_tokens_from_keyring;
+ use super::load_oauth_tokens_from_secrets_keyring_with_lock_held;
++use super::save_oauth_tokens_to_direct_keyring;
+ use super::save_oauth_tokens_to_file;
+ use super::save_oauth_tokens_with_keyring;
+ 
+@@ -155,9 +157,22 @@
+         server_name: &str,
+         tokens: &StoredOAuthTokens,
+     ) -> Result<()> {
++        self.save_with_direct_writer(keyring_store, server_name, tokens, K::save)
++    }
++
++    fn save_with_direct_writer<K: KeyringStore + Clone + 'static>(
++        self,
++        keyring_store: &K,
++        server_name: &str,
++        tokens: &StoredOAuthTokens,
++        write: impl FnOnce(&K, &str, &str, &str) -> std::result::Result<(), CredentialStoreError>,
++    ) -> Result<()> {
+         let mut observation = telemetry::resolved(self, Operation::Save);
+         let result = match self.backend {
+             Backend::File => save_oauth_tokens_to_file(tokens),
++            Backend::Keyring(AuthKeyringBackendKind::Direct) => {
++                save_oauth_tokens_to_direct_keyring(keyring_store, server_name, tokens, write)
++            }
+             Backend::Keyring(keyring_backend_kind) => save_oauth_tokens_with_keyring(
+                 keyring_store,
+                 keyring_backend_kind,
+@@ -182,7 +197,12 @@
+         tokens: &StoredOAuthTokens,
+     ) -> Result<()> {
+         let mut observation = telemetry::resolved(self, Operation::RefreshPersist);
+-        let result = self.save(keyring_store, server_name, tokens);
++        let result = self.save_with_direct_writer(
++            keyring_store,
++            server_name,
++            tokens,
++            K::save_for_refresh,
++        );
+         observation.record_save_attempt(telemetry::store(self), &result);
+         if matches!(self.backend, Backend::Keyring(_))
+             && let Err(error) = &result
+diff --git a/codex-rs/rmcp-client/src/oauth/tests/credential_store_tests.rs b/codex-rs/rmcp-client/src/oauth/tests/credential_store_tests.rs
+--- a/codex-rs/rmcp-client/src/oauth/tests/credential_store_tests.rs
++++ b/codex-rs/rmcp-client/src/oauth/tests/credential_store_tests.rs
+@@ -93,7 +93,13 @@
+ 
+ #[tokio::test(flavor = "current_thread")]
+ async fn save_publishes_only_persisted_credentials() -> Result<()> {
+-    for fail_save in [false, true] {
++    for failure_kind in [
++        None,
++        Some(std::io::ErrorKind::WouldBlock),
++        Some(std::io::ErrorKind::NotConnected),
++        Some(std::io::ErrorKind::PermissionDenied),
++        Some(std::io::ErrorKind::TimedOut),
++    ] {
+         let _env = TempCodexHome::new();
+         let initial = sample_tokens();
+         let keyring = MockKeyringStore::default();
+@@ -121,17 +127,27 @@
+         token_response.set_refresh_token(Some(RefreshToken::new("rotated-refresh".into())));
+         // The adapter must encode the separate authoritative grant in the stored response.
+         token_response.set_scopes(/*scopes*/ None);
+-        if fail_save {
++        if let Some(kind) = failure_kind {
+             let key = compute_store_key(&initial.server_name, &initial.url)?;
+-            keyring.set_error(&key, KeyringError::Invalid("test".into(), "save".into()));
++            keyring.set_refresh_error(
++                &key,
++                KeyringError::PlatformFailure(Box::new(std::io::Error::new(
++                    kind,
++                    "injected refresh persistence failure",
++                ))),
++            );
+         }
+         let result = store.save(credentials).await;
+         let durable = authority
+             .load(&keyring, &initial.server_name, &initial.url)?
+             .expect("durable keyring credentials");
+         let mut expected = initial.clone();
+-        if fail_save {
+-            assert!(matches!(result, Err(AuthError::CredentialStoreError(_))));
++        if failure_kind.is_some() {
++            assert!(matches!(
++                result,
++                Err(AuthError::CredentialStoreError(message))
++                    if message.contains("injected refresh persistence failure")
++            ));
+         } else {
+             result?;
+             expected

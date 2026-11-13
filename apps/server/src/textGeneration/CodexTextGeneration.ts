@@ -161,7 +161,18 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     }) {
       const spawnCommand = yield* resolveSpawnCommand(
         input.binary,
-        [...input.launchArgs, ...CODEX_NO_PLUGIN_ARGS, "mcp", "list", "--json"],
+        [
+          ...input.launchArgs,
+          ...CODEX_NO_PLUGIN_ARGS,
+          // Only names are needed; metadata discovery must not unlock either credential store.
+          "--config",
+          'cli_auth_credentials_store="file"',
+          "--config",
+          'mcp_oauth_credentials_store="file"',
+          "mcp",
+          "list",
+          "--json",
+        ],
         { env: input.env },
       );
       const child = yield* commandSpawner.spawn(
@@ -181,17 +192,18 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         { concurrency: "unbounded" },
       );
       if (exitCode !== 0) {
-        yield* Effect.logWarning("codex mcp list failed; text generation keeps its MCP servers", {
-          reason: "exit",
-          exitCode,
+        return yield* new TextGenerationError({
+          operation: "mcpList",
+          detail: `Codex MCP configuration lookup failed with code ${exitCode}; text generation was skipped.`,
         });
-        return [];
       }
       const servers = yield* decodeCodexMcpServers(stdout).pipe(
-        Effect.tapError(() =>
-          Effect.logWarning("codex mcp list failed; text generation keeps its MCP servers", {
-            reason: "decode",
-          }),
+        Effect.mapError(
+          () =>
+            new TextGenerationError({
+              operation: "mcpList",
+              detail: "Codex MCP configuration was invalid; text generation was skipped.",
+            }),
         ),
       );
       return servers.filter((server) => server.enabled).map((server) => server.name);
@@ -201,13 +213,23 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     Effect.flatMap(
       Option.match({
         onNone: () =>
-          Effect.logWarning("codex mcp list failed; text generation keeps its MCP servers", {
-            reason: "timeout",
-          }).pipe(Effect.as<ReadonlyArray<string>>([])),
+          Effect.fail(
+            new TextGenerationError({
+              operation: "mcpList",
+              detail: "Codex MCP configuration lookup timed out; text generation was skipped.",
+            }),
+          ),
         onSome: (names) => Effect.succeed(names),
       }),
     ),
-    Effect.orElseSucceed((): ReadonlyArray<string> => []),
+    Effect.mapError((cause) =>
+      cause instanceof TextGenerationError
+        ? cause
+        : new TextGenerationError({
+            operation: "mcpList",
+            detail: "Could not read Codex MCP configuration; text generation was skipped.",
+          }),
+    ),
   );
 
   const runCodexJson = Effect.fn("runCodexJson")(function* <S extends Schema.Top>({

@@ -1,0 +1,353 @@
+diff --git a/codex-rs/keyring-store/src/lib.rs b/codex-rs/keyring-store/src/lib.rs
+--- a/codex-rs/keyring-store/src/lib.rs
++++ b/codex-rs/keyring-store/src/lib.rs
+@@ -58,6 +58,9 @@
+ 
+ mod error_kind;
+ 
++#[cfg(target_os = "linux")]
++mod linux;
++
+ impl From<CredentialStoreError> for std::io::Error {
+     fn from(error: CredentialStoreError) -> Self {
+         Self::new(error_kind::classify(&error), error)
+@@ -77,8 +80,13 @@
+ impl KeyringStore for DefaultKeyringStore {
+     fn load(&self, service: &str, account: &str) -> Result<Option<String>, CredentialStoreError> {
+         trace!("keyring.load start");
+-        let entry = Entry::new(service, account).map_err(CredentialStoreError::new)?;
+-        match entry.get_password() {
++        #[cfg(target_os = "linux")]
++        let password = linux::get_password(service, account);
++        #[cfg(not(target_os = "linux"))]
++        let password = Entry::new(service, account)
++            .map_err(CredentialStoreError::new)?
++            .get_password();
++        match password {
+             Ok(password) => {
+                 trace!("keyring.load success");
+                 Ok(Some(password))
+diff --git a/codex-rs/keyring-store/Cargo.toml b/codex-rs/keyring-store/Cargo.toml
+--- a/codex-rs/keyring-store/Cargo.toml
++++ b/codex-rs/keyring-store/Cargo.toml
+@@ -12,7 +12,9 @@
+ tracing = { workspace = true }
+ 
+ [target.'cfg(target_os = "linux")'.dependencies]
+-secret-service = "4"
++async-io = { workspace = true }
++secret-service = { version = "4", features = ["rt-async-io-crypto-rust"] }
++zbus = { version = "4", default-features = false, features = ["async-io"] }
+ keyring = { workspace = true, features = ["linux-native-async-persistent"] }
+ 
+ [target.'cfg(target_os = "macos")'.dependencies]
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -3794,11 +3794,13 @@
+ name = "codex-keyring-store"
+ version = "0.0.0"
+ dependencies = [
++ "async-io",
+  "keyring",
+  "pretty_assertions",
+  "secret-service",
+  "security-framework 3.5.1",
+  "tracing",
++ "zbus",
+ ]
+ 
+ [[package]]
+diff --git a/codex-rs/keyring-store/src/linux.rs b/codex-rs/keyring-store/src/linux.rs
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/keyring-store/src/linux.rs
+@@ -0,0 +1,164 @@
++use keyring::Error as KeyringError;
++use keyring::credential::CredentialApi as _;
++use keyring::keyutils::KeyutilsCredential;
++use secret_service::EncryptionType;
++use secret_service::Error as SecretServiceError;
++use secret_service::SearchItemsResult;
++use secret_service::SecretService;
++use std::collections::HashMap;
++use std::future::Future;
++use std::future::poll_fn;
++use std::io;
++use std::pin::pin;
++use std::task::Poll;
++use std::time::Duration;
++
++const READ_TIMEOUT: Duration = Duration::from_secs(2);
++
++pub(super) fn get_password(service: &str, account: &str) -> keyring::Result<String> {
++    let cache = KeyutilsCredential::new_with_target(None, service, account)?;
++    if let Ok(password) = cache.get_password() {
++        return Ok(password);
++    }
++
++    let password = with_deadline(read_password(service, account), async {
++        async_io::Timer::after(READ_TIMEOUT).await;
++    })?;
++    cache.set_password(&password)?;
++    Ok(password)
++}
++
++fn with_deadline<T>(
++    operation: impl Future<Output = keyring::Result<T>>,
++    deadline: impl Future<Output = ()>,
++) -> keyring::Result<T> {
++    let mut operation = pin!(operation);
++    let mut deadline = pin!(deadline);
++    // The deadline drops the actual async read instead of detaching a blocking job.
++    async_io::block_on(poll_fn(|context| {
++        if deadline.as_mut().poll(context).is_ready() {
++            return Poll::Ready(Err(platform_error(
++                io::ErrorKind::TimedOut,
++                "Secret Service credential read timed out",
++            )));
++        }
++        operation.as_mut().poll(context)
++    }))
++}
++
++async fn read_password(service: &str, account: &str) -> keyring::Result<String> {
++    let ss = SecretService::connect(EncryptionType::Dh)
++        .await
++        .map_err(decode_error)?;
++    let attributes = HashMap::from([
++        ("target", "default"),
++        ("service", service),
++        ("username", account),
++    ]);
++    let matches = ss.search_items(attributes).await.map_err(decode_error)?;
++    let item = if let Some(item) = unique_unlocked(matches)? {
++        item
++    } else {
++        // Match keyring 3.6.3's fallback: omit target only inside the default collection.
++        let collection = match ss.get_default_collection().await {
++            Ok(collection) => collection,
++            Err(SecretServiceError::NoResult) => return Err(KeyringError::NoEntry),
++            Err(error) => return Err(decode_error(error)),
++        };
++        let attributes = HashMap::from([("service", service), ("username", account)]);
++        let items = collection
++            .search_items(attributes)
++            .await
++            .map_err(decode_error)?;
++        let item = unique_unlocked(SearchItemsResult {
++            unlocked: items,
++            locked: Vec::new(),
++        })?
++        .ok_or(KeyringError::NoEntry)?;
++        item.ensure_unlocked().await.map_err(decode_error)?;
++        return decode_password(item.get_secret().await.map_err(decode_error)?);
++    };
++    item.ensure_unlocked().await.map_err(decode_error)?;
++    decode_password(item.get_secret().await.map_err(decode_error)?)
++}
++
++fn unique_unlocked<T>(mut matches: SearchItemsResult<T>) -> keyring::Result<Option<T>> {
++    match matches.unlocked.len() + matches.locked.len() {
++        0 => Ok(None),
++        1 if matches.locked.is_empty() => Ok(matches.unlocked.pop()),
++        1 => Err(KeyringError::NoStorageAccess(Box::new(
++            SecretServiceError::Locked,
++        ))),
++        _ => Err(platform_error(
++            io::ErrorKind::InvalidData,
++            "Multiple matching Secret Service credentials",
++        )),
++    }
++}
++
++fn decode_password(bytes: Vec<u8>) -> keyring::Result<String> {
++    String::from_utf8(bytes).map_err(|error| KeyringError::BadEncoding(error.into_bytes()))
++}
++
++fn decode_error(error: SecretServiceError) -> KeyringError {
++    match &error {
++        SecretServiceError::Locked => return KeyringError::NoStorageAccess(Box::new(error)),
++        SecretServiceError::Zbus(zbus::Error::MethodError(name, _, _))
++            if name.as_str() == "org.freedesktop.Secret.Error.IsLocked" =>
++        {
++            return KeyringError::NoStorageAccess(Box::new(SecretServiceError::Locked));
++        }
++        SecretServiceError::Zbus(zbus::Error::MethodError(name, _, _)) => {
++            if let Some(kind) = method_error_kind(name.as_str()) {
++                return platform_error(kind, "Secret Service credential read failed");
++            }
++        }
++        SecretServiceError::ZbusFdo(error) => {
++            if let Some(kind) = fdo_error_kind(error) {
++                return platform_error(kind, "Secret Service credential read failed");
++            }
++        }
++        SecretServiceError::Zbus(zbus::Error::FDO(error)) => {
++            if let Some(kind) = fdo_error_kind(error) {
++                return platform_error(kind, "Secret Service credential read failed");
++            }
++        }
++        _ => {}
++    }
++    KeyringError::PlatformFailure(Box::new(error))
++}
++
++fn fdo_error_kind(error: &zbus::fdo::Error) -> Option<io::ErrorKind> {
++    use zbus::fdo::Error;
++    match error {
++        Error::AccessDenied(_) | Error::AuthFailed(_) => Some(io::ErrorKind::PermissionDenied),
++        Error::ServiceUnknown(_) | Error::NameHasNoOwner(_) | Error::Disconnected(_) => {
++            Some(io::ErrorKind::NotConnected)
++        }
++        Error::NoReply(_) | Error::Timeout(_) | Error::TimedOut(_) => Some(io::ErrorKind::TimedOut),
++        _ => None,
++    }
++}
++
++fn method_error_kind(name: &str) -> Option<io::ErrorKind> {
++    match name {
++        "org.freedesktop.DBus.Error.AccessDenied" | "org.freedesktop.DBus.Error.AuthFailed" => {
++            Some(io::ErrorKind::PermissionDenied)
++        }
++        "org.freedesktop.DBus.Error.ServiceUnknown"
++        | "org.freedesktop.DBus.Error.NameHasNoOwner"
++        | "org.freedesktop.DBus.Error.Disconnected" => Some(io::ErrorKind::NotConnected),
++        "org.freedesktop.DBus.Error.NoReply"
++        | "org.freedesktop.DBus.Error.Timeout"
++        | "org.freedesktop.DBus.Error.TimedOut" => Some(io::ErrorKind::TimedOut),
++        _ => None,
++    }
++}
++
++fn platform_error(kind: io::ErrorKind, message: &'static str) -> KeyringError {
++    KeyringError::PlatformFailure(Box::new(io::Error::new(kind, message)))
++}
++
++#[cfg(test)]
++#[path = "linux_tests.rs"]
++mod tests;
+diff --git a/codex-rs/keyring-store/src/linux_tests.rs b/codex-rs/keyring-store/src/linux_tests.rs
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/keyring-store/src/linux_tests.rs
+@@ -0,0 +1,119 @@
++use super::*;
++use crate::CredentialStoreError;
++use std::cell::Cell;
++use std::future::pending;
++use std::rc::Rc;
++
++fn io_kind(error: KeyringError) -> io::ErrorKind {
++    io::Error::from(CredentialStoreError::new(error)).kind()
++}
++
++#[test]
++fn distinguishes_missing_locked_ambiguous_and_unique_unlocked() {
++    assert_eq!(
++        unique_unlocked::<String>(SearchItemsResult {
++            unlocked: Vec::new(),
++            locked: Vec::new(),
++        })
++        .unwrap(),
++        None
++    );
++    assert_eq!(
++        io_kind(
++            unique_unlocked(SearchItemsResult {
++                unlocked: Vec::<String>::new(),
++                locked: vec!["locked".to_string()],
++            })
++            .unwrap_err()
++        ),
++        io::ErrorKind::WouldBlock
++    );
++    for (unlocked, locked) in [(2, 0), (1, 1), (0, 2)] {
++        assert_eq!(
++            io_kind(
++                unique_unlocked(SearchItemsResult {
++                    unlocked: vec![(); unlocked],
++                    locked: vec![(); locked],
++                })
++                .unwrap_err()
++            ),
++            io::ErrorKind::InvalidData
++        );
++    }
++    let original = "  token\nwith whitespace and 🦀\0";
++    assert_eq!(
++        unique_unlocked(SearchItemsResult {
++            unlocked: vec![original.to_string()],
++            locked: Vec::new(),
++        })
++        .unwrap()
++        .as_deref(),
++        Some(original)
++    );
++    assert_eq!(decode_password(original.as_bytes().to_vec()).unwrap(), original);
++    assert!(matches!(
++        decode_password(vec![0xff]),
++        Err(KeyringError::BadEncoding(bytes)) if bytes == [0xff]
++    ));
++}
++
++#[test]
++fn classifies_native_errors_without_treating_them_as_missing() {
++    for (error, expected) in [
++        (SecretServiceError::Locked, io::ErrorKind::WouldBlock),
++        (SecretServiceError::Unavailable, io::ErrorKind::NotConnected),
++        (
++            SecretServiceError::ZbusFdo(zbus::fdo::Error::AccessDenied("denied".to_string())),
++            io::ErrorKind::PermissionDenied,
++        ),
++        (
++            SecretServiceError::ZbusFdo(zbus::fdo::Error::ServiceUnknown("absent".to_string())),
++            io::ErrorKind::NotConnected,
++        ),
++        (
++            SecretServiceError::ZbusFdo(zbus::fdo::Error::NoReply("no reply".to_string())),
++            io::ErrorKind::TimedOut,
++        ),
++    ] {
++        assert_eq!(io_kind(decode_error(error)), expected);
++    }
++    for (name, expected) in [
++        ("org.freedesktop.DBus.Error.AccessDenied", Some(io::ErrorKind::PermissionDenied)),
++        ("org.freedesktop.DBus.Error.ServiceUnknown", Some(io::ErrorKind::NotConnected)),
++        ("org.freedesktop.DBus.Error.NoReply", Some(io::ErrorKind::TimedOut)),
++        ("org.freedesktop.Secret.Error.NoSuchObject", None),
++    ] {
++        assert_eq!(method_error_kind(name), expected);
++    }
++}
++
++#[test]
++fn deadline_drops_a_pending_read_instead_of_leaving_a_blocking_job() {
++    struct ReadGuard(Rc<Cell<bool>>);
++    impl Drop for ReadGuard {
++        fn drop(&mut self) {
++            self.0.set(true);
++        }
++    }
++
++    let started = Rc::new(Cell::new(false));
++    let dropped = Rc::new(Cell::new(false));
++    let guard = ReadGuard(Rc::clone(&dropped));
++    let read = async {
++        let _guard = guard;
++        started.set(true);
++        pending::<keyring::Result<()>>().await
++    };
++    let deadline = poll_fn(|context| {
++        if started.get() {
++            Poll::Ready(())
++        } else {
++            context.waker().wake_by_ref();
++            Poll::Pending
++        }
++    });
++    assert_eq!(io_kind(with_deadline(read, deadline).unwrap_err()), io::ErrorKind::TimedOut);
++    assert!(started.get());
++    assert!(dropped.get());
++    assert_eq!(with_deadline(async { Ok(42) }, pending()).unwrap(), 42);
++}

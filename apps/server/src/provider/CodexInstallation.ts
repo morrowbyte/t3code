@@ -57,8 +57,16 @@ export interface CodexReleaseAsset {
   readonly sha256: string;
   readonly archiveBytes: number;
 }
-export const supportsCodexDeviceAuth = (version: string) =>
-  /^\d+\.\d+\.\d+$/u.test(version) && satisfiesSemverRange(version, ">=0.163.0");
+const MORROWBYTE_CODEX_VERSION = "0.163.0-morrowbyte.2";
+const codexCompatibilityVersion = (version: string) =>
+  version === MORROWBYTE_CODEX_VERSION || version === "0.163.0-morrowbyte.1" ? "0.163.0" : version;
+export const supportsCodexDeviceAuth = (version: string) => {
+  const compatibleVersion = codexCompatibilityVersion(version);
+  return (
+    /^\d+\.\d+\.\d+$/u.test(compatibleVersion) &&
+    satisfiesSemverRange(compatibleVersion, ">=0.163.0")
+  );
+};
 
 const RELEASES: Readonly<Record<string, CodexReleaseAsset>> = {
   "darwin-arm64": {
@@ -83,11 +91,11 @@ const RELEASES: Readonly<Record<string, CodexReleaseAsset>> = {
     archiveBytes: 149800043,
   },
   "linux-x64": {
-    version: "0.163.0",
+    version: MORROWBYTE_CODEX_VERSION,
     target: "x86_64-unknown-linux-musl",
-    url: "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-package-x86_64-unknown-linux-musl.tar.gz",
-    sha256: "582646c6bf0561eb0de540f7fc85b9121b0091a826bc6e96830b7f1722122182",
-    archiveBytes: 159424486,
+    url: "https://github.com/morrowbyte/t3code/releases/download/codex-runtime-0.163.0-morrowbyte.2/codex-package-x86_64-unknown-linux-musl.tar.gz",
+    sha256: "6d517c9784c97636095974a929ef24e38567f2b21174c44d4c13fb9d699c2981",
+    archiveBytes: 219409530,
   },
   "win32-arm64": {
     version: "0.163.0",
@@ -185,6 +193,11 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
     options.releaseAsset === undefined
       ? resolveCodexReleaseAsset(platform, arch)
       : options.releaseAsset;
+  const needsManagedUpgrade = (version: string) =>
+    platform === "linux" &&
+    arch === "x64" &&
+    (version === "0.163.0" || version === "0.163.0-morrowbyte.1") &&
+    asset?.version === MORROWBYTE_CODEX_VERSION;
   const managedDirectory = path.join(options.baseDir, "tools", "codex");
   const activePath = path.join(managedDirectory, "active.json");
   const executableName = platform === "win32" ? "codex.exe" : "codex";
@@ -273,18 +286,24 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
   });
   const compatibility = Effect.fn("CodexInstallation.compatibility")(function* (version: string) {
     const manifest = yield* manifestService.current;
+    const compatibleVersion = codexCompatibilityVersion(version);
     return (
-      resolveProviderCompatibility(manifest.compatibility, DRIVER, version) ??
+      resolveProviderCompatibility(manifest.compatibility, DRIVER, compatibleVersion) ??
       resolveProviderCompatibility(
         ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
         DRIVER,
-        version,
+        compatibleVersion,
       )
     );
   });
   const resolveManaged = Effect.fn("CodexInstallation.resolveManaged")(
     function* () {
       const active = yield* readRecord(activePath, ActiveRelease);
+      if (needsManagedUpgrade(active.version))
+        return yield* installationError(
+          "resolve",
+          "Update the managed Codex installation to continue.",
+        );
       const executable = yield* completedRelease(active.version);
       const advisory = yield* compatibility(executable.version);
       if (advisory?.status !== "supported")
@@ -408,7 +427,9 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
           ? cached.executable
           : yield* Effect.gen(function* () {
               const output = yield* runCommand(executablePath, ["--version"]);
-              const version = /^codex-cli (\d+\.\d+\.\d+)$/u.exec(output.trim())?.[1];
+              const version = /^codex-cli (\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?)$/u.exec(
+                output.trim(),
+              )?.[1];
               if (!version) return null;
               yield* runCommand(executablePath, ["app-server", "--help"]);
               return {
@@ -430,6 +451,14 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
   );
   const resolve = Effect.fn("CodexInstallation.resolve")(function* () {
     const local = yield* resolveLocal();
+    if (local && needsManagedUpgrade(local.version)) {
+      const detail = "Update the managed Codex installation to continue.";
+      const managed = yield* resolveManaged().pipe(
+        Effect.mapError((cause) => installationError("resolve", detail, cause)),
+      );
+      if (managed.version !== asset?.version) return yield* installationError("resolve", detail);
+      return managed;
+    }
     if (local && !supportsCodexDeviceAuth(local.version)) {
       const managed = yield* resolveManaged().pipe(Effect.option);
       if (Option.isSome(managed) && supportsCodexDeviceAuth(managed.value.version))
@@ -441,6 +470,7 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
     const local = yield* resolveLocal();
     if (
       !local ||
+      needsManagedUpgrade(local.version) ||
       (asset && supportsCodexDeviceAuth(asset.version) && !supportsCodexDeviceAuth(local.version))
     )
       return false;
@@ -807,7 +837,12 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
     }
     yield* SubscriptionRef.update(state, (current) => ({ ...current, canRemove }));
     if (yield* reuseLocal()) return;
-    if (!(yield* fs.exists(activePath))) return;
+    const local = yield* resolveLocal();
+    const localUpgrade = local !== null && needsManagedUpgrade(local.version);
+    if (!(yield* fs.exists(activePath))) {
+      if (localUpgrade) yield* start;
+      return;
+    }
     const active = yield* readRecord(activePath, ActiveRelease);
     const installed = yield* completedRelease(active.version);
     yield* SubscriptionRef.update(
@@ -820,6 +855,11 @@ export const makeCodexInstallation = Effect.fn("makeCodexInstallation")(function
           source: "managed",
         }) satisfies ProviderInstallState,
     );
+    if (
+      needsManagedUpgrade(installed.version) ||
+      (localUpgrade && installed.version !== asset?.version)
+    )
+      yield* start;
   }).pipe(
     Effect.catch(() =>
       SubscriptionRef.update(
