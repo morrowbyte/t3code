@@ -2,8 +2,8 @@ import { MessageId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { isMacPlatform } from "@t3tools/shared/keybindings";
 import { type CxOptions, cx } from "class-variance-authority";
 import * as Hex from "effect/encoding/Hex";
+import * as Schema from "effect/Schema";
 import { extendTailwindMerge } from "tailwind-merge";
-import { DraftId } from "../composerDraftStore";
 
 // Register extra font sizes and background images so tailwind-merge does not
 // treat text-2xs or bg-composer-seam-below as colors.
@@ -45,6 +45,9 @@ export function randomUUID(): string {
   const hex = Hex.encode(bytes);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
+
+export const DraftId = Schema.String.pipe(Schema.brand("DraftId"));
+export type DraftId = typeof DraftId.Type;
 
 export const newProjectId = (): ProjectId => ProjectId.make(randomUUID());
 

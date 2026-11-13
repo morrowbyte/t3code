@@ -58,6 +58,7 @@ import type {
 } from "@t3tools/client-runtime/state/shell";
 import { waitForDraftHeroTransition } from "./components/chat/draftHeroTransition";
 import { getLocalStorageItem } from "./hooks/useLocalStorage";
+import { DraftId } from "./lib/utils";
 import { readThreadPreviewState } from "./previewStateStore";
 import {
   readInstanceCustomModels,
@@ -121,8 +122,7 @@ const COMPOSER_DRAFT_STORAGE_VERSION = 9;
 const DraftThreadEnvModeSchema = Schema.Literals(["local", "worktree"]);
 export type DraftThreadEnvMode = typeof DraftThreadEnvModeSchema.Type;
 
-export const DraftId = Schema.String.pipe(Schema.brand("DraftId"));
-export type DraftId = typeof DraftId.Type;
+export { DraftId } from "./lib/utils";
 
 const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
 
