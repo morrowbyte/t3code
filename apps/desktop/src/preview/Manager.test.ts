@@ -950,6 +950,10 @@ describe("PreviewManager", () => {
             profileId: "default",
           });
           expect(fixture.wc.executeJavaScript).toHaveBeenCalledTimes(scriptReads);
+          for (const emptyUrl of ["", "about:blank"]) {
+            currentUrl = emptyUrl;
+            expect(getRestoration?.()).not.toHaveProperty("url");
+          }
           expect(browserWindowConstructor).toHaveBeenCalledOnce();
           yield* manager.closeTab("osr_tab");
           expect(getRestoration?.()).toBeUndefined();

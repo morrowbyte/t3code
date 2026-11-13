@@ -686,6 +686,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
   const runPromise = Effect.runPromiseWith(context);
+  const runSync = Effect.runSyncWith(context);
   const resolvedArtifactDirectory = path.resolve(artifactDirectory);
 
   let forwardedShortcuts: ReadonlyArray<PreviewForwardedShortcut> = [];
@@ -2929,7 +2930,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           webContents: wc,
           debugger: control.debugger,
           getRestoration: () => {
-            const current = Effect.runSync(SynchronizedRef.get(tabsRef)).get(tabId);
+            const current = runSync(SynchronizedRef.get(tabsRef)).get(tabId);
             if (
               wc.isDestroyed() ||
               current?.webContentsId !== wc.id ||
@@ -2942,7 +2943,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             const url = wc.getURL();
             return {
               desktopHostId: tabId,
-              ...(url === "" ? {} : { url }),
+              ...(url === "" || url === "about:blank" ? {} : { url }),
               title: wc.getTitle().slice(0, 512),
               canGoBack: wc.navigationHistory.canGoBack(),
               canGoForward: wc.navigationHistory.canGoForward(),

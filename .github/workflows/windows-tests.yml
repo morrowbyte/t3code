@@ -57,7 +57,7 @@ jobs:
       - name: Test
         shell: pwsh
         env:
-          T3CODE_NATIVE_PREVIEW_ARTIFACTS: ${{ runner.temp }}/browser-preview-windows
+          NATIVE_PREVIEW_ARTIFACTS: ${{ runner.temp }}/browser-preview-windows
         run: |
           $package = '${{ inputs.package }}'
           $files = '${{ inputs.files }}'

@@ -71,9 +71,10 @@ ipcRenderer.on(${JSON.stringify(PREVIEW_LOCAL_SURFACE_FRAME_CHANNEL)}, async (_e
     show: true,
     webPreferences: { preload: ownerPreload, sandbox: true, nodeIntegration: false },
   });
-  const ownerReady = NodeEvents.once(owner, "ready-to-show");
-  manifest.status = "awaiting-owner-ready-to-show";
+  // loadURL waits for the owner document; native paint readiness is checked by frame IPC below.
+  manifest.status = "awaiting-owner-did-finish-load";
   await saveManifest();
+  const ownerReady = NodeEvents.EventEmitter.once(owner.webContents, "dom-ready");
   await owner.loadURL(
     "data:text/html," +
       encodeURIComponent(
@@ -118,7 +119,7 @@ background:repeating-linear-gradient(90deg,#000 0px,#000 1px,#fff 1px,#fff 2px)}
   await NodeFSP.writeFile(NodePath.join(artifacts, "fixture.html"), html, { mode: 0o600 });
   manifest.status = "awaiting-guest-did-finish-load";
   await saveManifest();
-  const loaded = NodeEvents.once(wc, "did-finish-load");
+  const loaded = NodeEvents.EventEmitter.once(wc, "did-finish-load");
   await wc.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
   await loaded;
   wc.debugger.attach("1.3");
