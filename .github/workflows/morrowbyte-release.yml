@@ -1532,15 +1532,26 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $installers = @(Get-ChildItem -LiteralPath release-windows -Filter '*.exe' -File)
           if ($installers.Count -ne 1) { throw 'Expected one Windows installer.' }
+          $sevenZip = @'
+          const { createRequire } = require('node:module');
+          const { resolve } = require('node:path');
+          const desktop = createRequire(resolve('apps/desktop/package.json'));
+          const builder = createRequire(desktop.resolve('electron-builder'));
+          builder('app-builder-lib/out/toolsets/7zip').getPath7za().then(
+            (binary) => console.log(binary),
+            (error) => { console.error(error); process.exitCode = 1; },
+          );
+          '@ | node
+          if ($LASTEXITCODE -ne 0 -or -not $sevenZip -or -not (Test-Path -LiteralPath $sevenZip -PathType Leaf)) { throw 'Could not resolve the builder 7-Zip executable.' }
           $scratch = Join-Path $env:RUNNER_TEMP 'crew-desktop-launch-payload'
           $payload = Join-Path $scratch 'app'
           New-Item -ItemType Directory -Force -Path $scratch | Out-Null
           try {
-            & 7z x $installers[0].FullName "-o$scratch" '$PLUGINSDIR/app-64.7z' -y
+            & $sevenZip x $installers[0].FullName "-o$scratch" '$PLUGINSDIR/app-64.7z' -y
             if ($LASTEXITCODE -ne 0) { throw 'Could not extract the installer payload.' }
             $archive = Join-Path $scratch '$PLUGINSDIR/app-64.7z'
             if (-not (Test-Path -LiteralPath $archive)) { throw 'Installer app payload is missing.' }
-            & 7z x $archive "-o$payload" -y
+            & $sevenZip x $archive "-o$payload" -y
             if ($LASTEXITCODE -ne 0) { throw 'Could not unpack the desktop application.' }
             $executable = Join-Path $payload 'Morrowbyte.exe'
             if (-not (Test-Path -LiteralPath $executable)) { throw 'Packaged desktop executable is missing.' }
