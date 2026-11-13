@@ -7,6 +7,7 @@ import * as NodeProcess from "node:process";
 import {
   DEFAULT_DESKTOP_PET_SETTINGS,
   DesktopPetSettings,
+  DesktopPetSpecies,
   type DesktopPetEvent,
   type DesktopPetNativeEvent,
   type DesktopPetProjection,
@@ -17,6 +18,7 @@ import { createPetDecoder } from "./PetProtocol.ts";
 
 const decodeSettings = Schema.decodeUnknownSync(DesktopPetSettings);
 const decodeSettingsValue = Schema.decodeSync(DesktopPetSettings);
+const decodeSpecies = Schema.decodeUnknownSync(Schema.NullOr(DesktopPetSpecies));
 
 const nativeEnvironment = () =>
   Object.fromEntries(
@@ -59,6 +61,7 @@ export class PetCompanion {
     shortcutBackend: null,
     shortcutError: null,
     customPet: null,
+    preferredSpecies: null,
   };
 
   private readonly directory: string;
@@ -178,6 +181,15 @@ export class PetCompanion {
     else this.write(this.projection);
   }
 
+  setPreferredSpecies(value: DesktopPetSpecies | null) {
+    const preferredSpecies = decodeSpecies(value);
+    if (preferredSpecies !== this.state.preferredSpecies) {
+      this.publish({ preferredSpecies });
+      this.sendConfiguration();
+    }
+    return this.state;
+  }
+
   resetProjection() {
     this.revision = -1;
     this.projection = {
@@ -210,6 +222,9 @@ export class PetCompanion {
       visible,
       reducedMotion,
       petPath: this.petPath,
+      ...(this.state.capabilities?.builtinPets === undefined
+        ? {}
+        : { preferredSpecies: this.state.preferredSpecies ?? null }),
     });
   }
 
@@ -223,7 +238,19 @@ export class PetCompanion {
     } else if (this.state.connection !== "ready") {
       this.fail("event-before-ready");
     } else if (event.type === "state") {
-      this.publish({ native: event });
+      this.publish({
+        native: event,
+        ...(event.character
+          ? {
+              error:
+                event.character.source === "unavailable"
+                  ? "builtin_pet_unavailable"
+                  : this.state.error === "builtin_pet_unavailable"
+                    ? null
+                    : this.state.error,
+            }
+          : {}),
+      });
     } else if (event.type === "action") {
       if (this.projection.items.some((item) => item.id === event.id)) this.emit(event);
     } else if (event.type === "error") {

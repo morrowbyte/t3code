@@ -6,7 +6,12 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import { DesktopPetProjection, DesktopPetSettings, DesktopPetStatus } from "@t3tools/contracts";
+import {
+  DesktopPetProjection,
+  DesktopPetSettings,
+  DesktopPetSpecies,
+  DesktopPetStatus,
+} from "@t3tools/contracts";
 import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
 import * as DesktopClerk from "../../app/DesktopClerk.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
@@ -212,6 +217,17 @@ export const installPet = Effect.fn("desktop.pet.install")(function* () {
       handler: Effect.fn("desktop.pet.project")(function* (projection, event) {
         yield* authorize(event);
         pet.setProjection(projection);
+      }),
+    }),
+  );
+  yield* ipc.handle(
+    DesktopIpc.makeIpcMethod({
+      channel: Channels.PET_SET_SPECIES_CHANNEL,
+      payload: Schema.NullOr(DesktopPetSpecies),
+      result: DesktopPetStatus,
+      handler: Effect.fn("desktop.pet.species")(function* (species, event) {
+        yield* authorize(event);
+        return yield* mutex.withPermits(1)(Effect.sync(() => pet.setPreferredSpecies(species)));
       }),
     }),
   );

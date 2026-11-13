@@ -89,6 +89,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   reconnectPet: () => ipcRenderer.invoke(IpcChannels.PET_RECONNECT_CHANNEL),
   setPetProjection: (projection) =>
     ipcRenderer.invoke(IpcChannels.PET_SET_PROJECTION_CHANNEL, projection),
+  setPetSpecies: (species) => ipcRenderer.invoke(IpcChannels.PET_SET_SPECIES_CHANNEL, species),
   togglePet: () => ipcRenderer.invoke(IpcChannels.PET_TOGGLE_CHANNEL),
   importPet: () => ipcRenderer.invoke(IpcChannels.PET_IMPORT_CHANNEL),
   resetPet: () => ipcRenderer.invoke(IpcChannels.PET_RESET_CHANNEL),

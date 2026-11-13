@@ -3,6 +3,7 @@ export const PET_GET_STATUS_CHANNEL = "desktop:pet-status";
 export const PET_SET_SETTINGS_CHANNEL = "desktop:pet-settings";
 export const PET_RECONNECT_CHANNEL = "desktop:pet-reconnect";
 export const PET_SET_PROJECTION_CHANNEL = "desktop:pet-projection";
+export const PET_SET_SPECIES_CHANNEL = "desktop:pet-species";
 export const PET_TOGGLE_CHANNEL = "desktop:pet-toggle";
 export const PET_IMPORT_CHANNEL = "desktop:pet-import";
 export const PET_RESET_CHANNEL = "desktop:pet-reset";

@@ -67,4 +67,71 @@ describe("native pet protocol", () => {
       decode({ ...projection, items: [{ ...projection.items[0], payload: "secret" }] }),
     ).toThrow();
   });
+  it("accepts negotiated built-in characters and rejects invalid selection claims", () => {
+    const events: unknown[] = [];
+    const ready = {
+      v: 1,
+      type: "ready",
+      capabilities: {
+        nativeOverlay: true,
+        focusMonitor: true,
+        customPet: true,
+        computerUse: true,
+        builtinPets: [{ species: "weasel", name: "sudo" }],
+      },
+    };
+    const state = {
+      v: 1,
+      type: "state",
+      visible: true,
+      persistent: false,
+      monitor: null,
+      computerUse: null,
+      character: {
+        source: "builtin",
+        requestedSpecies: "weasel",
+        species: "weasel",
+        name: "sudo",
+      },
+    };
+    const receive = createPetDecoder((event) => events.push(event));
+    receive(Buffer.from(`${JSON.stringify(ready)}\n${JSON.stringify(state)}\n`));
+    expect(events).toEqual([ready, state]);
+    for (const character of [
+      { source: "unavailable", requestedSpecies: "cat", species: null, name: null },
+      { source: "custom", requestedSpecies: "cat", species: null, name: "My pet" },
+    ]) {
+      expect(() =>
+        createPetDecoder(() => {})(Buffer.from(`${JSON.stringify({ ...state, character })}\n`)),
+      ).not.toThrow();
+    }
+    for (const character of [
+      { ...state.character, species: "dragon" },
+      { ...state.character, requestedSpecies: "cat" },
+      { ...state.character, source: "unavailable" },
+      { ...state.character, name: "hidden\u202etext" },
+      { ...state.character, source: "custom" },
+      { ...state.character, path: "/private" },
+    ]) {
+      expect(() =>
+        createPetDecoder(() => {})(Buffer.from(`${JSON.stringify({ ...state, character })}\n`)),
+      ).toThrow();
+    }
+    for (const builtinPets of [
+      [{ species: "dragon", name: "Unrecognized" }],
+      [
+        { species: "cat", name: "Cat" },
+        { species: "cat", name: "Other cat" },
+      ],
+      [{ species: "weasel", name: "sudo", path: "/private" }],
+    ]) {
+      expect(() =>
+        createPetDecoder(() => {})(
+          Buffer.from(
+            `${JSON.stringify({ ...ready, capabilities: { ...ready.capabilities, builtinPets } })}\n`,
+          ),
+        ),
+      ).toThrow();
+    }
+  });
 });

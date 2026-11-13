@@ -1,5 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { DesktopPetSettings as PetSettings, DesktopPetStatus } from "@t3tools/contracts";
+import {
+  AGENT_IDENTITY_THEMES,
+  type DesktopPetSettings as PetSettings,
+  type DesktopPetStatus,
+} from "@t3tools/contracts";
 import {
   ChevronDownIcon,
   CircleCheckIcon,
@@ -118,6 +122,20 @@ export function DesktopPetSettings() {
     if (status) run(() => bridge.setPetSettings({ ...status.settings, ...patch }));
   };
   const cu = status?.native?.computerUse;
+  const character = status?.native?.character;
+  const requestedSpecies = status?.preferredSpecies ?? null;
+  const speciesLabel = AGENT_IDENTITY_THEMES[requestedSpecies ?? "weasel"].label;
+  const characterDescription = status?.customPet
+    ? status.customPet
+    : status?.connection !== "ready"
+      ? "Not connected"
+      : status.capabilities?.builtinPets === undefined
+        ? "Update the companion to match your animal avatar"
+        : !character || character.requestedSpecies !== requestedSpecies
+          ? "Selecting character…"
+          : character.source === "unavailable"
+            ? `${speciesLabel}: no pet available yet`
+            : character.name;
   const connection =
     status?.connection === "ready"
       ? "Connected"
@@ -185,7 +203,7 @@ export function DesktopPetSettings() {
     >
       <SettingsRow
         title="Character"
-        description={status?.customPet ?? "Built-in"}
+        description={characterDescription}
         control={
           <div className="flex items-center gap-1">
             <PetIconButton
@@ -196,7 +214,7 @@ export function DesktopPetSettings() {
               <UploadIcon aria-hidden />
             </PetIconButton>
             <PetIconButton
-              label="Use built-in pet"
+              label="Follow animal avatar"
               disabled={pending || !status?.customPet}
               onClick={() => run(() => bridge.resetPet())}
             >

@@ -21,6 +21,7 @@ process.stdin.on('data', (chunk) => {
   for (const line of lines) {
     const message = JSON.parse(line);
     if (message.type === 'shutdown') process.exit(0);
+    if (message.type === 'configure' && 'preferredSpecies' in message) process.exit(44);
     if (message.type === 'projection') send({v:1,type:'state',visible:true,persistent:false,monitor:process.pid + ':revision-' + message.revision + ':items-' + message.items.map(item => item.id).join(','),computerUse:null});
   }
 });
@@ -43,6 +44,7 @@ process.stdin.on('data', (chunk) => {
       onEvent();
     });
   try {
+    pet.setPreferredSpecies("cat");
     await pet.configure({ ...DEFAULT_DESKTOP_PET_SETTINGS, executable });
     await untilRevision(0);
     pet.setProjection({
@@ -64,6 +66,81 @@ process.stdin.on('data', (chunk) => {
     await untilRevision(3);
     expect(pet.status.native?.computerUse).toBeNull();
     expect(pet.status.settings.persistent).toBe(false);
+    expect(pet.status.preferredSpecies).toBe("cat");
+  } finally {
+    pet.stop();
+    await NodeFSP.rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("negotiates species, preserves custom overrides and retains unrelated native errors", async () => {
+  const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pet-species-"));
+  const executable = NodePath.join(directory, "companion");
+  await NodeFSP.writeFile(
+    executable,
+    `#!/usr/bin/env node
+const send = (event) => process.stdout.write(JSON.stringify(event) + '\\n');
+send({v:1,type:'ready',capabilities:{nativeOverlay:true,focusMonitor:true,customPet:true,computerUse:true,builtinPets:[{species:'weasel',name:'sudo'}]}});
+let pending = '';
+process.stdin.on('data', (chunk) => {
+  pending += chunk;
+  const lines = pending.split('\\n'); pending = lines.pop();
+  for (const line of lines) {
+    const message = JSON.parse(line);
+    if (message.type === 'shutdown') process.exit(0);
+    if (message.type !== 'configure') continue;
+    const requestedSpecies = message.preferredSpecies;
+    const character = message.petPath
+      ? {source:'custom',requestedSpecies,species:null,name:'Custom pet'}
+      : requestedSpecies === null || requestedSpecies === 'weasel'
+        ? {source:'builtin',requestedSpecies,species:'weasel',name:'sudo'}
+        : {source:'unavailable',requestedSpecies,species:null,name:null};
+    if (message.reducedMotion) send({v:1,type:'error',code:'renderer-unavailable'});
+    send({v:1,type:'state',visible:message.visible,persistent:message.persistent,monitor:process.pid + ':' + message.reducedMotion,computerUse:null,character});
+  }
+});
+`,
+    { mode: 0o700 },
+  );
+  let onEvent = () => {};
+  const pet = new PetCompanion(NodePath.join(directory, "state"), () => onEvent());
+  const untilCharacter = (source: string, species: string, priorMonitor?: string | null) =>
+    new Promise<void>((resolve) => {
+      onEvent = () => {
+        const current = pet.status.native;
+        if (
+          current?.character?.source === source &&
+          current.character.requestedSpecies === species &&
+          current.monitor !== priorMonitor
+        )
+          resolve();
+      };
+      onEvent();
+    });
+  try {
+    pet.setPreferredSpecies("cat");
+    await pet.configure({ ...DEFAULT_DESKTOP_PET_SETTINGS, executable });
+    await untilCharacter("unavailable", "cat");
+    expect(pet.status.connection).toBe("ready");
+    expect(pet.status.error).toBe("builtin_pet_unavailable");
+    const custom = NodePath.join(directory, "state", "pack-00000000-0000-0000-0000-000000000001");
+    await NodeFSP.mkdir(custom);
+    await pet.selectPet(custom, "Custom pet");
+    await untilCharacter("custom", "cat");
+    pet.setPreferredSpecies("weasel");
+    await untilCharacter("custom", "weasel");
+    await pet.selectPet(null, null);
+    await untilCharacter("builtin", "weasel");
+    expect(pet.status.native?.character?.name).toBe("sudo");
+    expect(pet.status.error).toBeNull();
+    const priorMonitor = pet.status.native?.monitor;
+    await pet.reconnect();
+    await untilCharacter("builtin", "weasel", priorMonitor);
+    expect(pet.status.preferredSpecies).toBe("weasel");
+    const beforeFailure = pet.status.native?.monitor;
+    await pet.configure({ ...pet.status.settings, reducedMotion: true });
+    await untilCharacter("builtin", "weasel", beforeFailure);
+    expect(pet.status.error).toBe("renderer-unavailable");
   } finally {
     pet.stop();
     await NodeFSP.rm(directory, { recursive: true, force: true });

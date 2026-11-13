@@ -4,6 +4,58 @@ const Count = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MA
 const Token = Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]{1,80}$/));
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
 
+export const DesktopPetSpecies = Schema.Literals([
+  "weasel",
+  "dog",
+  "cat",
+  "fox",
+  "otter",
+  "raccoon",
+  "owl",
+  "raven",
+  "red-panda",
+  "capybara",
+  "bear",
+  "turtle",
+]);
+export type DesktopPetSpecies = typeof DesktopPetSpecies.Type;
+const PetName = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(60),
+  Schema.isPattern(/\S/),
+  Schema.isPattern(/^[^\u0000-\u001f\u007f-\u009f\p{Bidi_Control}]+$/u),
+);
+const RequestedSpecies = Schema.NullOr(DesktopPetSpecies);
+export const DesktopPetCharacter = Schema.Union([
+  Schema.Struct({
+    source: Schema.Literal("builtin"),
+    requestedSpecies: RequestedSpecies,
+    species: DesktopPetSpecies,
+    name: PetName,
+  })
+    .annotate(strict)
+    .check(
+      Schema.makeFilter((character) =>
+        character.requestedSpecies === null
+          ? character.species === "weasel"
+          : character.species === character.requestedSpecies,
+      ),
+    ),
+  Schema.Struct({
+    source: Schema.Literal("custom"),
+    requestedSpecies: RequestedSpecies,
+    species: Schema.Null,
+    name: PetName,
+  }).annotate(strict),
+  Schema.Struct({
+    source: Schema.Literal("unavailable"),
+    requestedSpecies: RequestedSpecies,
+    species: Schema.Null,
+    name: Schema.Null,
+  }).annotate(strict),
+]);
+export type DesktopPetCharacter = typeof DesktopPetCharacter.Type;
+
 export const DesktopPetSettings = Schema.Struct({
   persistent: Schema.Boolean,
   visible: Schema.Boolean,
@@ -62,6 +114,14 @@ export const DesktopPetCapabilities = Schema.Struct({
   focusMonitor: Schema.Boolean,
   customPet: Schema.Boolean,
   computerUse: Schema.Boolean,
+  builtinPets: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({ species: DesktopPetSpecies, name: PetName }).annotate(strict),
+    ).check(
+      Schema.isMaxLength(12),
+      Schema.makeFilter((pets) => new Set(pets.map((pet) => pet.species)).size === pets.length),
+    ),
+  ),
 }).annotate(strict);
 export const DesktopPetNativeState = Schema.Struct({
   v: Schema.Literal(1),
@@ -69,6 +129,7 @@ export const DesktopPetNativeState = Schema.Struct({
   visible: Schema.Boolean,
   persistent: Schema.Boolean,
   monitor: Schema.NullOr(Schema.String.check(Schema.isMaxLength(256))),
+  character: Schema.optionalKey(DesktopPetCharacter),
   computerUse: Schema.NullOr(
     Schema.Struct({
       sessionId: Schema.String.check(Schema.isMaxLength(256)),
@@ -112,6 +173,7 @@ export const DesktopPetStatus = Schema.Struct({
   shortcutBackend: Schema.NullOr(Schema.Literals(["global", "niri"])),
   shortcutError: Schema.NullOr(StableCode),
   customPet: Schema.NullOr(Schema.String.check(Schema.isMaxLength(80))),
+  preferredSpecies: Schema.optionalKey(RequestedSpecies),
 });
 export type DesktopPetStatus = typeof DesktopPetStatus.Type;
 export type DesktopPetEvent =
