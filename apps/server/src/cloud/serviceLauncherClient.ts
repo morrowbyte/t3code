@@ -98,6 +98,10 @@ export class ServiceLauncherClient extends Context.Service<
   ServiceLauncherClient,
   {
     readonly managed: boolean;
+    readonly prepareUpdate: (input: {
+      readonly targetVersion: string;
+      readonly dbPath: string;
+    }) => Effect.Effect<void, ServiceLauncherClientError | ServiceLauncherRejectedError>;
     readonly requestUpdate: (input: {
       readonly targetVersion: string;
       readonly dbPath: string;
@@ -214,6 +218,27 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
       ),
     );
 
+  const prepareUpdate: ServiceLauncherClient["Service"]["prepareUpdate"] = (input) =>
+    exchange(
+      { type: "prepare-update", ...input },
+      (reply) =>
+        (reply.type === "update-prepared" && reply.targetVersion === input.targetVersion) ||
+        reply.type === "update-rejected",
+    ).pipe(
+      Effect.flatMap((reply) =>
+        reply.type === "update-prepared"
+          ? Effect.void
+          : reply.type === "update-rejected"
+            ? Effect.fail(
+                new ServiceLauncherRejectedError({
+                  targetVersion: input.targetVersion,
+                  reason: reply.reason,
+                }),
+              )
+            : Effect.die("service launcher returned an impossible preparation response"),
+      ),
+    );
+
   const pending = context?.update?.status === "pending" ? context.update : undefined;
   const outcome =
     context?.update === undefined || context.update.status === "pending"
@@ -260,6 +285,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
   return ServiceLauncherClient.of({
     managed,
     requestUpdate,
+    prepareUpdate,
     prepareTrial,
   });
 });

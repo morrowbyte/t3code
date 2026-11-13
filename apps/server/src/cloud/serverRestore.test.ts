@@ -12,7 +12,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { vi } from "vite-plus/test";
 
-import { Launcher, readServiceState, writeServiceState } from "../serviceLauncher.ts";
+import {
+  Launcher,
+  readServiceState,
+  writeServiceState,
+  updateStoppedServer,
+} from "../serviceLauncher.ts";
 import { acquireServiceLauncherLock } from "./serverRestoreControl.ts";
 import {
   SERVER_RESTORE_MANIFEST,
@@ -75,7 +80,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, spawn, execFile };
 });
 
-async function fixture(baseDir: string, behavior: "ready" | "crash" = "ready") {
+async function fixture(baseDir: string, behavior: "ready" | "crash" = "ready", payloadBytes = 0) {
   const userdata = NodePath.join(baseDir, "userdata");
   await NodeFSP.mkdir(userdata, { recursive: true });
   await NodeFSP.writeFile(NodePath.join(userdata, "environment-id"), "original-environment\n");
@@ -115,6 +120,8 @@ process.on("message", (message) => {
 `;
     await NodeFSP.writeFile(executable, `#!${process.execPath}\n${source}`, { mode: 0o755 });
     if (process.platform === "win32") await NodeFSP.writeFile(`${executable}.cjs`, source);
+    if (payloadBytes > 0)
+      await NodeFSP.writeFile(NodePath.join(directory, "payload"), Buffer.alloc(payloadBytes));
     await NodeFSP.writeFile(
       NodePath.join(directory, SERVER_RESTORE_MANIFEST),
       JSON.stringify({
@@ -423,6 +430,89 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("offline server rest
       assert.deepEqual(removed, ["0.5.0"]);
       assert.isTrue(yield* fs.exists(NodePath.join(versions, "1.0.0")));
     }),
+  );
+
+  it.effect(
+    "prepares successive updates when the active and target runtimes fit but three do not",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-restore-successive-" });
+        const setup = yield* Effect.promise(() => fixture(baseDir, "ready", 32_768));
+        yield* Effect.promise(async () => {
+          const versions = NodePath.join(baseDir, "runtime", "versions");
+          const initial = await inspectServerRestore(baseDir);
+          assert.equal(initial.candidates[0]?.blockedReason, null);
+          const launcher = NodePath.join(baseDir, "t3");
+          if (process.platform === "linux") {
+            await NodeFSP.symlink(NodePath.join(versions, "1.0.0", "t3"), launcher);
+            await NodeFSP.writeFile(
+              NodePath.join(baseDir, "runtime", "launchers"),
+              `${launcher}\n`,
+            );
+          }
+          const runtimeBytes = initial.totalBytes / 2;
+          const maxBytes = initial.totalBytes + 8192;
+          assert.isAbove(runtimeBytes * 3, maxBytes);
+          await NodeFSP.writeFile(
+            NodePath.join(baseDir, "runtime", "restore-limits.json"),
+            JSON.stringify({ maxVersions: 2, maxBytes }),
+          );
+          await writeServiceState(setup.statePath, {
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
+            activeVersion: "2.0.0",
+            update: {
+              id: "update-2",
+              fromVersion: "1.0.0",
+              targetVersion: "2.0.0",
+              status: "committed",
+            },
+          });
+          await expect(
+            updateStoppedServer(baseDir, "3.0.0", async () => {
+              throw new Error("download failed");
+            }),
+          ).rejects.toThrow("download failed");
+          const recovered = await readServiceState(setup.statePath);
+          assert.equal(recovered.activeVersion, "2.0.0");
+          assert.equal(recovered.update?.id, "update-2");
+          assert.equal(recovered.preparation?.fromVersion, "2.0.0");
+          assert.deepEqual(await NodeFSP.readdir(versions), ["2.0.0"]);
+          for (const target of [3, 4]) {
+            const version = `${target}.0.0`;
+            await updateStoppedServer(baseDir, version, async () => {
+              const retention = await acquireServerRuntimeRetention(baseDir);
+              try {
+                await retention.admit(version);
+                await retention.check(runtimeBytes + retention.metadataBytes(version));
+                const staging = await NodeFSP.mkdtemp(NodePath.join(versions, ".staging-"));
+                await retention.reserve(version, staging);
+                await expect(
+                  retention.prepare(await readServiceState(setup.statePath), `${target + 1}.0.0`),
+                ).rejects.toThrow(/concurrent/);
+                await setup.installRuntime(version, staging);
+                await retention.check(0);
+                await NodeFSP.rename(staging, NodePath.join(versions, version));
+              } finally {
+                retention.release();
+              }
+            });
+            const committed = await readServiceState(setup.statePath);
+            assert.equal(committed.activeVersion, version);
+            assert.equal(committed.update?.status, "committed");
+            assert.equal(committed.update?.fromVersion, `${target - 1}.0.0`);
+            const inventory = await inspectServerRestore(baseDir);
+            assert.isAtMost(inventory.totalBytes, maxBytes);
+            assert.equal(inventory.candidates[0]?.blockedReason, null);
+            assert.deepEqual(await NodeFSP.readdir(versions), [`${target - 1}.0.0`, version]);
+            if (process.platform === "linux")
+              assert.equal(
+                await NodeFSP.realpath(launcher),
+                NodePath.join(versions, version, "t3"),
+              );
+          }
+        });
+      }),
   );
 
   it.effect("retains a persistent original launcher through repeated updates", () =>

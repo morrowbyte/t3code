@@ -16,6 +16,11 @@ import { serviceCommand } from "./service.ts";
 
 afterEach(() => vi.restoreAllMocks());
 
+vi.mock("../cloud/selfUpdate.ts", async () => {
+  const Effect = await import("effect/Effect");
+  return { updateStoppedRuntime: () => Effect.void };
+});
+
 const status = {
   supported: true,
   installed: true,
@@ -55,6 +60,42 @@ function makeTestService(
 }
 
 it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands", (it) => {
+  it.effect.each([
+    { label: "missing", installed: false },
+    { label: "foreign", installed: true, installedBaseDir: "/another/t3-home" },
+  ])("update-stopped refuses a $label unit before touching runtime state", (input) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-cli-test-" });
+      const { service, installOptions, restarts } = makeTestService({ ...status, ...input });
+      vi.spyOn(BootService, "layer").mockReturnValue(
+        Layer.succeed(BootService.BootService, service),
+      );
+      const result = yield* Command.runWith(serviceCommand, { version: packageJson.version })([
+        "update-stopped",
+        "1.2.3",
+        "--base-dir",
+        baseDir,
+        "--unit",
+        "crew.service",
+      ]).pipe(
+        Effect.provideService(HostProcess.Environment, {}),
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+        Effect.result,
+      );
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          _tag: "BootServiceCommandError",
+          step: "checking the selected service unit and T3 home",
+        },
+      });
+      expect(yield* fs.exists(`${baseDir}/runtime`)).toBe(false);
+      expect(installOptions).toEqual([]);
+      expect(restarts).toEqual([]);
+    }),
+  );
+
   it.effect.each(["install", "update"] as const)(
     "%s refuses a downgrade before changing the service",
     (command) =>
@@ -62,14 +103,16 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands
         const fs = yield* FileSystem.FileSystem;
         const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-cli-test-" });
         const { service, installOptions } = makeTestService(newerServiceStatus);
-        vi.spyOn(BootService, "layer").mockReturnValue(
-          Layer.succeed(BootService.BootService, service),
-        );
+        const serviceLayer = vi
+          .spyOn(BootService, "layer")
+          .mockReturnValue(Layer.succeed(BootService.BootService, service));
 
         const error = yield* Command.runWith(serviceCommand, { version: packageJson.version })([
           command,
           "--base-dir",
           baseDir,
+          "--unit",
+          "crew.service",
         ]).pipe(
           Effect.provideService(HostProcess.Environment, {}),
           Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
@@ -82,6 +125,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands
           targetVersion: packageJson.version,
         });
         expect(installOptions).toEqual([]);
+        expect(serviceLayer).toHaveBeenCalledWith(
+          expect.objectContaining({ baseDir, unit: "crew.service" }),
+        );
       }),
   );
 

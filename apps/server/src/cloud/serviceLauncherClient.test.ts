@@ -86,11 +86,19 @@ it.effect("returns the launcher-generated ID only after update acceptance", () =
       childVersion: "1.0.0",
     });
     const client = yield* makeClient(host, "1.0.0");
+    const preparation = yield* Effect.forkChild(
+      client.prepareUpdate({ targetVersion: "1.1.0", dbPath: "/tmp/state.sqlite" }),
+      { startImmediately: true },
+    );
+    expect(host.sent).toEqual([
+      { type: "prepare-update", targetVersion: "1.1.0", dbPath: "/tmp/state.sqlite" },
+    ]);
+    host.emit({ type: "update-prepared", targetVersion: "1.1.0" });
+    yield* Fiber.join(preparation);
     const requested = yield* Effect.forkChild(
       client.requestUpdate({ targetVersion: "1.1.0", dbPath: "/tmp/state.sqlite" }),
       { startImmediately: true },
     );
-    yield* Effect.yieldNow;
     host.emit({
       type: "update-accepted",
       updateId: "launcher-id",

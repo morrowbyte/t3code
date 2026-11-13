@@ -24,6 +24,7 @@ import {
 } from "./cloud/serverRestoreManifest.ts";
 import { preflightServerRestore } from "./cloud/serverRestoreStore.ts";
 import {
+  acquireServerRuntimeRetention,
   assertServerRuntimeCommitFits,
   cleanupServerRuntimeRetention,
   readServerRuntimeCandidate,
@@ -393,6 +394,70 @@ export async function writeServiceState(filePath: string, state: ServiceState): 
   }
 }
 
+export async function syncServiceLauncherEntry(baseDir: string, version: string): Promise<string> {
+  const entry = runtimePaths(baseDir, version).entryPath;
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
+  if (process.platform !== "linux") return entry;
+  if (!isExactServiceVersion(version) || !(await runtimeExists(baseDir, version)))
+    throw new Error("The selected service launcher runtime is incomplete.");
+  const link = NodePath.join(baseDir, "runtime", "launcher");
+  const stat = await NodeFSP.lstat(link).catch((cause: NodeJS.ErrnoException) => {
+    if (cause.code === "ENOENT") return undefined;
+    throw cause;
+  });
+  if (stat !== undefined) {
+    if (!stat.isSymbolicLink()) throw new Error("The service launcher entry is not an owned link.");
+    const target = NodePath.resolve(NodePath.dirname(link), await NodeFSP.readlink(link));
+    if (
+      NodePath.dirname(NodePath.dirname(target)) !==
+        NodePath.resolve(baseDir, "runtime", "versions") ||
+      !isExactServiceVersion(NodePath.basename(NodePath.dirname(target))) ||
+      NodePath.basename(target) !== "t3"
+    )
+      throw new Error("The service launcher entry belongs to a different installation.");
+  }
+  const temporary = `${link}.${process.pid}.${NodeCrypto.randomUUID()}`;
+  try {
+    await NodeFSP.symlink(entry, temporary);
+    await NodeFSP.rename(temporary, link);
+    await syncDirectory(NodePath.dirname(link));
+  } finally {
+    await NodeFSP.rm(temporary, { force: true });
+  }
+  const recorded = await NodeFSP.readFile(
+    NodePath.join(baseDir, "runtime", "launchers"),
+    "utf8",
+  ).catch((cause: NodeJS.ErrnoException) => {
+    if (cause.code === "ENOENT") return "";
+    throw cause;
+  });
+  for (const launcher of new Set(recorded.split(/\r?\n/).filter(NodePath.isAbsolute))) {
+    if (launcher === link) continue;
+    const target = await NodeFSP.readlink(launcher).catch((cause: NodeJS.ErrnoException) => {
+      if (cause.code === "ENOENT" || cause.code === "EINVAL") return undefined;
+      throw cause;
+    });
+    if (target === undefined) continue;
+    const resolved = NodePath.resolve(NodePath.dirname(launcher), target);
+    if (
+      NodePath.dirname(NodePath.dirname(resolved)) !==
+        NodePath.resolve(baseDir, "runtime", "versions") ||
+      !isExactServiceVersion(NodePath.basename(NodePath.dirname(resolved))) ||
+      NodePath.basename(resolved) !== "t3"
+    )
+      continue;
+    const pending = `${launcher}.${process.pid}.${NodeCrypto.randomUUID()}`;
+    try {
+      await NodeFSP.symlink(link, pending);
+      await NodeFSP.rename(pending, launcher);
+      await syncDirectory(NodePath.dirname(launcher));
+    } finally {
+      await NodeFSP.rm(pending, { force: true });
+    }
+  }
+  return link;
+}
+
 async function runtimeExists(baseDir: string, version: string): Promise<boolean> {
   const paths = runtimePaths(baseDir, version);
   try {
@@ -473,6 +538,13 @@ export class Launcher {
   readonly #backupSpaceProbe: Partial<BackupSpaceProbe> | undefined;
   readonly #environment: Readonly<NodeJS.ProcessEnv>;
   readonly #initialRestore: AppRestoreInput | undefined;
+  readonly #handoff: ((version: string) => void) | undefined;
+  readonly #initialUpdate:
+    | {
+        readonly targetVersion: string;
+        readonly install: (dbPath: string, signal: AbortSignal) => Promise<void>;
+      }
+    | undefined;
 
   constructor(
     baseDir: string,
@@ -481,6 +553,11 @@ export class Launcher {
       readonly backupSpaceProbe?: Partial<BackupSpaceProbe>;
       readonly environment?: Readonly<NodeJS.ProcessEnv>;
       readonly initialRestore?: AppRestoreInput;
+      readonly handoff?: (version: string) => void;
+      readonly initialUpdate?: {
+        readonly targetVersion: string;
+        readonly install: (dbPath: string, signal: AbortSignal) => Promise<void>;
+      };
     } = {},
   ) {
     this.#baseDir = baseDir;
@@ -489,20 +566,68 @@ export class Launcher {
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
     this.#state = state;
     this.#initialRestore = options.initialRestore;
+    this.#handoff = options.handoff;
+    this.#initialUpdate = options.initialUpdate;
   }
 
-  async run(): Promise<void> {
+  async run(signal?: AbortSignal): Promise<void> {
     let releaseLock: (() => void) | undefined;
     let closeControl: (() => Promise<void>) | undefined;
     const onSigterm = () => void this.stop("SIGTERM");
     const onSigint = () => void this.stop("SIGINT");
+    const onAbort = () => void this.stop("SIGTERM");
+    signal?.throwIfAborted();
+    signal?.addEventListener("abort", onAbort, { once: true });
     process.once("SIGTERM", onSigterm);
     process.once("SIGINT", onSigint);
     try {
       this.#enqueue(async () => {
         releaseLock = await acquireServiceLauncherLock(this.#baseDir);
         this.#state = await readServiceState(this.#statePath);
+        if (this.#stopRequested) return;
         let freshRestoreId: string | undefined;
+        if (this.#initialUpdate !== undefined) {
+          const releaseProfile = await acquireStoppedServerProfile(this.#baseDir);
+          try {
+            const targetVersion = this.#initialUpdate.targetVersion;
+            if (await serverUpdateHold(this.#baseDir))
+              throw new Error("Server updates are on hold after restore.");
+            if (this.#state.update?.status === "pending") {
+              if (
+                this.#state.update.restore !== undefined ||
+                this.#state.update.targetVersion !== targetVersion
+              )
+                throw new Error("A different managed transaction needs recovery first.");
+            } else {
+              await this.#prepareUpdate(targetVersion);
+              const { dbPath } = await serverRestoreIdentity(this.#baseDir);
+              await this.#initialUpdate.install(dbPath, this.#retentionController.signal);
+              if (this.#stopRequested) throw new Error("Update was cancelled before handoff.");
+              if (!(await runtimeExists(this.#baseDir, targetVersion)))
+                throw new Error("The target runtime is incomplete.");
+              const blocker = await databaseBackupBlocker(
+                this.#baseDir,
+                dbPath,
+                this.#backupSpaceProbe,
+              );
+              if (blocker !== undefined) throw new Error(blocker);
+              const next: ServiceState = {
+                ...this.#state,
+                update: {
+                  id: NodeCrypto.randomUUID(),
+                  fromVersion: this.#state.activeVersion,
+                  targetVersion,
+                  dbPath,
+                  status: "pending",
+                },
+              };
+              await writeServiceState(this.#statePath, next);
+              this.#state = next;
+            }
+          } finally {
+            releaseProfile();
+          }
+        }
         if (this.#stopRequested && this.#initialRestore !== undefined) return;
         if (this.#initialRestore !== undefined) {
           await assertServerRestoreStopped(this.#baseDir);
@@ -520,46 +645,55 @@ export class Launcher {
             freshRestoreId = this.#state.update?.id;
           }
         }
-        closeControl = await serveServerRestoreControl(
-          this.#baseDir,
-          (request) =>
-            new Promise((resolve) => {
-              this.#enqueue(async () => {
-                try {
-                  if (request.action === "release-hold") {
-                    if (this.#state.update?.status === "pending")
-                      throw new Error("A version transaction is still pending.");
-                    await writeServerUpdateHold(this.#baseDir, false);
-                    resolve({
-                      status: "restored",
-                      version: this.#state.activeVersion,
-                      reason: null,
+        closeControl =
+          this.#initialUpdate === undefined
+            ? await serveServerRestoreControl(
+                this.#baseDir,
+                (request) =>
+                  new Promise((resolve) => {
+                    this.#enqueue(async () => {
+                      try {
+                        if (request.action === "release-hold") {
+                          if (this.#state.update?.status === "pending")
+                            throw new Error("A version transaction is still pending.");
+                          await writeServerUpdateHold(this.#baseDir, false);
+                          resolve({
+                            status: "restored",
+                            version: this.#state.activeVersion,
+                            reason: null,
+                          });
+                          return;
+                        }
+                        if (this.#child?.role !== "active")
+                          throw new Error("The managed server is not ready for restore.");
+                        const child = this.#child;
+                        await this.#prepareRestore(request.input);
+                        this.#timer = setTimeout(
+                          () => this.#enqueue(() => this.#beginTrial(child)),
+                          HANDOFF_DELAY_MS,
+                        );
+                        resolve({
+                          status: "scheduled",
+                          version: request.input.version,
+                          reason: null,
+                        });
+                      } catch (cause) {
+                        resolve({
+                          status: "failed",
+                          version: this.#state.activeVersion,
+                          reason:
+                            cause instanceof Error ? cause.message : "Restore preflight failed.",
+                        });
+                      }
                     });
-                    return;
-                  }
-                  if (this.#child?.role !== "active")
-                    throw new Error("The managed server is not ready for restore.");
-                  const child = this.#child;
-                  await this.#prepareRestore(request.input);
-                  this.#timer = setTimeout(
-                    () => this.#enqueue(() => this.#beginTrial(child)),
-                    HANDOFF_DELAY_MS,
-                  );
-                  resolve({ status: "scheduled", version: request.input.version, reason: null });
-                } catch (cause) {
-                  resolve({
-                    status: "failed",
-                    version: this.#state.activeVersion,
-                    reason: cause instanceof Error ? cause.message : "Restore preflight failed.",
-                  });
-                }
-              });
-            }),
-        );
+                  }),
+              )
+            : undefined;
         await this.#recover(freshRestoreId);
       });
       await this.#completion.promise;
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       process.off("SIGTERM", onSigterm);
       process.off("SIGINT", onSigint);
       await closeControl?.();
@@ -697,6 +831,7 @@ export class Launcher {
       if (update !== undefined) {
         await discardDatabaseBackup(this.#baseDir, update.id).catch(() => undefined);
       }
+      await syncServiceLauncherEntry(this.#baseDir, this.#state.activeVersion);
       await cleanupServerRuntimeRetention(this.#baseDir, {
         signal: this.#retentionController.signal,
       }).catch((cause: unknown) => {
@@ -817,16 +952,41 @@ export class Launcher {
 
   async #handleMessage(child: ManagedChild, message: ServiceLauncherChildMessage): Promise<void> {
     if (this.#child !== child || this.#stopping) return;
-    if (message.type === "request-update") {
+    if (message.type === "request-update" || message.type === "prepare-update") {
       await this.#handleUpdateRequest(child, message);
       return;
     }
     await this.#handlePrepared(child, message);
   }
 
+  async #prepareUpdate(targetVersion: string, child?: ManagedChild): Promise<void> {
+    const retention = await acquireServerRuntimeRetention(this.#baseDir, {
+      signal: this.#retentionController.signal,
+    });
+    try {
+      if (child !== undefined)
+        await qualifyServerRestoreRuntime(
+          await serverRestoreIdentity(this.#baseDir),
+          child.version,
+        );
+      const next = await retention.prepare(this.#state, targetVersion);
+      if (this.#stopRequested || (child !== undefined && !child.process.connected))
+        throw new Error("Update preparation was cancelled before it was committed.");
+      await syncServiceLauncherEntry(this.#baseDir, this.#state.activeVersion);
+      await writeServiceState(this.#statePath, next);
+      this.#state = next;
+      await retention.clean();
+    } finally {
+      retention.release();
+    }
+  }
+
   async #handleUpdateRequest(
     child: ManagedChild,
-    message: Extract<ServiceLauncherChildMessage, { readonly type: "request-update" }>,
+    message: Extract<
+      ServiceLauncherChildMessage,
+      { readonly type: "request-update" | "prepare-update" }
+    >,
   ): Promise<void> {
     const reject = (reason: string) =>
       sendMessage(child.process, { type: "update-rejected", reason });
@@ -856,6 +1016,25 @@ export class Launcher {
     }
     if (!NodePath.isAbsolute(message.dbPath)) {
       await reject("The requested database path is not absolute.");
+      return;
+    }
+    if (message.type === "prepare-update") {
+      try {
+        await this.#prepareUpdate(message.targetVersion, child);
+        await sendMessage(child.process, {
+          type: "update-prepared",
+          targetVersion: message.targetVersion,
+        });
+      } catch (cause) {
+        await reject(cause instanceof Error ? cause.message : "Update preparation failed.");
+      }
+      return;
+    }
+    if (
+      this.#state.preparation?.fromVersion === child.version &&
+      this.#state.preparation.targetVersion !== message.targetVersion
+    ) {
+      await reject("A different runtime update was prepared.");
       return;
     }
     if (!(await runtimeExists(this.#baseDir, message.targetVersion))) {
@@ -909,6 +1088,8 @@ export class Launcher {
     this.#timer = undefined;
     this.#child = null;
     await terminateChild(child.process);
+    if (pending.restore === undefined && !this.#stopRequested)
+      this.#handoff?.(pending.targetVersion);
     await this.#startTrial(pending);
   }
 
@@ -982,6 +1163,10 @@ export class Launcher {
     await writeServiceState(this.#statePath, next);
     this.#state = next;
     child.role = "active";
+    await sendMessage(child.process, { type: "committed", updateId: committed.id });
+    await syncServiceLauncherEntry(this.#baseDir, next.activeVersion).catch((cause: unknown) =>
+      NodeFS.writeSync(2, `${NodeUtil.format("Service launcher entry needs recovery.", cause)}\n`),
+    );
     await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
     await serverRestoreIdentity(this.#baseDir)
       .then((identity) => qualifyServerRestoreRuntime(identity, child.version))
@@ -995,8 +1180,8 @@ export class Launcher {
           `${NodeUtil.format("Committed runtime retention cleanup could not complete.", cause)}\n`,
         );
     });
-    await sendMessage(child.process, { type: "committed", updateId: committed.id });
-    if (this.#initialRestore !== undefined) void this.stop("SIGTERM");
+    if (this.#initialRestore !== undefined || this.#initialUpdate !== undefined)
+      void this.stop("SIGTERM");
   }
 
   async #handlePreparedTimeout(child: ManagedChild): Promise<void> {
@@ -1099,8 +1284,10 @@ export class Launcher {
     await writeServiceState(this.#statePath, next);
     this.#state = next;
     await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
+    if (pending.restore === undefined && !this.#stopRequested) this.#handoff?.(next.activeVersion);
     await this.#startChild(next.activeVersion, "active", outcome);
-    if (this.#initialRestore !== undefined) void this.stop("SIGTERM");
+    if (this.#initialRestore !== undefined || this.#initialUpdate !== undefined)
+      void this.stop("SIGTERM");
   }
 }
 
@@ -1125,6 +1312,27 @@ export async function restoreStoppedServer(
       };
 }
 
+export async function updateStoppedServer(
+  baseDir: string,
+  targetVersion: string,
+  install: (dbPath: string, signal: AbortSignal) => Promise<void>,
+  signal?: AbortSignal,
+): Promise<string> {
+  const statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
+  const state = await readServiceState(statePath);
+  const environment = await readServiceEnvironment(baseDir);
+  await new Launcher(baseDir, state, {
+    environment,
+    initialUpdate: { targetVersion, install },
+  }).run(signal);
+  const outcome = await readServiceState(statePath);
+  if (outcome.activeVersion !== targetVersion || outcome.update?.status !== "committed")
+    throw new Error(
+      "The stopped server update did not commit; inspect the managed recovery state.",
+    );
+  return outcome.activeVersion;
+}
+
 export async function main(): Promise<void> {
   const baseDir = process.env.T3CODE_HOME?.trim();
   if (baseDir === undefined || baseDir === "") {
@@ -1133,5 +1341,34 @@ export async function main(): Promise<void> {
   const environment = await readServiceEnvironment(baseDir);
   const statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
   const state = await readServiceState(statePath);
-  await new Launcher(baseDir, state, { environment }).run();
+  const realVersionsDir = await NodeFSP.realpath(NodePath.join(baseDir, "runtime", "versions"));
+  const nativeLauncher =
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Native exec handoff runs before Effect startup.
+    process.platform === "linux" &&
+    NodePath.dirname(NodePath.dirname(process.execPath)) === realVersionsDir;
+  const handoff = nativeLauncher
+    ? (version: string) => {
+        if (process.execve === undefined)
+          throw new Error("This launcher runtime cannot hand off its executable safely.");
+        const entry = runtimePaths(baseDir, version).entryPath;
+        process.execve(entry, [entry, "__service-launcher"], environment);
+      }
+    : undefined;
+  const selected =
+    state.update?.status === "pending" &&
+    state.update.restore === undefined &&
+    (await runtimeExists(baseDir, state.update.targetVersion))
+      ? state.update.targetVersion
+      : state.activeVersion;
+  if (
+    handoff !== undefined &&
+    (await NodeFSP.realpath(runtimePaths(baseDir, selected).entryPath)) !== process.execPath
+  ) {
+    await verifyServerRestoreRuntime(runtimePaths(baseDir, selected).versionDir, selected);
+    handoff(selected);
+  }
+  await new Launcher(baseDir, state, {
+    environment,
+    ...(handoff === undefined ? {} : { handoff }),
+  }).run();
 }
