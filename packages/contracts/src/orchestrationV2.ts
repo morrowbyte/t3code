@@ -1142,6 +1142,9 @@ export type OrchestrationV2ProviderThread = typeof OrchestrationV2ProviderThread
 
 export const OrchestrationV2HistoricalMessage = Schema.Struct({
   role: Schema.Literals(["user", "assistant"]),
+  createdBy: Schema.optional(OrchestrationV2Actor),
+  creationSource: Schema.optional(OrchestrationV2CreationSource),
+  senderThreadId: Schema.optional(ThreadId),
   text: Schema.String,
   runStatus: Schema.optional(Schema.String),
   threadId: ThreadId,
@@ -1344,11 +1347,17 @@ const OrchestrationV2SendRequest = Schema.Struct({
 export const OrchestrationV2IdleCompaction = Schema.Literals(["beforeCacheExpires", "onReturn"]);
 export type OrchestrationV2IdleCompaction = typeof OrchestrationV2IdleCompaction.Type;
 
+const ScheduledTaskDelivery = Schema.Struct({
+  trigger: Schema.Literals(["scheduled", "manual", "webhook"]),
+  generation: Schema.String,
+});
+
 export const OrchestrationV2ConversationMessage = Schema.Struct({
   observatory: Schema.optional(AgentObservatoryMetadata),
   notification: Schema.optional(OrchestrationV2Notification),
   ...OrchestrationV2CreationFields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
+  scheduledTaskDelivery: Schema.optional(ScheduledTaskDelivery),
   senderThreadId: Schema.optional(ThreadId),
   remoteSender: Schema.optional(OrchestrationV2RemoteSender),
   replyTo: Schema.optional(OrchestrationV2ReplyTo),
@@ -1667,6 +1676,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     type: Schema.Literal("user_message"),
     messageId: MessageId,
     scheduledTaskId: Schema.optional(ScheduledTaskId),
+    scheduledTaskDelivery: Schema.optional(ScheduledTaskDelivery),
     senderThreadId: Schema.optional(ThreadId),
     remoteSender: Schema.optional(OrchestrationV2RemoteSender),
     replyTo: Schema.optional(OrchestrationV2ReplyTo),
@@ -2532,6 +2542,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     type: Schema.Literal("user_message"),
     messageId: MessageId,
     scheduledTaskId: Schema.optional(ScheduledTaskId),
+    scheduledTaskDelivery: Schema.optional(ScheduledTaskDelivery),
     senderThreadId: Schema.optional(ThreadId),
     remoteSender: Schema.optional(OrchestrationV2RemoteSender),
     replyTo: Schema.optional(OrchestrationV2ReplyTo),
@@ -3257,6 +3268,7 @@ export const OrchestrationV2Command = Schema.Union([
     guestMessageId: Schema.optional(GuestMessageId),
     ...OrchestrationV2CreationFields,
     scheduledTaskId: Schema.optional(ScheduledTaskId),
+    scheduledTaskDelivery: Schema.optional(ScheduledTaskDelivery),
     senderThreadId: Schema.optional(ThreadId),
     remoteSender: Schema.optional(OrchestrationV2RemoteSender),
     replyTo: Schema.optional(OrchestrationV2ReplyTo),

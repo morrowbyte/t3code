@@ -95,6 +95,7 @@ import type { MarkdownImageRenderer } from "../../native/SelectableMarkdownText"
 import type { FilePreviewSource } from "../../components/FilePreviewModal";
 import { FilePreviewGallery } from "../../components/FilePreviewGallery";
 import { ThreadMarkdownImage } from "./ThreadMarkdownImage";
+import { ComputerObservationReceipt } from "./ComputerObservationReceipt";
 import Animated, {
   FadeIn,
   FadeOut,
@@ -1316,6 +1317,11 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
           </View>
         </View>
       </WorkLogPressable>
+
+      <ComputerObservationReceipt
+        environmentId={props.environmentId}
+        projectedItem={row.projectedItem}
+      />
 
       {expanded &&
       (reasoning ||

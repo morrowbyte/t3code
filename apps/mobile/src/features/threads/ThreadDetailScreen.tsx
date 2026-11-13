@@ -209,6 +209,7 @@ import {
 } from "./ThreadComposer";
 import { ComposerPopoverHost } from "./ComposerPopoverHost";
 import { ThreadFeed, type ThreadFeedHandle, type ThreadFeedHistoryControls } from "./ThreadFeed";
+import { ComputerUseStatus } from "./ComputerUseStatus";
 import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
 import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
@@ -1452,6 +1453,14 @@ function ThreadDetailBody(
                 ? "absolute inset-0 bg-thread-canvas"
                 : "absolute inset-0 bg-screen"
             }
+          />
+          <ComputerUseStatus
+            detailRef={props.selectedThreadDetailRef}
+            runId={props.activityRun?.status === "running" ? props.activityRun.runId : null}
+            isWorking={props.activeThreadBusy}
+            connectionState={props.connectionStateLabel}
+            syncStatus={props.threadSyncStatus}
+            contentReady={props.contentPresentation.kind === "ready"}
           />
           <RenderErrorBoundary
             key={selectedThreadKey}

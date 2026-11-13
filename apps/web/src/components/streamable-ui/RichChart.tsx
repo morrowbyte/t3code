@@ -36,6 +36,7 @@ import { Button } from "../ui/button";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { chartCsv } from "@t3tools/shared/streamableUiLayout";
+import { useVisualInteraction } from "./useVisualInteraction";
 
 const colors = [
   "var(--primary)",
@@ -157,7 +158,7 @@ function CategoryValues({
               <span className="[overflow-wrap:anywhere]">{series.label}</span>
             </dt>
             <dd className="ml-auto max-w-full tabular-nums [overflow-wrap:anywhere]">
-              {model.values[index]?.[seriesIndex] ?? "—"}
+              {model.values[index]?.[seriesIndex] ?? "N/A"}
               {model.values[index]?.[seriesIndex] !== null &&
               model.values[index]?.[seriesIndex] !== undefined &&
               chart.yLabel
@@ -195,7 +196,13 @@ function CategoryTooltip({
 
 export const RichChart = memo(
   function RichChart({ chart, isStreaming }: { chart: VisualChart; isStreaming: boolean }) {
-    const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+    const [interaction, update] = useVisualInteraction(
+      chart.id,
+      `chart:${["pie", "donut", "radial"].includes(chart.kind) ? "categories" : "series"}`,
+    );
+    const hidden = new Set(interaction.hidden);
+    const setHidden = (change: (previous: Set<string>) => Set<string>) =>
+      update((previous) => ({ ...previous, hidden: [...change(new Set(previous.hidden))] }));
     const [touchTooltip, setTouchTooltip] = useState(false);
     const [copyError, setCopyError] = useState(false);
     const { copyToClipboard, isCopied } = useCopyToClipboard({
@@ -213,7 +220,7 @@ export const RichChart = memo(
     const circular = ["pie", "donut", "radial"].includes(chart.kind);
     const legend = circular
       ? model.categories.map((label, index) => ({
-          key: `c${index}`,
+          key: `category:${label}`,
           label,
           value: model.values[index]?.[0] ?? 0,
         }))
@@ -245,7 +252,7 @@ export const RichChart = memo(
         value: model.values[index]?.[0] ?? 0,
         fill: colors[index % colors.length]!,
       }))
-      .filter((row) => !hidden.has(`c${row._index}`));
+      .filter((row) => !hidden.has(`category:${model.categories[row._index]}`));
     const plot =
       chart.kind === "pie" || chart.kind === "donut" ? (
         <PieChart accessibilityLayer>
@@ -347,6 +354,7 @@ export const RichChart = memo(
           {chart.horizontal ? (
             <>
               <XAxis
+                tick={{ fill: "var(--muted-foreground)" }}
                 key={`x-${textScale}`}
                 type="number"
                 domain={model.domain}
@@ -360,6 +368,7 @@ export const RichChart = memo(
                 height="auto"
               />
               <YAxis
+                tick={{ fill: "var(--muted-foreground)" }}
                 key={`y-${textScale}`}
                 dataKey="_index"
                 type="category"
@@ -374,6 +383,7 @@ export const RichChart = memo(
           ) : (
             <>
               <XAxis
+                tick={{ fill: "var(--muted-foreground)" }}
                 key={`x-${textScale}`}
                 dataKey={chart.kind === "scatter" ? "x" : "_index"}
                 type={chart.kind === "scatter" ? "number" : "category"}
@@ -388,6 +398,7 @@ export const RichChart = memo(
                 interval="preserveStartEnd"
               />
               <YAxis
+                tick={{ fill: "var(--muted-foreground)" }}
                 key={`y-${textScale}`}
                 type="number"
                 domain={model.domain}
@@ -576,7 +587,14 @@ export const RichChart = memo(
             {chart.horizontal ? chart.yLabel : chart.xLabel}
           </p>
         ) : null}
-        <details>
+        <details
+          open={interaction.expanded}
+          onToggle={(event) => {
+            const expanded = event.currentTarget.open;
+            if (expanded !== interaction.expanded)
+              update((previous) => ({ ...previous, expanded }));
+          }}
+        >
           <summary className="cursor-pointer text-xs underline focus-visible:outline-2 focus-visible:outline-ring">
             View data ({chart.points.length} {chart.points.length === 1 ? "point" : "points"})
           </summary>

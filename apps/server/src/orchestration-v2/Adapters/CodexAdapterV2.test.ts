@@ -1486,6 +1486,74 @@ describe("CodexAdapterV2 process spawning", () => {
 });
 
 describe("CodexAdapterV2 dynamic tool projection", () => {
+  it.effect.each(["desktop_status", "desktop_set_observation_mode", "desktop_act"] as const)(
+    "retains both native %s result representations for consistency checks",
+    (tool) =>
+      Effect.gen(function* () {
+        const result = {
+          structuredContent: {
+            schema: 1,
+            observation_mode: "disabled",
+            observation_active: false,
+            observation_generation: 1,
+            task_id: "receipt-task",
+            observation_id: "receipt-observation",
+            actor_release_confirmed: true,
+          },
+          content: [{ type: "text" as const, text: '{"schema":1,"status":"failed"}' }],
+        };
+        const projection = yield* CodexAdapterV2.projectCodexDynamicToolItem({
+          type: "mcpToolCall",
+          id: "policy",
+          server: "weasel_desktop",
+          tool,
+          status: "completed",
+          arguments: {},
+          result,
+        });
+        assert.deepEqual(projection.output, result);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect.each(["inProgress", "completed", "failed"] as const)(
+    "retains the Sky target and explicit action when %s with or without result metadata",
+    (status) =>
+      Effect.gen(function* () {
+        for (const result of [
+          undefined,
+          {
+            content: [],
+            _meta: {
+              "codex/toolSurface": {
+                kind: "computerUse",
+                app: { kind: "displayName", displayName: "Editor" },
+              },
+            },
+          },
+        ]) {
+          const projection = yield* CodexAdapterV2.projectCodexDynamicToolItem({
+            type: "mcpToolCall",
+            id: "sky-editor",
+            server: "node_repl",
+            tool: "js",
+            status,
+            arguments: { code: "await sky.get_app_state(app);" },
+            appContext: {
+              connectorId: "sky",
+              appName: "Editor",
+              actionName: "Read editor window",
+            },
+            ...(result ? { result } : {}),
+          });
+          assert.equal(projection.title, "Read editor window");
+          assert.equal(projection.toolSurface, "computer");
+          assert.equal(projection.toolSource?.name, "Editor");
+          assert.equal(projection.toolSource?.kind, "computer");
+          assert.equal(projection.toolSource?.key, "native-app-name:editor");
+        }
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("keeps a failed Sky MCP call in Computer Use when its error has no metadata", () =>
     Effect.gen(function* () {
       const projection = yield* CodexAdapterV2.projectCodexDynamicToolItem({

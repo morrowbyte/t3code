@@ -211,6 +211,7 @@ interface ScheduledTaskRow {
   readonly run_count: number;
   readonly webhook_token: string | null;
   readonly webhook_secret: string | null;
+  readonly delivery_generation: string;
 }
 
 interface WebhookDeliveryRow {
@@ -502,7 +503,8 @@ export const layer = Layer.effect(
         last_run_error,
         run_count,
         webhook_token,
-        webhook_secret
+        webhook_secret,
+        delivery_generation
       FROM scheduled_tasks
       -- Not updated_at: toggles, runs and edits rewrite it, and clients render
       -- this order as-is, so rows would move under the pointer.
@@ -543,12 +545,15 @@ export const layer = Layer.effect(
         last_run_error,
         run_count,
         webhook_token,
-        webhook_secret
+        webhook_secret,
+        delivery_generation
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `.pipe(NodeSqliteClient.readOnly);
 
-    const findTask = Effect.fn("ScheduledTaskService.findTask")(function* (id: ScheduledTaskId) {
+    const findTaskRecord = Effect.fn("ScheduledTaskService.findTaskRecord")(function* (
+      id: ScheduledTaskId,
+    ) {
       const rows = yield* getRows(id).pipe(
         Effect.mapError((cause) =>
           taskError("Could not load schedule task.", { taskId: id, cause }),
@@ -556,7 +561,14 @@ export const layer = Layer.effect(
       );
       const row = rows[0];
       if (row === undefined) return null;
-      return withPolicy(yield* decodeRow(row, yield* readWebhookOrigin));
+      return {
+        task: withPolicy(yield* decodeRow(row, yield* readWebhookOrigin)),
+        deliveryGeneration: row.delivery_generation,
+      };
+    });
+
+    const findTask = Effect.fn("ScheduledTaskService.findTask")(function* (id: ScheduledTaskId) {
+      return (yield* findTaskRecord(id))?.task ?? null;
     });
 
     const findWebhookCredentials = (id: ScheduledTaskId) =>
@@ -568,6 +580,14 @@ export const layer = Layer.effect(
         ),
         Effect.mapError((cause) =>
           taskError("Could not load schedule task.", { taskId: id, cause }),
+        ),
+      );
+
+    const newDeliveryGeneration = crypto
+      .randomUUIDv4()
+      .pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not generate schedule delivery identity.", { cause }),
         ),
       );
 
@@ -596,6 +616,7 @@ export const layer = Layer.effect(
         readonly secret: string | null;
         readonly secretChanged: boolean;
       },
+      deliveryGeneration: string,
     ) =>
       sql<{ task_id: string }>`
         INSERT INTO scheduled_tasks (
@@ -620,7 +641,8 @@ export const layer = Layer.effect(
           last_run_error,
           run_count,
           webhook_token,
-          webhook_secret
+          webhook_secret,
+          delivery_generation
         )
         SELECT
           ${task.id},
@@ -644,7 +666,8 @@ export const layer = Layer.effect(
           ${task.lastRunError},
           ${task.runCount},
           ${webhook.token},
-          ${webhook.secret}
+          ${webhook.secret},
+          ${deliveryGeneration}
         WHERE ${requireExisting ? 0 : 1} = 1
            OR EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${task.id})
         ON CONFLICT (task_id)
@@ -652,6 +675,8 @@ export const layer = Layer.effect(
           title = excluded.title,
           prompt = excluded.prompt,
           enabled = excluded.enabled,
+          delivery_generation = CASE WHEN excluded.enabled = 0
+            THEN excluded.delivery_generation ELSE scheduled_tasks.delivery_generation END,
           schedule_json = excluded.schedule_json,
           project_id = excluded.project_id,
           thread_id = excluded.thread_id,
@@ -806,8 +831,8 @@ export const layer = Layer.effect(
       const startedAtIso = iso(startedAt);
       const run = Effect.gen(function* () {
         // Re-read stale poll snapshots so deleted, paused or postponed tasks cannot fire.
-        const active = yield* findTask(task.id);
-        if (active === null) {
+        const deliveryRecord = yield* findTaskRecord(task.id);
+        if (deliveryRecord === null) {
           if (webhook !== undefined) {
             return yield* new WebhookDeliverySkipped({
               reason: "The task was deleted before this delivery ran.",
@@ -818,6 +843,7 @@ export const layer = Layer.effect(
           }
           return { task, threadId: null, dispatchFailed: false };
         }
+        const active = deliveryRecord.task;
         if (
           webhook !== undefined &&
           (yield* sql`SELECT 1 FROM scheduled_task_webhook_pending WHERE delivery_id = ${webhook.deliveryId} AND state = 'completed'`.pipe(
@@ -874,7 +900,9 @@ export const layer = Layer.effect(
 
         const fireKey =
           webhook === undefined
-            ? `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
+            ? trigger === "scheduled"
+              ? `${active.id}:${deliveryRecord.deliveryGeneration}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
+              : `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
             : `${active.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
@@ -895,6 +923,7 @@ export const layer = Layer.effect(
               threadId,
               messageId,
               scheduledTaskId: active.id,
+              scheduledTaskDelivery: { trigger, generation: deliveryRecord.deliveryGeneration },
               text: prompt,
               attachments: [],
               mode: "queue",
@@ -933,6 +962,10 @@ export const layer = Layer.effect(
                     initialMessage: {
                       messageId,
                       scheduledTaskId: active.id,
+                      scheduledTaskDelivery: {
+                        trigger,
+                        generation: deliveryRecord.deliveryGeneration,
+                      },
                       text: prompt,
                       attachments: [],
                     },
@@ -1344,6 +1377,7 @@ export const layer = Layer.effect(
         input.requireExisting === true,
         scheduleUnchanged ? existingTask.schedule : null,
         webhook,
+        yield* newDeliveryGeneration,
       );
       yield* notifyChanged;
       return { task: (yield* findTask(id)) ?? task };
@@ -1375,12 +1409,15 @@ export const layer = Layer.effect(
         input.id,
       );
       const next = nextRunAt({ enabled: input.enabled, schedule: existing.schedule }, now);
+      const deliveryGeneration = input.enabled ? null : yield* newDeliveryGeneration;
       // RETURNING so a task deleted between the load and this UPDATE is a
       // visible not-found error, not a false success.
       const updated = yield* sql<{ task_id: string }>`
           UPDATE scheduled_tasks
           SET enabled = ${input.enabled ? 1 : 0},
               next_run_at = ${next},
+              delivery_generation = CASE WHEN ${input.enabled ? 1 : 0} = 0
+                THEN ${deliveryGeneration} ELSE delivery_generation END,
               updated_at = ${iso(now)}
           WHERE task_id = ${input.id}
           RETURNING task_id

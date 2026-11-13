@@ -484,6 +484,18 @@
       "types": "./src/work-log/scrollAnchor.ts",
       "default": "./src/work-log/scrollAnchor.ts"
     },
+    "./work-log/computer-use-status": {
+      "types": "./src/work-log/computerUseStatus.ts",
+      "default": "./src/work-log/computerUseStatus.ts"
+    },
+    "./work-log/computer-observation-receipt": {
+      "types": "./src/work-log/computerObservationReceipt.ts",
+      "default": "./src/work-log/computerObservationReceipt.ts"
+    },
+    "./work-log/computer-input-receipt": {
+      "types": "./src/work-log/computerInputReceipt.ts",
+      "default": "./src/work-log/computerInputReceipt.ts"
+    },
     "./pull-request-link-input": {
       "types": "./src/pullRequestLinkInput.ts",
       "default": "./src/pullRequestLinkInput.ts"

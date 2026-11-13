@@ -691,6 +691,9 @@ export interface ProjectionStoreV2Shape {
   readonly canStartQueuedRun: (
     threadId: ThreadId,
   ) => Effect.Effect<boolean, ProjectionStoreV2Error>;
+  readonly isScheduledTaskDeliveryCurrent: (
+    message: OrchestrationV2ConversationMessage,
+  ) => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly getHeldQueuedRuns: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<OrchestrationV2Run>, ProjectionStoreV2Error>;
@@ -5578,6 +5581,36 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         )
         .pipe(Effect.mapError(controlReadError(threadId)));
 
+    const isScheduledTaskDeliveryCurrent: ProjectionStoreV2Shape["isScheduledTaskDeliveryCurrent"] =
+      Effect.fn("ProjectionStore.isScheduledTaskDeliveryCurrent")((
+        message: OrchestrationV2ConversationMessage,
+      ) => {
+        const taskId = message.scheduledTaskId;
+        const delivery = message.scheduledTaskDelivery;
+        const prefix = `scheduled-task-message:${taskId}:`;
+        // Older automatic deliveries have only the scheduler's reserved message identity.
+        const legacyScheduled =
+          delivery === undefined &&
+          message.id.startsWith(prefix) &&
+          /^-?\d+:scheduled$/.test(message.id.slice(prefix.length));
+        if (
+          taskId === undefined ||
+          delivery?.trigger === "manual" ||
+          (delivery === undefined && !legacyScheduled)
+        )
+          return Effect.succeed(true);
+        return sql<{ enabled: number; delivery_generation: string }>`
+        SELECT enabled, delivery_generation FROM scheduled_tasks WHERE task_id = ${taskId}
+      `.pipe(
+          Effect.map(
+            (rows) =>
+              rows[0]?.enabled === 1 &&
+              rows[0].delivery_generation === (delivery?.generation ?? ""),
+          ),
+          Effect.mapError(controlReadError(message.threadId)),
+        );
+      });
+
     const canStartQueuedRun: ProjectionStoreV2Shape["canStartQueuedRun"] = (threadId) =>
       sql
         .withTransaction(
@@ -6965,7 +6998,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           ...runtimeRequestSummaries,
           ...waitingCards.flatMap((item) => secretRequestAsPendingInput(item) ?? []),
         ];
-        let pendingRuntimeRequest: OrchestrationV2PendingRuntimeRequestSummary | null =
+        let pendingRuntimeRequest: OrchestrationV2ThreadShell["pendingRuntimeRequest"] =
           runtimeRequestSummaries[0] ?? null;
         if (pendingRuntimeRequest === null || pendingRuntimeRequest.blocking === false) {
           pendingRuntimeRequest =
@@ -7522,6 +7555,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getCheckpointRollbackContext: readOnReader(getCheckpointRollbackContext),
       getRunMessage: readOnReader(getRunMessage),
       canStartQueuedRun: readOnReader(canStartQueuedRun),
+      isScheduledTaskDeliveryCurrent,
       getHeldQueuedRuns: readOnReader(getHeldQueuedRuns),
       getPendingNativeUserInputs: readOnReader(getPendingNativeUserInputs),
       hasUnpairedRunInterruptRequest: readOnReader(hasUnpairedRunInterruptRequest),

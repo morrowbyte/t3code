@@ -19,6 +19,8 @@ import {
   DeviceSummary,
   OrchestratorMcpTaskRole,
   ProviderInstanceId,
+  OrchestrationV2Actor,
+  OrchestrationV2CreationSource,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -37,6 +39,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 import { boatSetupPrompt } from "../../apps/server/src/boat/setupPrompt.ts";
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
+import { providerMessageText } from "../../packages/provider-core/src/server/messageProvenance.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
 import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSchema.ts";
 import {
@@ -53,6 +56,10 @@ import { withInlineContext } from "../../apps/server/src/orchestration-v2/Contex
 import { localComputeContext } from "../../apps/server/src/orchestration-v2/ProviderTurnStartService.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { ComputerToolkit } from "../../apps/server/src/mcp/toolkits/computer/tools.ts";
+import {
+  ComputerTarget,
+  selectComputerRoute,
+} from "../../apps/server/src/computer/ComputerRouting.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
 import { EnvironmentToolkit } from "../../apps/server/src/mcp/toolkits/environment/tools.ts";
 import { HtmlToolkit } from "../../apps/server/src/mcp/toolkits/html/tools.ts";
@@ -266,6 +273,9 @@ export const McpToolUseCase = Schema.Struct({
       Schema.Array(
         Schema.Struct({
           role: Schema.Literals(["user", "assistant"]),
+          createdBy: Schema.optional(OrchestrationV2Actor),
+          creationSource: Schema.optional(OrchestrationV2CreationSource),
+          senderThreadId: Schema.optional(ThreadId),
           text: Schema.optional(Schema.String),
           toolCalls: Schema.optional(Schema.Array(PriorToolCall)),
         }),
@@ -932,7 +942,7 @@ export const buildMessages = (sample: Sample) => {
           : (sample.priorResults.get(prior) ?? result);
       push("user", toolResult(id, replayed));
     }
-    if (turn.text) push(turn.role, text(turn.text));
+    if (turn.text) push(turn.role, text(providerMessageText(turn, turn.text)));
   }
   const taskText = testCase.boatSetupProjectId
     ? `${boatSetupPrompt(testCase.boatSetupProjectId)}\n\n${testCase.prompt}`
@@ -1421,6 +1431,19 @@ const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(function* 
     return loadTools(tools, call.id, found);
   }
   const mock = testCase.setup.mocks?.[name];
+  if (name === "computer_route" && mock === "source:linux-desktop-route") {
+    const target = decodeComputerTarget(input.target);
+    if (Option.isNone(target))
+      return failed("InputValidationError: computer_route requires a valid target object.");
+    return toolResult(
+      call.id,
+      selectComputerRoute(
+        target.value,
+        { platform: "linux", complete: true, applications: [] },
+        null,
+      ),
+    );
+  }
   // T3 answers device calls from the world. A mock that is a T3 device error fails inside T3.
   const failure = deviceFailure(mock);
   const fromWorld = mock === undefined || mock === "default" || failure !== undefined;
@@ -2267,6 +2290,7 @@ const Flags = Schema.Struct({
   context: Schema.Boolean,
 });
 const decodeFlags = Schema.decodeUnknownEffect(Flags);
+const decodeComputerTarget = Schema.decodeUnknownOption(ComputerTarget);
 const decodeCapture = Schema.decodeUnknownEffect(Schema.fromJsonString(Capture));
 const decodeCodexCapture = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexCapture));
 const decodeCase = Schema.decodeUnknownEffect(Schema.fromJsonString(McpToolUseCase));

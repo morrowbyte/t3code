@@ -126,6 +126,7 @@ export interface EventSinkV2Shape {
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeWithEffects: (input: {
+    readonly scheduledTaskMessage?: import("@t3tools/contracts").OrchestrationV2ConversationMessage;
     readonly updateToolTitleOnly?: { readonly expectedTitle: string | null };
     readonly updateToolPresentationOnly?: {
       readonly expectedTitle: string | null;
@@ -538,6 +539,11 @@ const layerBase: Layer.Layer<
 
       const { committed } = yield* commitThenPublish(
         Effect.gen(function* () {
+          if (
+            input.scheduledTaskMessage !== undefined &&
+            !(yield* projectionStore.isScheduledTaskDeliveryCurrent(input.scheduledTaskMessage))
+          )
+            return { committed: [], outcomes: [] };
           // Check ownership in the same transaction that claims the native session.
           const imported = input.unlessNativeThreadOwned;
           if (imported?.nativeThreadRef != null) {

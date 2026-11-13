@@ -21,11 +21,13 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RuntimeRequestId,
+  ScheduledTaskId,
   RunAttemptId,
   RunId,
   ThreadId,
   TurnItemId,
   type ThreadPullRequestLink,
+  type OrchestrationV2ConversationMessage,
   isLiveSubagentShell,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -404,6 +406,55 @@ it.effect("SQL queue readiness skips held runs without bypassing active work", (
       assert.equal(yield* store.canStartQueuedRun(threadId), status === "queued");
     }
     assert.deepEqual((yield* store.getThreadProjection(threadId)).runs[0], held);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("legacy timer deliveries stay revoked after resume or replacement", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const sql = yield* SqlClient.SqlClient;
+    const now = yield* DateTime.now;
+    const taskId = ScheduledTaskId.make("legacy-timer");
+    const message: OrchestrationV2ConversationMessage = {
+      id: MessageId.make(`scheduled-task-message:${taskId}:1:scheduled`),
+      threadId: ThreadId.make("legacy-timer-thread"),
+      runId: null,
+      nodeId: null,
+      role: "user",
+      text: "Automatic work",
+      attachments: [],
+      streaming: false,
+      createdBy: "agent",
+      creationSource: "server",
+      createdAt: now,
+      updatedAt: now,
+      scheduledTaskId: taskId,
+    };
+    const insert = (generation: string) => sql`
+      INSERT INTO scheduled_tasks (
+        task_id, title, prompt, enabled, schedule_json, project_id, workspace_strategy_json,
+        model_selection_json, runtime_mode, interaction_mode, created_by, creation_source,
+        created_at, updated_at, last_run_status, run_count, delivery_generation
+      ) VALUES (
+        ${taskId}, 'Legacy', 'Automatic work', 1, '{}', 'project', '{}', '{}',
+        'full-access', 'default', 'agent', 'server', '2026-01-01', '2026-01-01', 'idle', 0,
+        ${generation}
+      )`;
+    yield* insert("");
+    assert.isTrue(yield* store.isScheduledTaskDeliveryCurrent(message));
+    yield* sql`UPDATE scheduled_tasks SET enabled = 0, delivery_generation = 'paused' WHERE task_id = ${taskId}`;
+    assert.isFalse(yield* store.isScheduledTaskDeliveryCurrent(message));
+    yield* sql`UPDATE scheduled_tasks SET enabled = 1 WHERE task_id = ${taskId}`;
+    assert.isFalse(yield* store.isScheduledTaskDeliveryCurrent(message));
+    yield* sql`DELETE FROM scheduled_tasks WHERE task_id = ${taskId}`;
+    yield* insert("replacement");
+    assert.isFalse(yield* store.isScheduledTaskDeliveryCurrent(message));
+    assert.isTrue(
+      yield* store.isScheduledTaskDeliveryCurrent({
+        ...message,
+        scheduledTaskDelivery: { trigger: "scheduled", generation: "replacement" },
+      }),
+    );
   }).pipe(Effect.provide(layerTest)),
 );
 

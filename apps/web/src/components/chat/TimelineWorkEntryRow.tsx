@@ -3,6 +3,7 @@ import { useRightPanelStore } from "~/rightPanelStore";
 import { useClientSettings } from "../../hooks/useSettings";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import { WorkLogDetails, WorkLogRow } from "./WorkLog";
+import { ComputerObservationReceipt } from "./ComputerObservationReceipt";
 import {
   getQuestionAnswerPreview,
   getQuestionAnswerText,
@@ -645,6 +646,13 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         </>
       }
     >
+      {payload?.type === "dynamic_tool" && workEntry.projectedItem ? (
+        <ComputerObservationReceipt
+          projectedItem={workEntry.projectedItem}
+          environmentId={ctx.activeThreadEnvironmentId}
+          source={ctx.turnItemSource}
+        />
+      ) : null}
       {expanded && viewedImage && threadRef ? (
         <WorkLogDetails kind="media">
           <ChatMarkdownAssetImage

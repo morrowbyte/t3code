@@ -1367,10 +1367,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     Effect.fnUntraced(function* (
       events: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">>,
       effects: ReadonlyArray<PendingOrchestrationEffectV2> = [],
-      options: { readonly updateDelegatedCompletionOnly?: boolean } = {},
+      options: {
+        readonly updateDelegatedCompletionOnly?: boolean;
+        readonly scheduledTaskMessage?: OrchestrationV2ConversationMessage;
+      } = {},
     ) {
       const withIds = yield* Effect.forEach(events, (event) => makeSystemEvent(event));
-      yield* eventSink.writeWithEffects({ events: withIds, effects, ...options });
+      return yield* eventSink.writeWithEffects({ events: withIds, effects, ...options });
     });
 
   const completionDeliveryRun = (
@@ -1628,7 +1631,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ]);
   });
 
-  const startNextQueuedRun = Effect.fn("Orchestrator.startNextQueuedRun")(
+  const cancelObsoleteScheduledRun = Effect.fn("Orchestrator.cancelObsoleteScheduledRun")(
+    function* (threadId: ThreadId, runId: RunId) {
+      const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+      yield* dispatchQueuedRunCancel(
+        {
+          type: "queued-run.cancel",
+          commandId: CommandId.make(`command:system:cancel-scheduled:${runId}`),
+          threadId,
+          runId,
+        },
+        events,
+      );
+      yield* eventSink.write({ events: yield* Ref.get(events) });
+    },
+  );
+
+  const tryStartNextQueuedRun = Effect.fn("Orchestrator.startNextQueuedRun")(
     function* (
       threadId: ThreadId,
       options?: {
@@ -1659,6 +1678,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const queuedMessage = projection.messages.find(
         (candidate) => candidate.id === storedQueuedRun.userMessageId,
       );
+      if (
+        queuedMessage !== undefined &&
+        !(yield* projectionStore.isScheduledTaskDeliveryCurrent(queuedMessage))
+      ) {
+        yield* cancelObsoleteScheduledRun(threadId, storedQueuedRun.id);
+        return true;
+      }
       const modelSelection = queuedRunModelSelection(projection, storedQueuedRun);
       const queuedRun = {
         ...storedQueuedRun,
@@ -2204,7 +2230,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           session.status !== "stopped" &&
           session.status !== "error",
       );
-      yield* writeSystemEvents(
+      const committed = yield* writeSystemEvents(
         [
           ...(selectionChanged
             ? [
@@ -2356,13 +2382,34 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             request: { type: "provider-turn.start", runId: queuedRun.id },
           },
         ],
+        { scheduledTaskMessage: queuedMessage },
       );
+      if (committed.length === 0) {
+        yield* cancelObsoleteScheduledRun(threadId, queuedRun.id);
+        return true;
+      }
     },
     (effect, threadId, options?) =>
       effect.pipe(
         Effect.catch((cause) => failQueuedRunStart(threadId, cause, options?.queuedRunId)),
       ),
   );
+
+  const startNextQueuedRun = Effect.fn("Orchestrator.resumeQueuedRunStart")(function* (
+    threadId: ThreadId,
+    options?: {
+      readonly failedRunId?: RunId;
+      readonly endedRunId?: RunId;
+      readonly queuedRunId?: RunId;
+    },
+  ) {
+    let next = options;
+    while (yield* tryStartNextQueuedRun(threadId, next)) {
+      const remaining = { ...options };
+      delete remaining.queuedRunId;
+      next = remaining;
+    }
+  });
 
   // Under load a resumed provider can time out before taking the prompt; the restart still owes the turn.
   const retryContinuationStart = Effect.fn("Orchestrator.retryContinuationStart")(function* (
@@ -4741,6 +4788,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly createdBy: OrchestrationV2ConversationMessage["createdBy"];
     readonly creationSource: OrchestrationV2ConversationMessage["creationSource"];
     readonly scheduledTaskId?: OrchestrationV2ConversationMessage["scheduledTaskId"];
+    readonly scheduledTaskDelivery?: OrchestrationV2ConversationMessage["scheduledTaskDelivery"];
     readonly senderThreadId?: OrchestrationV2ConversationMessage["senderThreadId"];
     readonly remoteSender?: OrchestrationV2ConversationMessage["remoteSender"];
     readonly replyTo?: OrchestrationV2ConversationMessage["replyTo"];
@@ -4908,6 +4956,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(input.scheduledTaskId === undefined
             ? {}
             : { scheduledTaskId: input.scheduledTaskId }),
+          ...(input.scheduledTaskDelivery === undefined
+            ? {}
+            : { scheduledTaskDelivery: input.scheduledTaskDelivery }),
           ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
           ...(input.remoteSender === undefined ? {} : { remoteSender: input.remoteSender }),
           ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
@@ -4931,6 +4982,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(input.scheduledTaskId === undefined
             ? {}
             : { scheduledTaskId: input.scheduledTaskId }),
+          ...(input.scheduledTaskDelivery === undefined
+            ? {}
+            : { scheduledTaskDelivery: input.scheduledTaskDelivery }),
           ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
           ...(input.remoteSender === undefined ? {} : { remoteSender: input.remoteSender }),
           ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
@@ -6190,6 +6244,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.scheduledTaskId === undefined
           ? {}
           : { scheduledTaskId: command.scheduledTaskId }),
+        ...(command.scheduledTaskDelivery === undefined
+          ? {}
+          : { scheduledTaskDelivery: command.scheduledTaskDelivery }),
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
         ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
         ...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
@@ -6428,6 +6485,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.scheduledTaskId === undefined
           ? {}
           : { scheduledTaskId: command.scheduledTaskId }),
+        ...(command.scheduledTaskDelivery === undefined
+          ? {}
+          : { scheduledTaskDelivery: command.scheduledTaskDelivery }),
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
         ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
         ...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
@@ -6780,6 +6840,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.scheduledTaskId === undefined
           ? {}
           : { scheduledTaskId: command.scheduledTaskId }),
+        ...(command.scheduledTaskDelivery === undefined
+          ? {}
+          : { scheduledTaskDelivery: command.scheduledTaskDelivery }),
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
         ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
         ...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
@@ -6805,6 +6868,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.scheduledTaskId === undefined
           ? {}
           : { scheduledTaskId: command.scheduledTaskId }),
+        ...(command.scheduledTaskDelivery === undefined
+          ? {}
+          : { scheduledTaskDelivery: command.scheduledTaskDelivery }),
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
         ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
         ...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
@@ -7537,6 +7603,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(command.scheduledTaskId === undefined
         ? {}
         : { scheduledTaskId: command.scheduledTaskId }),
+      ...(command.scheduledTaskDelivery === undefined
+        ? {}
+        : { scheduledTaskDelivery: command.scheduledTaskDelivery }),
       ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
       ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
       ...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
@@ -7562,6 +7631,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(command.scheduledTaskId === undefined
         ? {}
         : { scheduledTaskId: command.scheduledTaskId }),
+      ...(command.scheduledTaskDelivery === undefined
+        ? {}
+        : { scheduledTaskDelivery: command.scheduledTaskDelivery }),
       ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
       ...(command.remoteSender === undefined ? {} : { remoteSender: command.remoteSender }),
       ...(command.replyTo === undefined ? {} : { replyTo: command.replyTo }),
@@ -9452,7 +9524,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             });
           }
           const text = typeof answer === "string" ? answer : answer.join(", ");
-          replies.push(`${question.question}\n${text.trim()}`);
+          replies.push(`Agent question:\n${question.question}\n\nUser answer:\n${text.trim()}`);
         }
         if (replies.length === 0) {
           return yield* new OrchestratorDispatchError({

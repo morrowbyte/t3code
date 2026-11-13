@@ -2139,6 +2139,121 @@ describe("AcpAdapterV2", () => {
       }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
+  it.effect("preserves native MCP receipt envelopes without changing generic MCP output", () =>
+    Effect.gen(function* () {
+      type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+      let handler: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
+      const instanceId = ProviderInstanceId.make("acp-native-receipt-envelope");
+      const threadId = ThreadId.make("thread-acp-native-receipt-envelope");
+      const path = yield* Path.Path;
+      const result = {
+        structuredContent: {
+          schema: 1,
+          task_id: "receipt-task",
+          observation_id: "receipt-observation",
+          actor_release_confirmed: true,
+          observation_mode: "disabled",
+          observation_active: false,
+          observation_generation: 1,
+        },
+        content: [{ type: "text", text: '{"schema":1,"status":"failed"}' }],
+      };
+      const cases = [
+        { server: "weasel_desktop", tool: "desktop_act" },
+        { server: "weasel_desktop", tool: "desktop_status" },
+        { server: "weasel_desktop", tool: "desktop_set_observation_mode" },
+        { server: "other", tool: "desktop_act" },
+      ];
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        selfInvocation: yield* resolveSelfInvocation(),
+        flavor: {
+          driver: ACP_TEST_DRIVER,
+          capabilities: AcpProviderCapabilitiesV2,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+            mockAgentPath: yield* path.fromFileUrl(
+              new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+            ),
+            wrapRuntime: (runtime) => ({
+              ...runtime,
+              handleSessionUpdate: (next) =>
+                Effect.sync(() => {
+                  handler = next;
+                }).pipe(Effect.andThen(runtime.handleSessionUpdate(next))),
+              prompt: () =>
+                Effect.gen(function* () {
+                  assert.isDefined(handler);
+                  for (const { server, tool } of cases) {
+                    yield* handler!({
+                      sessionId: "mock-session-1",
+                      update: {
+                        sessionUpdate: "tool_call",
+                        toolCallId: `${server}.${tool}`,
+                        kind: "execute",
+                        title: `mcp.${server}.${tool}`,
+                        status: "completed",
+                        rawInput: { server, tool, arguments: {} },
+                        rawOutput: { result },
+                        _meta: { is_mcp_tool_call: true },
+                      },
+                    });
+                  }
+                  return { stopReason: "end_turn" };
+                }),
+            }),
+          }),
+        },
+      });
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("session-acp-native-receipt-envelope"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      yield* runtime.startTurn(
+        makeTurnInput({
+          threadId,
+          providerThread,
+          instanceId,
+          runtimePolicy,
+          now: yield* DateTime.now,
+        }),
+      );
+      const events = yield* runtime.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+      );
+      for (const { server, tool } of cases) {
+        const item = events
+          .flatMap((event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "dynamic_tool" &&
+            event.turnItem.toolName === `${server}.${tool}`
+              ? [event.turnItem]
+              : [],
+          )
+          .at(-1);
+        assert.isDefined(item);
+        assert.deepEqual(
+          item?.output,
+          server === "weasel_desktop" ? result : result.structuredContent,
+        );
+      }
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
   it.effect("starts a new replay message after ACP v2 plan boundaries", () =>
     Effect.gen(function* () {
       const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;

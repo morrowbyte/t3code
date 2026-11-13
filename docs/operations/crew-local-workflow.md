@@ -179,11 +179,12 @@ builds and checks keep their normal job token.
 
 ## Integration CI
 
-`morrowbyte-ci.yml` uses the short integration check on every branch push and
-same-repository pull request. A newer run on the same branch replaces the older
+`morrowbyte-ci.yml` runs `check:changed` on every branch push and same-repository
+pull request, including typechecks for affected packages and their dependents.
+A newer run on the same branch replaces the older
 automatic run, including duplicate push/PR runs. Fork PRs do not execute code on personal runners.
-The broader qualification and platform-specific checks remain manual. A manual
-short check is also available:
+Full source qualification and platform-specific checks remain separate. A manual
+diff check is also available:
 
 ```sh
 gh workflow run morrowbyte-ci.yml --repo morrowbyte/t3code --ref <feature-branch> \
