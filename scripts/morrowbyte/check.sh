@@ -282,7 +282,6 @@ approval_tests=(
   apps/server/src/orchestration-v2/ApprovalReviewOrderPolicy.test.ts
   apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts
   apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts
-  apps/web/src/components/chat/ApprovalActionSummary.test.tsx
   apps/mobile/src/features/threads/PendingApprovalCard.test.tsx
   apps/mobile/src/state/use-selected-thread-requests.test.tsx
 )
@@ -322,10 +321,13 @@ for native_integration_test in "${native_integration_tests[@]}"; do
   fi
   focused_tests+=("$native_integration_test")
 done
-voice_tests=(
-  apps/web/src/voice/recordingDraftStore.test.ts
+optional_voice_tests=(
   apps/web/src/voice/useVoiceDictation.test.tsx
   packages/client-runtime/src/state/voiceTranscriptionHttp.test.ts
+)
+voice_tests=(
+  apps/web/src/voice/recordingDraftStore.test.ts
+  "${optional_voice_tests[@]}"
 )
 for voice_test in "${voice_tests[@]}"; do
   if [[ "$voice_test" == apps/web/src/voice/recordingDraftStore.test.ts && ! -f "$voice_test" ]]; then
@@ -367,7 +369,6 @@ live_tests=(
   apps/server/src/voice/CodexLiveSessionService.test.ts
   apps/server/src/orchestration-v2/assistantStreaming.test.ts
   apps/web/src/components/streamable-ui/protocol.test.ts
-  apps/web/src/components/streamable-ui/StreamableUi.test.tsx
   apps/web/src/localDevLogin.test.ts
   apps/server/src/observability/RpcInstrumentation.test.ts
 )
@@ -452,6 +453,8 @@ focused_tests+=(
   apps/web/src/components/settings/UpdateHistoryPanel.test.tsx
 )
 renderer_tests=(
+  apps/web/src/components/chat/ApprovalActionSummary.browser.test.tsx
+  apps/web/src/components/streamable-ui/StreamableUi.browser.test.tsx
   apps/web/src/components/chat/ThreadDetailsBoat.browser.test.tsx
   apps/web/src/components/auth/PairingRouteSurface.browser.test.tsx
   apps/web/src/observatory/AgentObservatory.browser.test.tsx
