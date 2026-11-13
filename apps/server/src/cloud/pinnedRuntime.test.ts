@@ -97,7 +97,7 @@ const extractingRunner = (
         }
         if (stagingDir !== undefined) {
           assert.equal(
-            yield* fs.exists(path.join(stagingDir, "t3-runtime-archive")),
+            yield* fs.exists(path.join(stagingDir, "t3-runtime-archive")).pipe(Effect.orDie),
             platform === "win32",
           );
           yield* fs.writeFileString(path.join(stagingDir, executable), contents).pipe(Effect.orDie);
@@ -167,7 +167,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       assert.deepEqual(commands, ["tar", "tar"]);
       assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);
       assert.isFalse(yield* fs.exists(path.join(paths.versionDir, "t3-runtime-archive")));
-      assert.equal((yield* fs.stat(active.entryPath)).size, 24_000);
+      assert.equal(Number((yield* fs.stat(active.entryPath)).size), 24_000);
     }),
   );
 

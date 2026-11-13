@@ -482,7 +482,7 @@ describe("PrivilegedCommandExecutor", () => {
         timeout: 21000,
       });
       expect(calls[0]!.args.join(" ")).not.toContain(input.script);
-      const encoded = /FromBase64String\('([^']+)'\)/.exec(calls[0]!.stdin!)![1]!;
+      const encoded = /FromBase64String\('([^']+)'\)/.exec(String(calls[0]!.stdin))![1]!;
       const wrapper = Buffer.from(encoded, "base64").toString("utf8");
       expect(wrapper).toContain(
         NodeZlib.gzipSync(Buffer.from(input.script, "utf16le")).toString("base64"),
