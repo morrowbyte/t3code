@@ -40,10 +40,14 @@ const archiveHex = (bytes: Uint8Array) =>
 const validChecksums = archiveHex(archiveBytes).pipe(
   Effect.map((hex) => `${hex}  ${archiveName}\n`),
 );
-const releaseHttpClient = (checksums: string, requests: string[] = []) =>
+const releaseHttpClient = (
+  checksums: string,
+  requests: string[] = [],
+  archive: Uint8Array = archiveBytes,
+) =>
   HttpClient.make((request) => {
     requests.push(request.url);
-    const body = request.url.endsWith("/SHA256SUMS") ? checksums : archiveBytes;
+    const body = request.url.endsWith("/SHA256SUMS") ? checksums : archive;
     return Effect.succeed(HttpClientResponse.fromWeb(request, new Response(body)));
   });
 const extractingRunner = (
@@ -52,11 +56,17 @@ const extractingRunner = (
   commands: string[] = [],
   platform: NodeJS.Platform = "linux",
   advertisedBytes?: number,
+  archive: Uint8Array = archiveBytes,
 ) =>
   ProcessRunner.ProcessRunner.of({
     run: (input) =>
       Effect.gen(function* () {
         commands.push(input.command);
+        assert.deepEqual(input.stdin, platform === "win32" ? undefined : archive);
+        if (platform !== "win32") {
+          assert.equal(input.args[1], "-");
+          assert.include(input.args, "--gzip");
+        }
         const executable = platform === "win32" ? "t3.exe" : "t3";
         const contents = "#!/bin/sh\n";
         const manifest = JSON.stringify({
@@ -86,6 +96,10 @@ const extractingRunner = (
           return yield* Effect.die(`unexpected command ${input.command}`);
         }
         if (stagingDir !== undefined) {
+          assert.equal(
+            yield* fs.exists(path.join(stagingDir, "t3-runtime-archive")),
+            platform === "win32",
+          );
           yield* fs.writeFileString(path.join(stagingDir, executable), contents).pipe(Effect.orDie);
           yield* fs
             .writeFileString(path.join(stagingDir, SERVER_RESTORE_MANIFEST), manifest)
@@ -110,6 +124,18 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-archive-" });
+      const active = pinnedRuntimePaths(path, baseDir, "1.0.0", "linux");
+      yield* fs.makeDirectory(active.versionDir, { recursive: true });
+      yield* fs.writeFile(active.entryPath, new Uint8Array(24_000));
+      yield* fs.writeFileString(
+        path.join(baseDir, "runtime", "service-state.json"),
+        JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: "1.0.0" }),
+      );
+      yield* fs.writeFileString(
+        path.join(baseDir, "runtime", "restore-limits.json"),
+        JSON.stringify({ maxVersions: 2, maxBytes: 50_000 }),
+      );
+      const archive = Uint8Array.from({ length: 24_000 }, (_, index) => index % 256);
       const requests: string[] = [];
       const commands: string[] = [];
       const paths = yield* ensurePinnedRuntimeInstalled({
@@ -119,9 +145,13 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         path,
         platform: "linux",
         arch: "x64",
-        httpClient: releaseHttpClient(yield* validChecksums, requests),
+        httpClient: releaseHttpClient(
+          `${yield* archiveHex(archive)}  ${archiveName}\n`,
+          requests,
+          archive,
+        ),
         releaseBaseUrl: "https://releases.example/download",
-        runner: extractingRunner(fs, path, commands),
+        runner: extractingRunner(fs, path, commands, "linux", undefined, archive),
         validate: (staging) =>
           fs.exists(staging.entryPath).pipe(
             Effect.flatMap((exists) => (exists ? Effect.void : Effect.die("missing runtime"))),
@@ -137,6 +167,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       assert.deepEqual(commands, ["tar", "tar"]);
       assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);
       assert.isFalse(yield* fs.exists(path.join(paths.versionDir, "t3-runtime-archive")));
+      assert.equal((yield* fs.stat(active.entryPath)).size, 24_000);
     }),
   );
 
