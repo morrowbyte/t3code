@@ -146,36 +146,65 @@ const terminalState = (installation: CodexInstallation.CodexInstallation["Servic
     Stream.runHead,
     Effect.map(Option.getOrThrow),
   );
+const writeManagedRelease = Effect.fn("test.writeManagedRelease")(function* (
+  managedDirectory: string,
+  release: CodexInstallation.CodexReleaseAsset,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const directory = `${managedDirectory}/${release.version}`;
+  for (const name of ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"]) {
+    yield* fs.makeDirectory(`${directory}/${name.split("/")[0]}`, { recursive: true });
+    yield* fs.writeFileString(`${directory}/${name}`, "synthetic-runtime", { mode: 0o755 });
+  }
+  yield* fs.writeFileString(
+    `${directory}/codex-package.json`,
+    JSON.stringify({
+      layoutVersion: 1,
+      version: release.version,
+      target: release.target,
+      entrypoint: "bin/codex",
+    }),
+  );
+  yield* fs.writeFileString(
+    `${directory}/.install-complete.json`,
+    JSON.stringify({ version: release.version, target: release.target, sha256: release.sha256 }),
+  );
+});
 
-it.effect.each(["0.156.0", "0.156.1", "0.156.2", "0.157.0"])(
-  "reuses installed Codex %s without downloading or taking ownership of it",
-  (version) =>
-    Effect.gen(function* () {
-      const h = yield* makeHarness({ local: { version } });
-      expect(yield* h.installation.start).toMatchObject({
-        source: "local",
-        phase: "succeeded",
-        installedVersion: version,
-        executablePath: h.localBinaryPath,
-        canRemove: false,
-      });
-      expect(yield* h.installation.resolve()).toMatchObject({
-        source: "local",
-        executablePath: h.localBinaryPath,
-        managedVersionDirectory: null,
-        version,
-      });
-      yield* h.installation.acquire().pipe(Effect.scoped);
-      expect(h.downloads()).toBe(0);
-      expect(yield* h.fs.exists(h.installation.managedDirectory)).toBe(false);
-      expect((yield* h.fs.readFileString(h.probeLog)).trim().split("\n")).toEqual([
-        "--version",
-        "app-server --help",
-      ]);
-      yield* h.installation.remove();
-      expect(yield* h.fs.exists(h.localBinaryPath)).toBe(true);
-      expect((yield* h.installation.state).source).toBe("local");
-    }).pipe(Effect.scoped, Effect.provide(CodexInstallationTestHost.layer)),
+it.effect.each([
+  "0.156.0",
+  "0.156.1",
+  "0.156.2",
+  "0.157.0",
+  "0.163.0-morrowbyte.1",
+  "0.163.0-morrowbyte.2",
+])("reuses installed Codex %s without downloading or taking ownership of it", (version) =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness({ local: { version } });
+    expect(yield* h.installation.start).toMatchObject({
+      source: "local",
+      phase: "succeeded",
+      installedVersion: version,
+      executablePath: h.localBinaryPath,
+      canRemove: false,
+    });
+    expect(yield* h.installation.resolve()).toMatchObject({
+      source: "local",
+      executablePath: h.localBinaryPath,
+      managedVersionDirectory: null,
+      version,
+    });
+    yield* h.installation.acquire().pipe(Effect.scoped);
+    expect(h.downloads()).toBe(0);
+    expect(yield* h.fs.exists(h.installation.managedDirectory)).toBe(false);
+    expect((yield* h.fs.readFileString(h.probeLog)).trim().split("\n")).toEqual([
+      "--version",
+      "app-server --help",
+    ]);
+    yield* h.installation.remove();
+    expect(yield* h.fs.exists(h.localBinaryPath)).toBe(true);
+    expect((yield* h.installation.state).source).toBe("local");
+  }).pipe(Effect.scoped, Effect.provide(CodexInstallationTestHost.layer)),
 );
 it.effect.each([
   { version: "0.128.9" },
@@ -183,6 +212,9 @@ it.effect.each([
   { version: "0.155.1" },
   { version: "0.155.9" },
   { version: "0.156.1-alpha.1" },
+  { version: "0.163.0-alpha.1" },
+  { version: "0.163.0-morrowbyte.3" },
+  { version: "0.162.0-morrowbyte.1" },
   { version: "unknown" },
   { version: "0.156.1", appServerFails: true },
   { version: "0.156.1", versionFails: true },
@@ -291,36 +323,41 @@ it.effect("rechecks compatibility after the local executable is replaced", () =>
   }).pipe(Effect.scoped, Effect.provide(CodexInstallationTestHost.layer)),
 );
 
-it.effect("rechecks a cached local executable when the shared manifest policy changes", () =>
-  Effect.gen(function* () {
-    let manifest = ModelManifest.BUNDLED_MODEL_MANIFEST;
-    const h = yield* makeHarness({
-      local: { version: "0.156.0" },
-      manifestCurrent: Effect.sync(() => manifest),
-    });
-    expect((yield* h.installation.resolve()).source).toBe("local");
-    manifest = {
-      ...manifest,
-      compatibility: [
-        {
-          driver: "codex",
-          t3CodeRange: ">=0.0.42",
-          ranges: [
-            { range: ">=0.156.1", status: "supported" },
-            { range: "<0.156.1", status: "broken" },
-          ],
-        },
-      ],
-    };
-    yield* h.installation.start;
-    expect((yield* terminalState(h.installation)).phase).toBe("succeeded");
-    expect((yield* h.installation.resolve()).source).toBe("managed");
-    expect(h.downloads()).toBe(1);
-    expect((yield* h.fs.readFileString(h.probeLog)).trim().split("\n")).toEqual([
-      "--version",
-      "app-server --help",
-    ]);
-  }).pipe(Effect.scoped, Effect.provide(CodexInstallationTestHost.layer)),
+it.effect.each(["0.156.0", "0.163.0-morrowbyte.1", "0.163.0-morrowbyte.2"])(
+  "rechecks cached local %s when the shared manifest policy changes",
+  (version) =>
+    Effect.gen(function* () {
+      let manifest = ModelManifest.BUNDLED_MODEL_MANIFEST;
+      const h = yield* makeHarness({
+        local: { version },
+        manifestCurrent: Effect.sync(() => manifest),
+      });
+      expect((yield* h.installation.resolve()).source).toBe("local");
+      manifest = {
+        ...manifest,
+        compatibility: [
+          {
+            driver: "codex",
+            t3CodeRange: ">=0.0.42",
+            ranges: [
+              {
+                range: version === "0.156.0" ? "<0.156.1" : ">=0.163.0",
+                status: "broken",
+              },
+              { range: ">=0.156.1", status: "supported" },
+            ],
+          },
+        ],
+      };
+      yield* h.installation.start;
+      expect((yield* terminalState(h.installation)).phase).toBe("succeeded");
+      expect((yield* h.installation.resolve()).source).toBe("managed");
+      expect(h.downloads()).toBe(1);
+      expect((yield* h.fs.readFileString(h.probeLog)).trim().split("\n")).toEqual([
+        "--version",
+        "app-server --help",
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(CodexInstallationTestHost.layer)),
 );
 
 it.effect("uses bundled Codex compatibility when the remote manifest omits its policy", () =>
@@ -713,7 +750,7 @@ it.effect.each([
     Effect.gen(function* () {
       const h = yield* makeHarness({ platform, arch, useReleaseCatalog: true });
       expect(yield* h.installation.start).toMatchObject({
-        version: "0.163.0",
+        version: CodexInstallation.resolveCodexReleaseAsset(platform, arch)?.version,
         phase: "downloading",
       });
       expect((yield* terminalState(h.installation)).phase).toBe("failed");
@@ -723,46 +760,171 @@ it.effect.each([
       expect(yield* h.fs.exists(`${h.installation.managedDirectory}/active.json`)).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(CodexInstallationTestHost.layer)),
 );
-it.effect("upgrades past an older local CLI and prefers the verified device-auth runtime", () =>
+it.each([
+  ["0.162.0", false],
+  ["0.163.0", true],
+  ["0.163.0-morrowbyte.1", true],
+  ["0.163.0-morrowbyte.2", true],
+  ["0.163.0-morrowbyte.3", false],
+  ["0.162.0-morrowbyte.1", false],
+  ["0.164.0-morrowbyte.1", false],
+  ["0.163.0-alpha.1", false],
+  ["unknown", false],
+] as const)("checks device-auth support for %s", (version, supported) => {
+  expect(CodexInstallation.supportsCodexDeviceAuth(version)).toBe(supported);
+});
+it.effect.each(["0.163.0", "0.163.0-morrowbyte.1", "0.163.0-morrowbyte.2"])(
+  "prefers verified managed %s over a local CLI without device auth",
+  (version) =>
+    Effect.gen(function* () {
+      const upstream = CodexInstallation.resolveCodexReleaseAsset("linux", "x64");
+      if (!upstream) throw new Error("Missing Linux release fixture");
+      const release = { ...upstream, version };
+      const h = yield* makeHarness({
+        local: { version: "0.162.0" },
+        platform: "linux",
+        arch: "x64",
+        options: { releaseAsset: release },
+      });
+      expect((yield* h.installation.resolve()).source).toBe("local");
+      expect(yield* h.installation.start).toMatchObject({ phase: "downloading", version });
+      expect((yield* terminalState(h.installation)).phase).toBe("failed");
+      expect(h.downloads()).toBe(1);
+      yield* writeManagedRelease(h.installation.managedDirectory, release);
+      yield* h.fs.writeFileString(
+        `${h.installation.managedDirectory}/active.json`,
+        JSON.stringify({ version: release.version }),
+      );
+      expect(yield* h.installation.resolve()).toMatchObject({
+        version,
+        source: "managed",
+      });
+      expect(yield* h.fs.exists(h.localBinaryPath)).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(CodexInstallationTestHost.layer)),
+);
+
+it.effect.each([
+  { cached: true, previousVersion: "0.163.0" },
+  { cached: false, previousVersion: "0.163.0" },
+  { cached: true, previousVersion: "0.163.0-morrowbyte.1" },
+])("upgrades activated vulnerable Linux Codex on restart: %j", ({ cached, previousVersion }) =>
   Effect.gen(function* () {
-    const h = yield* makeHarness({
-      local: { version: "0.156.1" },
+    const upstream = CodexInstallation.resolveCodexReleaseAsset("linux", "x64");
+    if (!upstream) throw new Error("Missing Linux release fixture");
+    const previous = { ...upstream, version: previousVersion };
+    const release = { ...upstream, version: "0.163.0-morrowbyte.2" };
+    const first = yield* makeHarness({ platform: "linux", arch: "x64" });
+    yield* writeManagedRelease(first.installation.managedDirectory, previous);
+    if (cached) yield* writeManagedRelease(first.installation.managedDirectory, release);
+    const activePath = `${first.installation.managedDirectory}/active.json`;
+    yield* first.fs.writeFileString(activePath, JSON.stringify({ version: previous.version }));
+    const restarted = yield* makeHarness({
+      baseDir: first.baseDir,
       platform: "linux",
       arch: "x64",
-      useReleaseCatalog: true,
+      options: { releaseAsset: release },
     });
-    expect((yield* h.installation.resolve()).source).toBe("local");
-    expect(yield* h.installation.start).toMatchObject({ phase: "downloading", version: "0.163.0" });
-    expect((yield* terminalState(h.installation)).phase).toBe("failed");
-    expect(h.downloads()).toBe(1);
-    const release = CodexInstallation.resolveCodexReleaseAsset("linux", "x64");
-    if (!release) throw new Error("Missing Linux release fixture");
-    const directory = `${h.installation.managedDirectory}/0.163.0`;
-    for (const name of ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"]) {
-      yield* h.fs.makeDirectory(`${directory}/${name.split("/")[0]}`, { recursive: true });
-      yield* h.fs.writeFileString(`${directory}/${name}`, "synthetic-runtime", { mode: 0o755 });
-    }
-    yield* h.fs.writeFileString(
-      `${directory}/codex-package.json`,
-      JSON.stringify({
-        layoutVersion: 1,
+    expect((yield* restarted.installation.state).operationId).not.toBeNull();
+    expect((yield* terminalState(restarted.installation)).phase).toBe(
+      cached ? "succeeded" : "failed",
+    );
+    if (cached) {
+      expect(yield* restarted.installation.acquire().pipe(Effect.scoped)).toMatchObject({
+        source: "managed",
         version: release.version,
-        target: release.target,
-        entrypoint: "bin/codex",
-      }),
-    );
-    yield* h.fs.writeFileString(
-      `${directory}/.install-complete.json`,
-      JSON.stringify({ version: release.version, target: release.target, sha256: release.sha256 }),
-    );
-    yield* h.fs.writeFileString(
-      `${h.installation.managedDirectory}/active.json`,
-      JSON.stringify({ version: release.version }),
-    );
-    expect(yield* h.installation.resolve()).toMatchObject({
-      version: "0.163.0",
-      source: "managed",
+      });
+    } else {
+      expect((yield* Effect.flip(restarted.installation.resolve())).detail).toContain(
+        "Update the managed Codex installation",
+      );
+    }
+    expect(JSON.parse(yield* first.fs.readFileString(activePath))).toEqual({
+      version: cached ? release.version : previous.version,
     });
-    expect(yield* h.fs.exists(h.localBinaryPath)).toBe(true);
+    expect(restarted.downloads()).toBe(cached ? 0 : 1);
+    expect(
+      yield* first.fs.readFileString(
+        `${first.installation.managedDirectory}/${previous.version}/bin/codex`,
+      ),
+    ).toBe("synthetic-runtime");
   }).pipe(Effect.scoped, Effect.provide(CodexInstallationTestHost.layer)),
+);
+
+it.effect.each([
+  { mode: "active", previousVersion: "0.163.0" },
+  { mode: "cached", previousVersion: "0.163.0" },
+  { mode: "failed", previousVersion: "0.163.0" },
+  { mode: "running", previousVersion: "0.163.0" },
+  { mode: "absent", previousVersion: "0.163.0" },
+  { mode: "active", previousVersion: "0.163.0-morrowbyte.1" },
+  { mode: "absent", previousVersion: "0.163.0-morrowbyte.1" },
+] as const)(
+  "replaces vulnerable local Linux Codex without fallback: %j",
+  ({ mode, previousVersion }) =>
+    Effect.gen(function* () {
+      const upstream = CodexInstallation.resolveCodexReleaseAsset("linux", "x64");
+      if (!upstream) throw new Error("Missing Linux release fixture");
+      const previous = { ...upstream, version: previousVersion };
+      const release = { ...upstream, version: "0.163.0-morrowbyte.2" };
+      const first = yield* makeHarness({ platform: "linux", arch: "x64" });
+      yield* writeManagedRelease(first.installation.managedDirectory, previous);
+      if (mode === "active" || mode === "cached")
+        yield* writeManagedRelease(first.installation.managedDirectory, release);
+      if (mode !== "absent")
+        yield* first.fs.writeFileString(
+          `${first.installation.managedDirectory}/active.json`,
+          JSON.stringify({ version: mode === "active" ? release.version : previous.version }),
+        );
+      const downloading = yield* Deferred.make<void>();
+      const restarted = yield* makeHarness({
+        baseDir: first.baseDir,
+        local: { version: previous.version },
+        platform: "linux",
+        arch: "x64",
+        options: { releaseAsset: release },
+        ...(mode === "running"
+          ? {
+              body: Stream.fromEffect(
+                Deferred.succeed(downloading, undefined).pipe(Effect.andThen(Effect.never)),
+              ),
+            }
+          : {}),
+      });
+      if (mode === "active") {
+        expect(yield* restarted.installation.acquire().pipe(Effect.scoped)).toMatchObject({
+          source: "managed",
+          version: release.version,
+        });
+        expect(restarted.downloads()).toBe(0);
+      } else {
+        const state = yield* restarted.installation.state;
+        expect(state.operationId).not.toBeNull();
+        if (mode === "running") {
+          yield* Deferred.await(downloading);
+          expect((yield* Effect.flip(restarted.installation.resolve())).detail).toContain(
+            "Update the managed Codex installation",
+          );
+          yield* restarted.installation.cancel(state.operationId!);
+        }
+        expect((yield* terminalState(restarted.installation)).phase).toBe(
+          mode === "cached" ? "succeeded" : mode === "running" ? "cancelled" : "failed",
+        );
+        if (mode === "cached") {
+          expect(yield* restarted.installation.resolve()).toMatchObject({
+            source: "managed",
+            version: release.version,
+          });
+        } else {
+          expect((yield* Effect.flip(restarted.installation.resolve())).detail).toContain(
+            "Update the managed Codex installation",
+          );
+        }
+      }
+      expect(yield* first.fs.exists(restarted.localBinaryPath)).toBe(true);
+      expect(
+        yield* first.fs.readFileString(
+          `${first.installation.managedDirectory}/${previous.version}/bin/codex`,
+        ),
+      ).toBe("synthetic-runtime");
+    }).pipe(Effect.scoped, Effect.provide(CodexInstallationTestHost.layer)),
 );

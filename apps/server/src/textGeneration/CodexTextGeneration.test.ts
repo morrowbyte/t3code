@@ -19,6 +19,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as TestClock from "effect/testing/TestClock";
 import { createModelSelection } from "@t3tools/shared/model";
 import { expect } from "vite-plus/test";
 
@@ -290,24 +291,49 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
     ),
   );
 
-  it.effect("still generates when Codex cannot list its MCP servers", () =>
+  it.effect("fails without generating when Codex cannot list its MCP servers", () =>
     withFakeCodexEnv(
       {
         output: JSON.stringify({ branch: "remove-default-shapes" }),
         mcpServers: 2,
-        requireArg: "--config features.plugins=false --config features.apps=false --ephemeral",
-        forbidArg: "mcp_servers=",
       },
       (textGeneration) =>
         Effect.gen(function* () {
-          const result = yield* textGeneration.generateBranchName({
-            cwd: process.cwd(),
-            message: "Remove default shapes from characters",
-            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
-          });
-          expect(result.branch).toBe("remove-default-shapes");
+          const error = yield* textGeneration
+            .generateBranchName({
+              cwd: process.cwd(),
+              message: "Remove default shapes from characters",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            })
+            .pipe(Effect.flip);
+          expect(error.detail).toContain("MCP");
         }),
     ),
+  );
+
+  it.effect("stops a stalled MCP lookup without starting text generation", () =>
+    Effect.gen(function* () {
+      const probe = yield* makeProcessProbe;
+      yield* withFakeCodexEnv(
+        { output: "", lifecycle: { port: probe.port, command: "mcp list" } },
+        (textGeneration) =>
+          Effect.gen(function* () {
+            const fiber = yield* textGeneration
+              .generateThreadTitle({
+                cwd: process.cwd(),
+                message: "Name this thread",
+                modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              })
+              .pipe(Effect.flip, Effect.forkScoped);
+            yield* probe.started;
+            yield* TestClock.adjust("11 seconds");
+            yield* probe.exited;
+            expect((yield* Fiber.join(fiber)).detail).toContain(
+              "MCP configuration lookup timed out",
+            );
+          }),
+      );
+    }),
   );
 
   it.effect("keeps plugins and apps off over launch args that turn them on", () =>

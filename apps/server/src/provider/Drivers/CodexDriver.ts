@@ -282,7 +282,10 @@ export const CodexDriver: ProviderDriver<
               { concurrency: "unbounded" },
             );
             if (exitCode !== 0) return yield* runtimeUpgradeError();
-            return /^codex-cli (\d+\.\d+\.\d+)$/u.exec(output.trim())?.[1] ?? "";
+            return (
+              /^codex-cli (\d+\.\d+\.\d+(?:-morrowbyte\.[1-9]\d*)?)$/u.exec(output.trim())?.[1] ??
+              ""
+            );
           }).pipe(Effect.scoped, Effect.timeout("5 seconds"));
       if (!CodexInstallation.supportsCodexDeviceAuth(version)) return yield* runtimeUpgradeError();
     }).pipe(Effect.mapError(() => runtimeUpgradeError()));
