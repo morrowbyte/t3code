@@ -3983,9 +3983,8 @@ const ThreadFeedContent = memo(function ThreadFeedContent({
     }
     switch (entry.type) {
       case "run-fold":
-        return resolveThreadFeedFixedItemSize(entry.type);
       case "work-toggle":
-        return entry.thought ? undefined : WORK_GROUP_TOGGLE_HEIGHT;
+        return resolveThreadFeedFixedItemSize(entry.type);
       case "thinking":
         return WORK_GROUP_TOGGLE_HEIGHT;
       case "activity-group":
