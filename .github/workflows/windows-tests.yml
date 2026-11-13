@@ -68,6 +68,8 @@ jobs:
       # so file-scoped runs call `vp test run` inside the package instead.
       - name: Test
         shell: pwsh
+        env:
+          T3CODE_NATIVE_PREVIEW_ARTIFACTS: ${{ runner.temp }}/browser-preview-windows
         run: |
           $package = '${{ inputs.package }}'
           $files = '${{ inputs.files }}'
@@ -79,3 +81,11 @@ jobs:
             Set-Location $package
             vp test run $files.Split(' ')
           }
+
+      - name: Upload native preview evidence
+        if: always() && inputs.package == 'apps/desktop' && contains(inputs.files, 'OffscreenHost.windows.test.ts')
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-preview-windows-${{ github.sha }}
+          path: ${{ runner.temp }}/browser-preview-windows
+          if-no-files-found: error
