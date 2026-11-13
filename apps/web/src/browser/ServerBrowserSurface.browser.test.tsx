@@ -602,6 +602,17 @@ describe("ServerBrowserSurface native controls", () => {
     expect(document.activeElement).toBe(input);
     expect(mocks.input).toHaveBeenCalledTimes(1);
 
+    const clientsBeforeResume = mocks.createClient.mock.calls.length;
+    const stopsBeforeResume = mocks.stopClient.mock.calls.length;
+    await emitFrame(frame(6, 3, false));
+    await vi.waitFor(() =>
+      expect(mocks.createClient).toHaveBeenCalledTimes(clientsBeforeResume + 1),
+    );
+    expect(mocks.stopClient).toHaveBeenCalledTimes(stopsBeforeResume + 1);
+    expect(mocks.sent).toEqual([]);
+    expect(mocks.frameListeners.size).toBe(1);
+    expect(canvas.width).toBeGreaterThan(0);
+
     await act(() => host.update({ kind: "pending", webContentsId: null, privateEntry: false }));
     expect(handle.current?.screenshot()).toBeNull();
     expect(canvas.width).toBe(0);

@@ -284,6 +284,7 @@ function ServerBrowserSurfaceConnection(
   const [control, setControl] = useState<PreviewStreamControl | null>(null);
   const [controlPending, setControlPending] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
+  const [streamGeneration, setStreamGeneration] = useState(0);
   const [gone, setGone] = useState(false);
   const [promptText, setPromptText] = useState("");
   const [fileChooser, setFileChooser] = useState<PreviewStreamFileChooser | null>(null);
@@ -545,6 +546,7 @@ function ServerBrowserSurfaceConnection(
     privateInputVersionRef.current++;
     privateEntryRef.current = active;
     setPrivateEntry(active);
+    if (!active) setStreamGeneration((current) => current + 1);
     if (active) {
       selectionRequestRef.current = null;
       props.onSelection?.(null);
@@ -857,6 +859,7 @@ function ServerBrowserSurfaceConnection(
     hostSetup,
     native,
     probeReceived,
+    streamGeneration,
     tabId,
     threadId,
     visible,
