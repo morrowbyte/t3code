@@ -1413,11 +1413,9 @@ jobs:
           cache: false
           run-install: false
 
-      - name: Setup Python for node-gyp
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.13"
-          architecture: x64
+      - name: Ensure Python 3 for node-gyp
+        shell: powershell
+        run: ./.github/scripts/setup-windows-python.ps1
 
       - name: Install Windows build dependencies
         uses: ./.github/actions/windows-storage-guard
