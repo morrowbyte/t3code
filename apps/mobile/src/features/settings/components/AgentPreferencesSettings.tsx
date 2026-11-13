@@ -190,7 +190,7 @@ export function AgentPreferencesSettings(props: {
                 />
               ))}
               {error ? (
-                <Text accessibilityRole="alert" className="text-danger">
+                <Text accessibilityRole="alert" className="text-danger-foreground">
                   {error}
                 </Text>
               ) : null}
