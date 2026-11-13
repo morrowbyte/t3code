@@ -1,4 +1,5 @@
 import * as NodeURL from "node:url";
+import { providerMessageText } from "@t3tools/provider-core/server/messageProvenance";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -469,6 +470,15 @@ const cancellationPrompt = "Remain active until the parent cancels this delegate
 const queuedFollowupPrompt = "Complete the queued follow-up and return the final result.";
 const queuedFollowupResult = "Queued delegated follow-up completed.";
 
+const providerPrompt = (text: string) =>
+  text.startsWith("[T3 agent message:") ? text.slice(text.indexOf("\n\n") + 2) : text;
+
+const delegatedProviderPrompt = (text: string) =>
+  providerMessageText(
+    { createdBy: "agent", creationSource: "mcp", senderThreadId: parentThreadId },
+    text,
+  );
+
 const decodeDelegateTask = Schema.decodeUnknownEffect(OrchestratorMcpDelegateTaskResult);
 const decodeDelegateTaskResult = (input: unknown) =>
   decodeDelegateTask(input).pipe(
@@ -495,7 +505,20 @@ const readDelegatedTaskStatusTranscript = Effect.fn("readDelegatedTaskStatusTran
   const fs = yield* FileSystem.FileSystem;
   const text = yield* fs.readFileString(NodeURL.fileURLToPath(delegatedTaskStatusTranscriptFile));
   const transcript = yield* decodeProviderReplayNdjson(
-    text.replaceAll(queuedFollowupResult, followupResult),
+    text
+      .replaceAll(queuedFollowupResult, followupResult)
+      .replaceAll(
+        JSON.stringify(delegatedPrompt),
+        JSON.stringify(delegatedProviderPrompt(delegatedPrompt)),
+      )
+      .replaceAll(
+        JSON.stringify(cancellationPrompt),
+        JSON.stringify(delegatedProviderPrompt(cancellationPrompt)),
+      )
+      .replaceAll(
+        JSON.stringify(queuedFollowupPrompt),
+        JSON.stringify(delegatedProviderPrompt(queuedFollowupPrompt)),
+      ),
   );
   // The recording ends when the recorder closes the app-server while the parent
   // turn is still open. This test keeps acting as that parent afterwards, and
@@ -1043,12 +1066,21 @@ describe("orchestrator MCP toolkit", () => {
             });
             const inherited = yield* invoke({
               threadId: parentThreadId,
-              message: "Use a supported narrower inherited mode",
+              message: "Reject unsupported inheritance before choosing an explicit supported mode",
               clientRequestId: "supported-inheritance",
               delegation: {},
             });
-            expect(inherited.isError).not.toBe(true);
-            const inheritedReceipt = yield* decodeThreadSendResult(inherited.structuredContent);
+            expect(inherited.isError).toBe(true);
+            const explicitlyNarrowed = yield* invoke({
+              threadId: parentThreadId,
+              message: "Use the explicitly chosen supported mode",
+              clientRequestId: "explicit-supported-mode",
+              delegation: { runtimeMode: "approval-required" },
+            });
+            expect(explicitlyNarrowed.isError).not.toBe(true);
+            const inheritedReceipt = yield* decodeThreadSendResult(
+              explicitlyNarrowed.structuredContent,
+            );
             expect(
               (yield* orchestrator.getThreadProjection(inheritedReceipt.childThreadId!)).thread
                 .runtimeMode,
@@ -1817,30 +1849,31 @@ describe("orchestrator MCP toolkit", () => {
               },
               capturedTurns,
               shouldComplete: (turn) =>
-                turn.threadId !== parentThreadId && turn.message.text !== cancellationPrompt,
+                turn.threadId !== parentThreadId &&
+                providerPrompt(turn.message.text) !== cancellationPrompt,
               terminalGate: (turn) =>
-                turn.message.text.startsWith("Delegated task") ||
-                turn.message.text.startsWith("Delegated tasks")
+                providerPrompt(turn.message.text).startsWith("Delegated task") ||
+                providerPrompt(turn.message.text).startsWith("Delegated tasks")
                   ? deliveryTerminalGates.get(turn.threadId)
                   : parentTerminalGates.get(turn.threadId),
-              response: (turn) => `Codex completed: ${turn.message.text}`,
+              response: (turn) => `Codex completed: ${providerPrompt(turn.message.text)}`,
             }),
             makeDeterministicAdapter({
               instanceId: claudeInstanceId,
               driver: ProviderDriverKind.make("claudeAgent"),
               capabilities: ClaudeProviderCapabilitiesV2,
               capturedTurns,
-              shouldComplete: (turn) => turn.message.text !== cancellationPrompt,
+              shouldComplete: (turn) => providerPrompt(turn.message.text) !== cancellationPrompt,
               terminalGate: (turn) =>
-                turn.message.text.startsWith("Delegated task") ||
-                turn.message.text.startsWith("Delegated tasks")
+                providerPrompt(turn.message.text).startsWith("Delegated task") ||
+                providerPrompt(turn.message.text).startsWith("Delegated tasks")
                   ? deliveryTerminalGates.get(turn.threadId)
                   : parentTerminalGates.get(turn.threadId),
               response: (turn) =>
-                turn.message.text === delegatedPrompt
+                providerPrompt(turn.message.text) === delegatedPrompt
                   ? delegatedResult
-                  : `Claude completed: ${turn.message.text}`,
-              steerReceived: (steer) => steerReceivedGates.get(steer.message.text),
+                  : `Claude completed: ${providerPrompt(turn.message.text)}`,
+              steerReceived: (steer) => steerReceivedGates.get(providerPrompt(steer.message.text)),
             }),
           ]);
           const continuationOffers = yield* SubscriptionRef.make<
@@ -3030,7 +3063,7 @@ describe("orchestrator MCP toolkit", () => {
               {
                 instanceId: claudeInstanceId,
                 threadId: delegated.childThreadId,
-                text: delegatedPrompt,
+                text: delegatedProviderPrompt(delegatedPrompt),
               },
             ]);
             expect(

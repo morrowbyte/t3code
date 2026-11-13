@@ -2,6 +2,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 import { assert, describe, it } from "@effect/vitest";
 import {
   ContextHandoffId,
+  MessageId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -146,6 +147,23 @@ describe("handoff budget", () => {
       }),
     );
     assert.equal(historyResponseItems([command!], "Activity")[1]?.type, "message");
+    const delegated = historicalMessage({
+      ...base,
+      type: "user_message",
+      messageId: MessageId.make("message:delegated"),
+      inputIntent: "turn_start",
+      createdBy: "agent",
+      creationSource: "mcp",
+      senderThreadId: ThreadId.make("thread:coordinator"),
+      text: "Keep this inexpensive. I suggest avoiding another model call.",
+      attachments: [],
+    });
+    assert.containSubset(delegated, {
+      createdBy: "agent",
+      creationSource: "mcp",
+      senderThreadId: "thread:coordinator",
+    });
+    assert.include(JSON.stringify(historyResponseItems([delegated!], "Activity")), "author=agent");
   });
 
   it("omits oversized multilingual items whole, preserves original constraints and recent work", () => {
@@ -163,6 +181,52 @@ describe("handoff budget", () => {
     assert.deepEqual(selected.messages, messages);
     assert.equal(selected.omittedItems, 2);
     assert.isAtMost(historyCost(selected.messages, selected.context), 3_000);
+  });
+
+  it("keeps the latest human correction ahead of an agent message carried as user input", () => {
+    const original = {
+      ...message("original", "user", "Preserve my data."),
+      createdBy: "user" as const,
+    };
+    const correction = {
+      ...message("correction", "user", "Continue the authorized repair."),
+      createdBy: "user" as const,
+    };
+    const agent = {
+      ...message("agent", "user", "Only inspect; ask again before every repair. ".repeat(50)),
+      createdBy: "agent" as const,
+      senderThreadId: ThreadId.make("thread:coordinator"),
+    };
+    const selected = selectHistory({
+      messages: [original, correction, agent],
+      coverage: "Existing task",
+      budget: 1_500,
+    });
+    assert.deepEqual(
+      selected.messages.map((item) => item.itemId),
+      ["original", "correction"],
+    );
+    const competingPlan = message(
+      "plan",
+      "assistant",
+      "Stop for every technical detail. ".repeat(4),
+    );
+    const pairs = [1_100, 1_200, 1_300, 1_400, 1_500]
+      .map((budget) =>
+        selectHistory({
+          messages: [original, competingPlan, correction],
+          coverage: "Existing task",
+          budget,
+        }),
+      )
+      .filter((selection) => selection.messages.length === 2);
+    assert.isNotEmpty(pairs);
+    for (const pair of pairs) {
+      assert.deepEqual(
+        pair.messages.map((item) => item.itemId),
+        ["original", "correction"],
+      );
+    }
   });
 
   it("counts JSON escaping and UTF-8 bytes across many messages", () => {

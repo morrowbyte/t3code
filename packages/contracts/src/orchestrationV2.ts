@@ -1142,6 +1142,9 @@ export type OrchestrationV2ProviderThread = typeof OrchestrationV2ProviderThread
 
 export const OrchestrationV2HistoricalMessage = Schema.Struct({
   role: Schema.Literals(["user", "assistant"]),
+  createdBy: Schema.optional(OrchestrationV2Actor),
+  creationSource: Schema.optional(OrchestrationV2CreationSource),
+  senderThreadId: Schema.optional(ThreadId),
   text: Schema.String,
   runStatus: Schema.optional(Schema.String),
   threadId: ThreadId,

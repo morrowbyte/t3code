@@ -33,6 +33,7 @@
         "export-android-icons.ts",
         "mobile-behavior/run.ts",
         "mobile-native-client.ts",
+        "dev-runner-worker.ts",
         "setup-worktree.ts",
         "sign-macos.ts",
         "prepare-server-compile-cache.cjs",
@@ -54,6 +55,7 @@
       "entry": [
         "src/bin.ts!",
         "src/claude-history-worker.ts!",
+        "src/cursor-sdk-worker.ts!",
         "scripts/cli.ts",
         "scripts/fetch-expo-schema.ts",
         "scripts/probe-claude-fork-local-rollback-replay.ts",

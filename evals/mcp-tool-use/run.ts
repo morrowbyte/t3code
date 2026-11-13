@@ -19,6 +19,8 @@ import {
   DeviceSummary,
   OrchestratorMcpTaskRole,
   ProviderInstanceId,
+  OrchestrationV2Actor,
+  OrchestrationV2CreationSource,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -37,6 +39,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 import { boatSetupPrompt } from "../../apps/server/src/boat/setupPrompt.ts";
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
+import { providerMessageText } from "../../packages/provider-core/src/server/messageProvenance.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
 import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSchema.ts";
 import {
@@ -266,6 +269,9 @@ export const McpToolUseCase = Schema.Struct({
       Schema.Array(
         Schema.Struct({
           role: Schema.Literals(["user", "assistant"]),
+          createdBy: Schema.optional(OrchestrationV2Actor),
+          creationSource: Schema.optional(OrchestrationV2CreationSource),
+          senderThreadId: Schema.optional(ThreadId),
           text: Schema.optional(Schema.String),
           toolCalls: Schema.optional(Schema.Array(PriorToolCall)),
         }),
@@ -932,7 +938,7 @@ export const buildMessages = (sample: Sample) => {
           : (sample.priorResults.get(prior) ?? result);
       push("user", toolResult(id, replayed));
     }
-    if (turn.text) push(turn.role, text(turn.text));
+    if (turn.text) push(turn.role, text(providerMessageText(turn, turn.text)));
   }
   const taskText = testCase.boatSetupProjectId
     ? `${boatSetupPrompt(testCase.boatSetupProjectId)}\n\n${testCase.prompt}`
