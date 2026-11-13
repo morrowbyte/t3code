@@ -616,15 +616,22 @@ describe("ServerBrowserSurface native controls", () => {
 
     const resumedHandlers = mocks.createClient.mock.calls.at(-1)![1];
     await act(() =>
-      resumedHandlers.onControl({
+      resumedHandlers.onControl?.({
         controller: "you",
         canOperate: true,
         ready: true,
         generation: 3,
+        dialog: null,
       }),
     );
     await act(() =>
-      handlers.onControl({ controller: "none", canOperate: true, ready: false, generation: 2 }),
+      handlers.onControl?.({
+        controller: "unclaimed",
+        canOperate: true,
+        ready: false,
+        generation: 2,
+        dialog: null,
+      }),
     );
     await expect.element(screen.getByRole("button", { name: "Release control" })).toBeVisible();
 
