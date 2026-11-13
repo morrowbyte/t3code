@@ -4594,7 +4594,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   OR run.run_id = (
                     SELECT latest.run_id FROM orchestration_v2_projection_runs AS latest
                     WHERE latest.thread_id = ${threadId}
-                      AND json_extract(latest.payload_json, '$.delegationAdmission') IS NULL
+                      AND CASE WHEN json_valid(latest.payload_json)
+                        THEN json_extract(latest.payload_json, '$.delegationAdmission') IS NULL
+                        ELSE 1 END
                     ORDER BY latest.ordinal DESC LIMIT 1
                   )
                   -- Retain the latest run for each provider thread with lost
