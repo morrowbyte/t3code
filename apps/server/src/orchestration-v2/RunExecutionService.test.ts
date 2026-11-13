@@ -923,7 +923,7 @@ it.effect("passes current preferences and safe MCP app context to the provider",
                 },
               ],
               projectSettingsOverrides: {
-                "project:preferences": {
+                [ProjectId.make("project:preferences")]: {
                   agentPreferences: [
                     {
                       key: "answer-format",
