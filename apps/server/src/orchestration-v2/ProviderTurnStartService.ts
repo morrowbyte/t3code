@@ -1362,6 +1362,7 @@ export const layer: Layer.Layer<
         }
         resumedHandoffContext = undefined;
         resumedRetryHandoff = [];
+        const { handoff, transferId, createdAt } = yield* recoveryHandoff;
         if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
 
         yield* Effect.logWarning("Recovering provider context in a fresh native session", {
@@ -1388,7 +1389,6 @@ export const layer: Layer.Layer<
           }),
         );
         if (replacement === undefined) return undefined;
-        const { handoff, transferId, createdAt } = yield* recoveryHandoff;
         effectiveHandoffs = withRecoveryHandoff(handoff);
         resumeFellBack = true;
         yield* eventSink.write({

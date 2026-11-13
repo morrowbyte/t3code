@@ -1569,6 +1569,50 @@ effectIt.effect("recovers an abandoned failed turn before continuing its native 
   }),
 );
 
+effectIt.effect("rejects invalid recovery before creating a replacement native thread", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      sideChat: { contextRun: "delivered", budgetFailure: true },
+    });
+    const projection = harness.projection();
+    const providerThread = {
+      ...projection.providerThreads[0]!,
+      nativeThreadRef: {
+        driver: projection.providerThreads[0]!.driver,
+        nativeId: "native-resume-thread",
+        strength: "strong" as const,
+      },
+    };
+    harness.setProjection({ ...projection, providerThreads: [providerThread] });
+    const ensureThread = vi.fn(() => Effect.succeed(providerThread));
+    const resumeThread = vi.fn(() =>
+      Effect.fail(
+        new ProviderAdapter.ProviderAdapterEventStreamError({
+          driver: providerThread.driver,
+          providerSessionId: ProviderSessionId.make("new-provider-session"),
+          cause: "native thread is gone",
+        }),
+      ),
+    );
+    harness.open.mockReturnValue(
+      Effect.succeed({ driver: providerThread.driver, ensureThread, resumeThread } as never),
+    );
+
+    yield* harness.start;
+
+    expect(resumeThread).toHaveBeenCalledOnce();
+    expect(ensureThread).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(harness.projection().attempts[0]?.status).toBe("failed");
+    expect(harness.projection().nodes.find((node) => node.kind === "root_turn")?.status).toBe(
+      "failed",
+    );
+    expect(harness.projection().providerThreads).toEqual([providerThread]);
+  }),
+);
+
 effectIt.effect.each([
   { contextRun: "current", runtimeMode: "approval-required", context: "SIDE_CHAT_CONTEXT" },
   { contextRun: "failed", runtimeMode: "approval-required", context: "SIDE_CHAT_CONTEXT" },
