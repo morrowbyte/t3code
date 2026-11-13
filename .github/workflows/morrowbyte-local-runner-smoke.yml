@@ -1,25 +1,34 @@
-name: Morrowbyte local runner smoke
-
+name: Morrowbyte Windows runner shell inspection
 on:
   workflow_dispatch:
-
-permissions: {}
-
+permissions:
+  contents: read
 jobs:
-  smoke:
-    if: github.repository == 'morrowbyte/t3code' && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, morrowbyte-local-e2e-20261029]
+  inspect:
+    if: github.repository == 'morrowbyte/t3code' && github.ref == 'refs/heads/ops/windows-runner-shell-20261113'
+    runs-on: [self-hosted, morrowbyte-windows]
     timeout-minutes: 5
     steps:
-      - name: Verify isolated local execution
-        shell: bash
+      - name: Inspect native runner shell and launcher
+        shell: powershell
         run: |
-          set -euo pipefail
-          test "$RUNNER_OS" = Linux
-          test "$RUNNER_ARCH" = X64
-          test ! -S /var/run/docker.sock
-          test -w "$RUNNER_TEMP"
-          command -v bash
-          command -v git
-          command -v curl
-          printf '%s\n' 'Local runner smoke passed.'
+          $ErrorActionPreference = 'Stop'
+          if ($env:COMPUTERNAME -ne 'WINDEV2407EVAL') { throw 'Unexpected runner host' }
+          Write-Output ('HOST=' + $env:COMPUTERNAME)
+          Write-Output ('RUNNER=' + $env:RUNNER_NAME)
+          Write-Output ('ROOT=' + $env:RUNNER_WORKSPACE)
+          Get-Command git.exe,bash.exe,rustup.exe,rustc.exe -All -ErrorAction SilentlyContinue | Select-Object Name,Source | Format-Table -AutoSize
+          $gitRoot = Split-Path (Split-Path (Get-Command git.exe).Source)
+          Write-Output ('GIT_BASH=' + (Join-Path $gitRoot 'bin\bash.exe'))
+          $parent = $PID
+          for ($i = 0; $i -lt 6 -and $parent -gt 0; $i++) {
+            $process = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $parent)
+            $process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath | Format-List
+            $parent = $process.ParentProcessId
+          }
+          Get-CimInstance Win32_Service | Where-Object { $_.PathName -like '*crew-actions-runner*' } | Select-Object Name,State,StartName,PathName | Format-List
+          $runnerRoot = 'C:\Users\User\crew-actions-runner'
+          Get-ChildItem -LiteralPath $runnerRoot -Force | Where-Object { $_.Name -in @('.path','.env','run.cmd','run-helper.cmd','svc.cmd','.service') } | Select-Object Name,Length | Format-Table -AutoSize
+          if (Test-Path (Join-Path $runnerRoot '.path')) { Get-Content (Join-Path $runnerRoot '.path') }
+          if (Test-Path (Join-Path $runnerRoot '.env')) { Get-Content (Join-Path $runnerRoot '.env') | ForEach-Object { ($_ -split '=',2)[0] } }
+          if (Test-Path (Join-Path $runnerRoot '.service')) { Get-Content (Join-Path $runnerRoot '.service') }
