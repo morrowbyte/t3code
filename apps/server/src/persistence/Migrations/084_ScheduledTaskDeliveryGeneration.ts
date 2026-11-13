@@ -5,4 +5,5 @@ export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   // Empty generations keep pre-upgrade deliveries valid only until their first revocation.
   yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN delivery_generation TEXT NOT NULL DEFAULT ''`;
+  yield* sql`UPDATE scheduled_tasks SET delivery_generation = lower(hex(randomblob(16))) WHERE enabled = 0`;
 });
