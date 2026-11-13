@@ -69,10 +69,14 @@ it.effect("does not register buffered Ready after the helper stopped before host
           return host.createConnection(...args);
         },
       }),
-      Effect.provide(Layer.mock(DesktopSshPasswordPrompts.DesktopSshPasswordPrompts)({})),
       Effect.provideService(HttpClient.HttpClient, client),
-      Effect.provide(NetService.layer),
-      Effect.provide(NodeServices.layer),
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.mock(DesktopSshPasswordPrompts.DesktopSshPasswordPrompts)({}),
+          NetService.layer,
+          NodeServices.layer,
+        ),
+      ),
     );
     assert.deepEqual(yield* environment.ensureEnvironment(target), bootstrap);
     assert.isTrue(helperStopped);

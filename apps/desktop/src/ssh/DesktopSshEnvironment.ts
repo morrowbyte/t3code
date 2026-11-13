@@ -174,6 +174,12 @@ export const make = Effect.gen(function* () {
           const ready = yield* Deferred.make<void, Error>();
           const stopped = yield* Deferred.make<void>();
           const binding = { environmentId: descriptor.environmentId, scope, stopped };
+          const closedError = new SshCommandError({
+            command: ["desktop-browser"],
+            exitCode: null,
+            stderr: "",
+            message: "The browser target connection closed.",
+          });
           let connection: ReturnType<typeof browserHost.createConnection> | undefined;
           let connectionStopped = false;
           const closeConnection = Effect.suspend(() => {
@@ -189,7 +195,7 @@ export const make = Effect.gen(function* () {
               }).pipe(
                 Effect.andThen(closeConnection),
                 Effect.andThen(
-                  Deferred.fail(ready, new Error("The browser target connection closed.")),
+                  Deferred.fail(ready, closedError),
                 ),
                 Effect.andThen(Deferred.succeed(stopped, undefined)),
               ),
@@ -201,7 +207,7 @@ export const make = Effect.gen(function* () {
               closeConnection,
             );
             if (connectionStopped)
-              return yield* Effect.fail(new Error("The browser target connection closed."));
+              return yield* closedError;
             const activeConnection = browserHost.createConnection(
               descriptor.environmentId,
               transport.proxyUrl,
@@ -229,9 +235,7 @@ export const make = Effect.gen(function* () {
                   Effect.flatMap((receipt) =>
                     Effect.gen(function* () {
                       if (connectionStopped)
-                        return yield* Effect.fail(
-                          new Error("The browser target connection closed."),
-                        );
+                        return yield* closedError;
                       if (receipt.environmentId !== descriptor.environmentId)
                         return yield* new SshCommandError({
                           command: ["desktop-browser"],
