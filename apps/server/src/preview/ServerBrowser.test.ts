@@ -823,20 +823,30 @@ it.live.each(["desktop" as const, undefined])(
         desktopTabs.add(local.tabId);
         const boundEvents = yield* manager.subscribeEvents;
         const bound = yield* Stream.fromSubscription(boundEvents).pipe(
-          Stream.filter((event) => "snapshot" in event && event.snapshot.desktopHostId === "native-host"),
-          Stream.take(1), Stream.toPull,
+          Stream.filter(
+            (event) => "snapshot" in event && event.snapshot.desktopHostId === "native-host",
+          ),
+          Stream.take(1),
+          Stream.toPull,
         );
         desktopDetaches.emit("attach", {
-          threadId: scope.thread.threadId, tabId: local.tabId,
+          threadId: scope.thread.threadId,
+          tabId: local.tabId,
           restoration: {
-            desktopHostId: "native-host", url: "https://example.com/logged-in", title: "Signed in",
-            canGoBack: true, canGoForward: false, profileId: "default",
+            desktopHostId: "native-host",
+            url: "https://example.com/logged-in",
+            title: "Signed in",
+            canGoBack: true,
+            canGoForward: false,
+            profileId: "default",
           },
         });
         yield* bound;
-        expect((yield* manager.list({ threadId: scope.thread.threadId })).sessions.find(
-          (session) => session.tabId === local.tabId,
-        )?.desktopHostId).toBe("native-host");
+        expect(
+          (yield* manager.list({ threadId: scope.thread.threadId })).sessions.find(
+            (session) => session.tabId === local.tabId,
+          )?.desktopHostId,
+        ).toBe("native-host");
         const status = yield* broker.invoke<PreviewAutomationStatus>({
           scope,
           operation: "status",

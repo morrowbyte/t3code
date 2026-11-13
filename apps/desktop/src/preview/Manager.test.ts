@@ -886,7 +886,12 @@ describe("PreviewManager", () => {
       withManager((manager, host) =>
         Effect.gen(function* () {
           const fixture = makeOffscreenFixture();
-          const serverTab = { threadId: "unit-thread", tabId: "unit-tab" };
+          const serverTab = {
+            threadId: "unit-thread",
+            tabId: "unit-tab",
+            profileId: "default",
+            viewport: { _tag: "fill" as const },
+          };
           using attach = vi.spyOn(host, "attach");
           let currentUrl = renderer === "ready document" ? fixture.wc.getURL() : "";
           fixture.wc.getURL = () => currentUrl;
@@ -927,7 +932,27 @@ describe("PreviewManager", () => {
               : ["about:blank", "https://example.com/initial"],
           );
           expect(fixture.wc.getURL()).toBe("https://example.com/initial");
+          const getRestoration = attach.mock.calls.at(-1)?.[1].getRestoration;
+          expect(getRestoration).toBeTypeOf("function");
+          const viewport = { _tag: "freeform" as const, width: 900, height: 700 };
+          yield* manager.ensureOffscreenHost("osr_tab", { ...fixture.configuration, viewport }, 7);
+          currentUrl = "https://example.com/survived";
+          fixture.wc.getTitle = () => "Surviving document";
+          fixture.wc.navigationHistory.canGoBack = () => true;
+          const scriptReads = fixture.wc.executeJavaScript.mock.calls.length;
+          expect(getRestoration?.()).toEqual({
+            desktopHostId: "osr_tab",
+            url: "https://example.com/survived",
+            title: "Surviving document",
+            canGoBack: true,
+            canGoForward: false,
+            viewport,
+            profileId: "default",
+          });
+          expect(fixture.wc.executeJavaScript).toHaveBeenCalledTimes(scriptReads);
           expect(browserWindowConstructor).toHaveBeenCalledOnce();
+          yield* manager.closeTab("osr_tab");
+          expect(getRestoration?.()).toBeUndefined();
         }),
       ),
   );

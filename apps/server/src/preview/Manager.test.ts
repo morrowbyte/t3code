@@ -138,15 +138,31 @@ it.layer(layer)("PreviewManager", (it) => {
         expect(yield* collector.drain).toEqual([]);
       }
 
-      const bound = yield* manager.bindDesktopTab({ threadId, tabId: opened.tabId, desktopHostId: "initial-main-host" });
+      const bound = yield* manager.bindDesktopTab({
+        threadId,
+        tabId: opened.tabId,
+        desktopHostId: "initial-main-host",
+      });
       expect(bound.profileId).toBe("personal");
       expect(bound.desktopHostId).toBe("initial-main-host");
       yield* collector.drain;
-      expect(yield* manager.bindDesktopTab({ threadId, tabId: opened.tabId, desktopHostId: "initial-main-host" })).toBe(bound);
+      expect(
+        yield* manager.bindDesktopTab({
+          threadId,
+          tabId: opened.tabId,
+          desktopHostId: "initial-main-host",
+        }),
+      ).toBe(bound);
       expect(yield* collector.drain).toEqual([]);
-      const bindingError = yield* manager.bindDesktopTab({ threadId, tabId: opened.tabId, desktopHostId: "foreign-main-host" }).pipe(Effect.flip);
+      const bindingError = yield* manager
+        .bindDesktopTab({ threadId, tabId: opened.tabId, desktopHostId: "foreign-main-host" })
+        .pipe(Effect.flip);
       expect(bindingError._tag).toBe("PreviewControlRequiredError");
-      expect((yield* manager.list({ threadId })).sessions.find((snapshot) => snapshot.tabId === opened.tabId)).toBe(bound);
+      expect(
+        (yield* manager.list({ threadId })).sessions.find(
+          (snapshot) => snapshot.tabId === opened.tabId,
+        ),
+      ).toBe(bound);
       expect(yield* collector.drain).toEqual([]);
 
       const idle = yield* manager.restoreDesktopTab({

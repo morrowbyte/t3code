@@ -44,9 +44,11 @@ export class PreviewManager extends Context.Service<
     readonly restoreDesktopTab: (
       input: DesktopBrowserTabRestoration & { readonly threadId: ThreadId; readonly tabId: string },
     ) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
-    readonly bindDesktopTab: (
-      input: { readonly threadId: ThreadId; readonly tabId: string; readonly desktopHostId: string },
-    ) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
+    readonly bindDesktopTab: (input: {
+      readonly threadId: ThreadId;
+      readonly tabId: string;
+      readonly desktopHostId: string;
+    }) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
     readonly reportStatus: (
       input: PreviewReportStatusInput & { readonly serverControlled?: boolean },
     ) => Effect.Effect<void, PreviewError>;
@@ -232,16 +234,38 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const bindDesktopTab: PreviewManager["Service"]["bindDesktopTab"] = Effect.fn(
     "PreviewManager.bindDesktopTab",
   )(function* (input) {
-    return yield* mutateExistingSession(input.threadId, input.tabId, Effect.fn("PreviewManager.bindDesktopHost")(function* (session) {
-      if (session.snapshot.headless || (session.snapshot.desktopHostId !== undefined && session.snapshot.desktopHostId !== input.desktopHostId)) {
-        return yield* new PreviewControlRequiredError({ tabId: input.tabId });
-      }
-      if (session.snapshot.desktopHostId === input.desktopHostId) {
-        return { next: session, emit: null, result: session.snapshot };
-      }
-      const snapshot = { ...session.snapshot, desktopHostId: input.desktopHostId, updatedAt: yield* currentIsoTimestamp };
-      return { next: { ...session, snapshot }, emit: { type: "navigated" as const, threadId: input.threadId, tabId: input.tabId, createdAt: snapshot.updatedAt, snapshot }, result: snapshot };
-    }));
+    return yield* mutateExistingSession(
+      input.threadId,
+      input.tabId,
+      Effect.fn("PreviewManager.bindDesktopHost")(function* (session) {
+        if (
+          session.snapshot.headless ||
+          (session.snapshot.desktopHostId !== undefined &&
+            session.snapshot.desktopHostId !== input.desktopHostId)
+        ) {
+          return yield* new PreviewControlRequiredError({ tabId: input.tabId });
+        }
+        if (session.snapshot.desktopHostId === input.desktopHostId) {
+          return { next: session, emit: null, result: session.snapshot };
+        }
+        const snapshot = {
+          ...session.snapshot,
+          desktopHostId: input.desktopHostId,
+          updatedAt: yield* currentIsoTimestamp,
+        };
+        return {
+          next: { ...session, snapshot },
+          emit: {
+            type: "navigated" as const,
+            threadId: input.threadId,
+            tabId: input.tabId,
+            createdAt: snapshot.updatedAt,
+            snapshot,
+          },
+          result: snapshot,
+        };
+      }),
+    );
   });
 
   const restoreDesktopTab: PreviewManager["Service"]["restoreDesktopTab"] = Effect.fn(

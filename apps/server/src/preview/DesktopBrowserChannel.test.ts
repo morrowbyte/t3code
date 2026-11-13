@@ -200,8 +200,12 @@ effectIt.live(
         }
         const attached = yield* channel.attached.pipe(Stream.rechunk(1), Stream.toPull);
         const restoration = {
-          desktopHostId: "native-host", url: "https://example.com/current", title: "Current",
-          canGoBack: true, canGoForward: false, profileId: "default",
+          desktopHostId: "native-host",
+          url: "https://example.com/current",
+          title: "Current",
+          canGoBack: true,
+          canGoForward: false,
+          profileId: "default",
         };
         const first = yield* makeLocalPeer(descriptor);
         // Registration and the first event may share a single OS read.
@@ -224,9 +228,13 @@ effectIt.live(
         });
         expect(yield* channel.awaitAttached(privateTarget, "5 seconds")).toBe(true);
         expect(channel.available).toBe(true);
-        expect(yield* attached).toEqual([{
-          threadId: privateTarget.threadId, tabId: privateTarget.tabId, restoration,
-        }]);
+        expect(yield* attached).toEqual([
+          {
+            threadId: privateTarget.threadId,
+            tabId: privateTarget.tabId,
+            restoration,
+          },
+        ]);
         yield* channel.turn(privateTarget.threadId, true);
         expect(yield* first.next).toEqual({
           type: "turn",
@@ -272,7 +280,11 @@ effectIt.live(
         yield* second.send(registration(descriptor));
         yield* second.next;
         const other = { threadId: "other-thread", tabId: "other-tab" };
-        yield* second.send({ type: "attached", ...privateTarget, restoration: { ...restoration, desktopHostId: "foreign-host" } });
+        yield* second.send({
+          type: "attached",
+          ...privateTarget,
+          restoration: { ...restoration, desktopHostId: "foreign-host" },
+        });
         yield* second.send({ type: "detached", ...privateTarget });
         yield* second.send({
           ...privateTarget,
@@ -353,10 +365,13 @@ effectIt.live(
           },
         });
         expect(yield* channel.awaitAttached(replacement, "5 seconds")).toBe(true);
-        expect(yield* attached).toEqual([{
-          threadId: privateTarget.threadId, tabId: privateTarget.tabId,
-          restoration: { ...restoration, title: "Fresh replacement" },
-        }]);
+        expect(yield* attached).toEqual([
+          {
+            threadId: privateTarget.threadId,
+            tabId: privateTarget.tabId,
+            restoration: { ...restoration, title: "Fresh replacement" },
+          },
+        ]);
         expect(yield* second.next).toEqual({
           type: "turn",
           threadId: replacement.threadId,

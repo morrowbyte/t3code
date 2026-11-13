@@ -204,13 +204,20 @@ describe("DesktopBrowserHost", () => {
         const backend = yield* connect(host);
         const debuggee = makeDebuggee();
         const restoration = {
-          desktopHostId: "native-host", url: "https://example.com/current", title: "Current page",
-          canGoBack: true, canGoForward: false,
-          viewport: { _tag: "freeform" as const, width: 900, height: 700 }, profileId: "default",
+          desktopHostId: "native-host",
+          url: "https://example.com/current",
+          title: "Current page",
+          canGoBack: true,
+          canGoForward: false,
+          viewport: { _tag: "freeform" as const, width: 900, height: 700 },
+          profileId: "default",
         };
         const getRestoration = vi.fn(() => restoration);
         host.attach(key, { ...debuggee.tab, getRestoration });
-        expect(yield* Queue.take(backend.messages)).toMatchObject({ type: "attached", restoration });
+        expect(yield* Queue.take(backend.messages)).toMatchObject({
+          type: "attached",
+          restoration,
+        });
         const { lease } = yield* grant(host, backend, debuggee.tab.webContents);
         host.setPrivateEntry(debuggee.tab.webContents, true);
         const releasing = yield* Effect.tryPromise(() => lease.release()).pipe(Effect.forkScoped);
@@ -251,7 +258,10 @@ describe("DesktopBrowserHost", () => {
         const old = yield* connect(host);
         const debuggee = makeDebuggee();
         const getRestoration = vi.fn(() => ({
-          desktopHostId: "native-host", title: "Public", canGoBack: false, canGoForward: false,
+          desktopHostId: "native-host",
+          title: "Public",
+          canGoBack: false,
+          canGoForward: false,
         }));
         host.attach(key, { ...debuggee.tab, getRestoration });
         expect(yield* Queue.take(old.messages)).toHaveProperty("restoration");
@@ -695,7 +705,10 @@ describe("DesktopBrowserHost", () => {
       let destroyed = false;
       debuggee.tab.webContents.isDestroyed = () => destroyed;
       const getRestoration = vi.fn(() => ({
-        desktopHostId: "native-host", title, canGoBack: false, canGoForward: false,
+        desktopHostId: "native-host",
+        title,
+        canGoBack: false,
+        canGoForward: false,
       }));
       host.attach(key, { ...debuggee.tab, getRestoration });
       // A restarted backend subscribes after the attach and still hears it.

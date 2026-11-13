@@ -32,7 +32,11 @@ export function isConfirmedPreviewDesktopHostId(
     return false;
   }
   const host = readDesktopBrowserHostState(desktopHostId);
-  if (!host || host.webContentsId === null || (host.kind !== "offscreen" && host.kind !== "webview"))
+  if (
+    !host ||
+    host.webContentsId === null ||
+    (host.kind !== "offscreen" && host.kind !== "webview")
+  )
     return false;
   try {
     const identity: unknown = JSON.parse(desktopHostId);

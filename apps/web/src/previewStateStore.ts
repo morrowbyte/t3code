@@ -231,7 +231,11 @@ export function applyPreviewServerEvent(ref: ScopedThreadRef, event: PreviewEven
           return {
             ...current,
             sessions,
-            restoringDesktopTabIds: new Set([...(current.restoringDesktopTabIds ?? [])].filter((tabId) => tabId !== snapshot.tabId)),
+            restoringDesktopTabIds: new Set(
+              [...(current.restoringDesktopTabIds ?? [])].filter(
+                (tabId) => tabId !== snapshot.tabId,
+              ),
+            ),
             activeTabId: activeTabId ?? snapshot.tabId,
             snapshot: activeSnapshot,
             desktopOverlay: current.desktopByTabId[activeSnapshot.tabId] ?? null,
