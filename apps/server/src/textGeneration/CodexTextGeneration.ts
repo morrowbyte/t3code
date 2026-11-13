@@ -41,6 +41,7 @@ const CodexMcpServers = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ name: Schema.String, enabled: Schema.Boolean })),
 );
 const decodeCodexMcpServers = Schema.decodeEffect(CodexMcpServers);
+const isTextGenerationError = Schema.is(TextGenerationError);
 
 // mcp_servers={} merges instead of replacing; disable named entries and quote dotted names.
 const codexMcpServersOff = (names: ReadonlyArray<string>): string | null =>
@@ -223,7 +224,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       }),
     ),
     Effect.mapError((cause) =>
-      cause instanceof TextGenerationError
+      isTextGenerationError(cause)
         ? cause
         : new TextGenerationError({
             operation: "mcpList",

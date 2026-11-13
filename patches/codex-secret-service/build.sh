@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -lt 3 || $# -gt 4 || $(uname -sm) != 'Linux x86_64' ]]; then
-    echo "Usage on Linux x64: $0 /codex-source /private-target-dir /musl-build.env [build|test]" >&2
+    echo "Usage on Linux x64: $0 /codex-source /private-target-dir /musl-build.env [build|test|verify]" >&2
     exit 2
 fi
 
@@ -21,14 +21,16 @@ rm -- "$patch_index"
 trap 'rm -f -- "$patch_index" "$patch_index.lock"' EXIT
 export GIT_INDEX_FILE="$patch_index"
 git -C "$source_root" read-tree "$source_commit"
-git -C "$source_root" add -- codex-rs/keyring-store codex-rs/rmcp-client/src/oauth.rs codex-rs/rmcp-client/src/oauth
-for patch_file in 0002-noninteractive-refresh-save.patch 0001-linux-noninteractive-keyring-reads.patch; do
-    git -C "$source_root" apply --cached --reverse --exclude=codex-rs/Cargo.lock "$patch_root/$patch_file"
+for patch_file in 0001-linux-noninteractive-keyring-reads.patch 0002-noninteractive-refresh-save.patch; do
+    git -C "$source_root" apply --cached "$patch_root/$patch_file"
 done
-git -C "$source_root" diff --cached --exit-code "$source_commit" -- codex-rs/keyring-store codex-rs/rmcp-client/src/oauth.rs codex-rs/rmcp-client/src/oauth
+expected_tree=$(git -C "$source_root" write-tree)
+git -C "$source_root" add -A -- .
+git -C "$source_root" diff --cached --exit-code "$expected_tree" -- . \
+    ':(exclude)codex-rs/Cargo.toml' ':(exclude)codex-rs/Cargo.lock'
 unset GIT_INDEX_FILE
 
-python3 - "$source_root" "$runtime_version" <<'PY'
+python3 - "$source_root" "$runtime_version" "$expected_tree" <<'PY'
 import pathlib
 import subprocess
 import sys
@@ -36,25 +38,38 @@ import tomllib
 
 source = pathlib.Path(sys.argv[1])
 version = sys.argv[2]
+expected_tree = sys.argv[3]
+def expected(path):
+    return subprocess.check_output(['git', '-C', str(source), 'show', f'{expected_tree}:{path}'], text=True)
+def normalize_manifest(text):
+    current_version = tomllib.loads(text)['workspace']['package']['version']
+    assert current_version in ('0.163.0', '0.163.0-morrowbyte.1', version)
+    return text.replace(f'version = "{current_version}"', f'version = "{version}"', 1)
+def normalize_lock(text):
+    sections = text.split('[[package]]')
+    for index, section in enumerate(sections[1:], 1):
+        if '\nsource = ' not in section:
+            for previous in ('0.0.0', '0.163.0-morrowbyte.1'):
+                section = section.replace(f'version = "{previous}"', f'version = "{version}"', 1)
+            sections[index] = section
+    return '[[package]]'.join(sections)
+
 manifest = source / 'codex-rs/Cargo.toml'
-text = manifest.read_text()
-current_version = tomllib.loads(text)['workspace']['package']['version']
-assert current_version in ('0.163.0', '0.163.0-morrowbyte.1', version)
-manifest.write_text(text.replace(f'version = "{current_version}"', f'version = "{version}"', 1))
 lock = source / 'codex-rs/Cargo.lock'
-sections = lock.read_text().split('[[package]]')
-for index, section in enumerate(sections[1:], 1):
-    if '\nsource = ' not in section:
-        for previous in ('0.0.0', '0.163.0-morrowbyte.1'):
-            section = section.replace(f'version = "{previous}"', f'version = "{version}"', 1)
-        sections[index] = section
-candidate = '[[package]]'.join(sections)
-original = subprocess.check_output(['git', '-C', str(source), 'show', 'HEAD:codex-rs/Cargo.lock'], text=True)
-def external_packages(text):
-    return [package for package in tomllib.loads(text)['package'] if 'source' in package]
-assert external_packages(candidate) == external_packages(original), 'Unexpected external dependency change'
-lock.write_text(candidate)
+for path in (manifest, lock):
+    assert not path.is_symlink() and not path.stat().st_mode & 0o111, f'Unexpected file mode: {path.name}'
+normalized_manifest = normalize_manifest(manifest.read_text())
+normalized_lock = normalize_lock(lock.read_text())
+assert normalized_manifest == normalize_manifest(expected('codex-rs/Cargo.toml')), 'Unexpected workspace manifest change'
+assert normalized_lock == normalize_lock(expected('codex-rs/Cargo.lock')), 'Unexpected lockfile change'
+manifest.write_text(normalized_manifest)
+lock.write_text(normalized_lock)
 PY
+
+if [[ ${4:-build} == verify ]]; then
+    echo "Verified the complete patched source tree and runtime version."
+    exit 0
+fi
 
 while IFS='=' read -r variable_name variable_value; do
     [[ -n "$variable_name" && "$variable_name" != \#* ]] || continue

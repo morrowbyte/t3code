@@ -65,6 +65,10 @@ The test mode runs only the Linux keyring regressions and the existing OAuth
 credential-store persistence case. Both modes validate the complete patch stack
 without modifying the source's real index. Workspace package versions are
 normalized to the custom revision; registry/git dependencies remain exact.
+The `verify` mode performs only this source validation. Run
+`bash patches/codex-secret-service/build.test.sh /codex-source /private/temp`
+to check rejection of unrelated tracked, untracked and lockfile edits without
+starting Cargo or downloading build dependencies.
 
 The build uses one compile job, LLD through the musl compiler's `REALGCC` wrapper,
 release debug information disabled, LTO off and sixteen codegen units. It uses

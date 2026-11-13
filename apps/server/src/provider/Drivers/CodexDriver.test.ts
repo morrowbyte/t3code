@@ -364,7 +364,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
         if (!instance.auth?.refreshMethods) throw new Error("Missing native auth method refresh");
         yield* instance.auth.refreshMethods;
         const auth = yield* instance.auth.subscribe("owner").pipe(Stream.runHead);
-        expect(Option.isSome(auth) && auth.value.methods.length).toBeGreaterThan(0);
+        expect(Option.isSome(auth) && (auth.value.methods?.length ?? 0)).toBeGreaterThan(0);
         expect(process.env.PATH).not.toBe(directory);
       }).pipe(Effect.scoped),
   );
