@@ -403,8 +403,9 @@ describe("SSH desktop browser helper", () => {
   ] as const)("cleans up %s without exposing the capability", (scenario) =>
     withTempDirectory("t3-ssh-", (root) =>
       Effect.gen(function* () {
+        const platform = yield* HostProcess.Platform;
         const endpoint =
-          process.platform === "win32"
+          platform === "win32"
             ? `\\\\.\\pipe\\t3-ssh-${NodePath.basename(root)}`
             : NodePath.join(root, "channel.sock");
         const server = NodeNet.createServer();
@@ -426,7 +427,7 @@ describe("SSH desktop browser helper", () => {
               server.once("error", reject);
               server.listen(endpoint, resolve);
             });
-            if (process.platform !== "win32") await NodeFSP.chmod(endpoint, 0o600);
+            if (platform !== "win32") await NodeFSP.chmod(endpoint, 0o600);
           }),
           () =>
             Effect.promise(async () => {
@@ -482,7 +483,11 @@ describe("SSH desktop browser helper", () => {
           "target-env",
           "--base-dir",
           root,
-        ]).pipe(Effect.result, Effect.forkScoped);
+        ]).pipe(
+          Effect.provideService(HostProcess.Platform, platform),
+          Effect.result,
+          Effect.forkScoped,
+        );
         const socket = yield* Effect.promise(() => accepted.promise);
         const disconnected = NodeEvents.EventEmitter.once(socket, "close");
         expect(JSON.parse(yield* Effect.promise(() => registered.promise))).toEqual({

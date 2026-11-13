@@ -25,7 +25,7 @@ import {
 } from "./browserViewportLayout";
 import { BrowserDeviceToolbar } from "./BrowserDeviceToolbar";
 import { BrowserViewportResizeHandles } from "./BrowserViewportResizeHandles";
-import { acquireDesktopTab, type AcquiredDesktopTab, withDesktopTab } from "./desktopTabLifetime";
+import { acquireDesktopTab, withDesktopTab } from "./desktopTabLifetime";
 import {
   acquireDesktopBrowserHostState,
   useDesktopBrowserHostedEnvironmentIds,
@@ -142,7 +142,6 @@ export function HostedBrowserWebview(props: {
   const [legacyWebviewHost] = useState(() => !nativeHost);
   const config = usePreviewWebviewConfig(threadRef.environmentId, profileId);
   const [initialSrc] = useState(() => initialUrl ?? "about:blank");
-  const tabLeaseRef = useRef<AcquiredDesktopTab | null>(null);
   const [tabConnection, setTabConnection] = useState<{
     readonly tabId: string;
     readonly ready: Promise<void>;
@@ -153,7 +152,7 @@ export function HostedBrowserWebview(props: {
   const nativeSurface = nativeHost && !legacyWebviewHost && hostState?.kind !== "webview";
   const hostKindRef = useRef<DesktopPreviewSurfaceState["kind"]>("pending");
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const webviewRef = useRef<ElectronWebview | null>(null);
+  const [webviewElement, setWebviewElement] = useState<HTMLElement | null>(null);
   const crashRecoveryRef = useRef<WebviewCrashRecoveryState>(INITIAL_WEBVIEW_CRASH_RECOVERY_STATE);
   const [aspectRatioLocked, setAspectRatioLocked] = useState(false);
   const presentation = useBrowserSurfaceStore(
@@ -174,8 +173,8 @@ export function HostedBrowserWebview(props: {
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- releasing native control must also release keyboard focus in the guest
   useEffect(() => {
-    if (!presentation.interactive) webviewRef.current?.blur();
-  }, [presentation.interactive]);
+    if (!presentation.interactive) webviewElement?.blur();
+  }, [presentation.interactive, webviewElement]);
   const backgroundActivity = useBrowserSurfaceStore(
     (state) => (state.activityByTabId[runtimeTabId] ?? 0) > 0,
   );
@@ -222,7 +221,6 @@ export function HostedBrowserWebview(props: {
         : undefined,
       nativeHost ? initialSrc : undefined,
     );
-    tabLeaseRef.current = lease;
     let disposed = false;
     void lease.ready.then(
       () => {
@@ -235,7 +233,6 @@ export function HostedBrowserWebview(props: {
     );
     return () => {
       disposed = true;
-      if (tabLeaseRef.current === lease) tabLeaseRef.current = null;
       setTabConnection((current) => (current?.ready === lease.ready ? null : current));
       lease.release();
     };
@@ -257,6 +254,7 @@ export function HostedBrowserWebview(props: {
     hostKindRef.current = state.kind;
     hostLeaseRef.current?.update(state);
   });
+  const tabReady = tabConnection?.tabId === runtimeTabId ? tabConnection.ready : null;
   const hostConnection = (
     <OffscreenHostConnection
       key={JSON.stringify([runtimeTabId, hostState?.webContentsId ?? null, hostRevision])}
@@ -264,7 +262,7 @@ export function HostedBrowserWebview(props: {
       tabId={runtimeTabId}
       environmentId={threadRef.environmentId}
       profileId={profileId}
-      ready={tabConnection?.tabId === runtimeTabId ? tabConnection.ready : null}
+      ready={tabReady}
       width={viewportWidth}
       height={viewportHeight}
       presetId={viewportPresetId}
@@ -292,25 +290,20 @@ export function HostedBrowserWebview(props: {
     setWebviewGeneration((generation) => generation + 1);
   });
 
-  const setWebviewRef = (node: HTMLElement | null) => {
-    webviewRef.current = node as ElectronWebview | null;
-  };
-
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers the webview's webContents with the desktop bridge and listens for crashes and focus
   useEffect(() => {
-    const webview = webviewRef.current;
+    const webview = webviewElement as ElectronWebview | null;
     const bridge = previewBridge;
-    if (!clientSettingsHydrated || !webview || !config || !bridge || nativeSurface) return;
+    if (!webview || !bridge) return;
     let disposed = false;
     let recoveryTimeout: ReturnType<typeof setTimeout> | null = null;
     const register = () => {
-      const lease = tabLeaseRef.current;
-      if (!lease) return;
+      if (!tabReady) return;
       void (async () => {
         try {
           // Tab creation and webview attachment use separate effects; wait to avoid PreviewTabNotFoundError.
-          await lease.ready;
-          if (disposed || webviewRef.current !== webview) return;
+          await tabReady;
+          if (disposed || !webview.isConnected) return;
           const webContentsId = webview.getWebContentsId();
           if (Number.isInteger(webContentsId) && webContentsId > 0) {
             await bridge.registerWebview(runtimeTabId, webContentsId);
@@ -347,16 +340,7 @@ export function HostedBrowserWebview(props: {
       webview.removeEventListener("render-process-gone", recoverGuest);
       webview.removeEventListener("focus", dismissHostPopups);
     };
-  }, [
-    clientSettingsHydrated,
-    config,
-    hostState?.kind,
-    nativeHost,
-    nativeSurface,
-    runtimeTabId,
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A crash recovery remounts the webview under a new key, so the listeners attach to the new element.
-    webviewGeneration,
-  ]);
+  }, [runtimeTabId, tabReady, webviewElement]);
 
   const active = presentation.visible && presentation.rect !== null;
   const lastRect = presentation.rect;
@@ -495,7 +479,7 @@ export function HostedBrowserWebview(props: {
           ) : null}
           <webview
             key={webviewGeneration}
-            ref={setWebviewRef}
+            ref={setWebviewElement}
             // Electron needs allowpopups at attachment. React drops boolean values for unknown attributes.
             {...({ allowpopups: "true" } as unknown as { readonly allowpopups?: boolean })}
             src={webviewGeneration === 0 ? initialSrc : recoverySrc}

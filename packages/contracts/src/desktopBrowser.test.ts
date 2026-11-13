@@ -14,6 +14,9 @@ const decodeEvent = Schema.decodeUnknownSync(DesktopBrowserEvent);
 const decodeCommand = Schema.decodeUnknownSync(DesktopBrowserCommand);
 const decodeRequest = Schema.decodeUnknownSync(DesktopBrowserPrivateEntryRequest);
 const decodeResponse = Schema.decodeUnknownSync(DesktopBrowserPrivateEntryResponse);
+const decodeRegistrationDescriptor = Schema.decodeSync(DesktopBrowserRegistrationDescriptor);
+const decodeRegistration = Schema.decodeUnknownSync(DesktopBrowserRegistration);
+const decodeReady = Schema.decodeUnknownSync(DesktopBrowserReady);
 const target = {
   threadId: "thread-a",
   tabId: "tab-a",
@@ -78,11 +81,9 @@ describe("OS-local desktop browser registration", () => {
   it("keeps the secret in the descriptor and registration, outside browser events and ready", () => {
     const binding = { environmentId: "target", processEpoch: "process", token: "secret" };
     const descriptor = { ...binding, endpoint: "/private/browser.sock", processId: 42 };
-    expect(Schema.decodeSync(DesktopBrowserRegistrationDescriptor)(descriptor)).toEqual(descriptor);
+    expect(decodeRegistrationDescriptor(descriptor)).toEqual(descriptor);
     const registration = { type: "desktop-browser-register", ...binding };
-    expect(Schema.decodeUnknownSync(DesktopBrowserRegistration)(registration)).toEqual(
-      registration,
-    );
+    expect(decodeRegistration(registration)).toEqual(registration);
     expect(() => decodeEvent(registration)).toThrow();
     expect(() => decodeCommand(registration)).toThrow();
     const ready = {
@@ -90,24 +91,18 @@ describe("OS-local desktop browser registration", () => {
       environmentId: "target",
       processEpoch: "process",
     };
-    expect(Schema.decodeUnknownSync(DesktopBrowserReady)(ready)).toEqual(ready);
-    expect(() =>
-      Schema.decodeUnknownSync(DesktopBrowserReady)({ ...ready, token: "secret" }),
-    ).toThrow();
+    expect(decodeReady(ready)).toEqual(ready);
+    expect(() => decodeReady({ ...ready, token: "secret" })).toThrow();
     for (const processId of [0, -1, 1.5, Infinity]) {
-      expect(() =>
-        Schema.decodeSync(DesktopBrowserRegistrationDescriptor)({ ...descriptor, processId }),
-      ).toThrow();
+      expect(() => decodeRegistrationDescriptor({ ...descriptor, processId })).toThrow();
     }
     for (const field of ["environmentId", "processEpoch", "token"] as const) {
       const { [field]: _missing, ...incomplete } = registration;
-      expect(() => Schema.decodeUnknownSync(DesktopBrowserRegistration)(incomplete)).toThrow();
-      expect(() =>
-        Schema.decodeUnknownSync(DesktopBrowserRegistration)({ ...registration, [field]: "" }),
-      ).toThrow();
+      expect(() => decodeRegistration(incomplete)).toThrow();
+      expect(() => decodeRegistration({ ...registration, [field]: "" })).toThrow();
     }
     expect(() =>
-      Schema.decodeUnknownSync(DesktopBrowserRegistration)({
+      decodeRegistration({
         ...registration,
         authority: "viewer",
       }),

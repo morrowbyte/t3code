@@ -853,6 +853,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
 
       yield* command(host, 1, "DOM.enable");
       yield* settle;
@@ -905,6 +906,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
 
       yield* command(host, 1, "Runtime.evaluate");
       yield* settle;
@@ -927,6 +929,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
 
       yield* command(host, 1, "Page.captureScreenshot");
       yield* command(host, 2, "Page.captureScreenshot");
@@ -943,6 +946,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee({ deferFocus: true });
       host.attach(key, debuggee.tab);
+      yield* connect(host);
 
       yield* command(host, 1, "Page.captureScreenshot");
       yield* command(host, 2, "Page.captureScreenshot");
@@ -960,6 +964,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
       const turn = (active: boolean) =>
         host.handleCommandLine(encodeJson({ type: "turn", threadId: key.threadId, active }));
 
@@ -982,6 +987,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
       yield* host.handleCommandLine(
         encodeJson({ type: "turn", threadId: key.threadId, active: true }),
       );
@@ -1008,6 +1014,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
       const turn = (active: boolean) =>
         host.handleCommandLine(encodeJson({ type: "turn", threadId: key.threadId, active }));
 
@@ -1036,6 +1043,7 @@ describe("DesktopBrowserHost", () => {
         const host = yield* DesktopBrowserHost.make;
         const debuggee = makeDebuggee();
         host.attach(key, debuggee.tab);
+        yield* connect(host);
         yield* host.handleCommandLine(
           encodeJson({ type: "turn", threadId: key.threadId, active: true }),
         );
@@ -1185,6 +1193,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
       const painting = yield* watchPainting(host);
       const turn = (active: boolean) =>
         host.handleCommandLine(encodeJson({ type: "turn", threadId: key.threadId, active }));
@@ -1368,6 +1377,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
 
       yield* command(host, 1, "Page.startScreencast");
       yield* TestClock.adjust("1 minute");
@@ -1429,6 +1439,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
       const painting = yield* watchPainting(host);
 
       yield* command(host, 1, "DOM.enable");
@@ -1455,6 +1466,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
       const painting = yield* watchPainting(host);
       const turn = (active: boolean) =>
         host.handleCommandLine(encodeJson({ type: "turn", threadId: key.threadId, active }));
@@ -1564,6 +1576,7 @@ describe("DesktopBrowserHost", () => {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
+      yield* connect(host);
 
       yield* host.handleCommandLine(
         encodeJson({

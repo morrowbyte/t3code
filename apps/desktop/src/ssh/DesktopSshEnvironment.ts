@@ -193,6 +193,7 @@ export const make = Effect.gen(function* () {
               bootstrap.target,
               descriptor.environmentId,
               events,
+              Effect.suspend(() => connection?.closed ?? Effect.void),
             );
             const activeConnection = browserHost.createConnection(
               descriptor.environmentId,

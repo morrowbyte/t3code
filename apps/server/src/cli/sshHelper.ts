@@ -12,6 +12,7 @@ import {
   DesktopBrowserRegistrationDescriptor,
   DesktopBrowserReady,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -151,8 +152,9 @@ const decodeBrowserDescriptor = Schema.decodeUnknownSync(
 const decodeBrowserReady = Schema.decodeUnknownSync(Schema.fromJsonString(DesktopBrowserReady));
 
 const connectDesktopBrowser = Effect.fn("sshHelper.connectDesktopBrowser")(
-  (baseDir: string, environmentId: string) =>
-    Effect.tryPromise({
+  function* (baseDir: string, environmentId: string) {
+    const platform = yield* HostProcess.Platform;
+    return yield* Effect.tryPromise({
       try: (signal) => {
         const descriptorPath = NodePath.join(
           baseDir,
@@ -171,7 +173,7 @@ const connectDesktopBrowser = Effect.fn("sshHelper.connectDesktopBrowser")(
           if (
             !stat.isFile() ||
             stat.size > DESKTOP_BROWSER_REGISTRATION_MAX_BYTES ||
-            (process.platform !== "win32" &&
+            (platform !== "win32" &&
               ((stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.()))
           )
             throw new Error("The target channel descriptor is not private to this OS user.");
@@ -188,7 +190,7 @@ const connectDesktopBrowser = Effect.fn("sshHelper.connectDesktopBrowser")(
         if (descriptor.environmentId !== environmentId)
           throw new Error("The target environment changed.");
         process.kill(descriptor.processId, 0);
-        if (process.platform !== "win32") {
+        if (platform !== "win32") {
           const stat = NodeFS.lstatSync(descriptor.endpoint);
           if (!stat.isSocket() || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.())
             throw new Error("The target channel socket is not private to this OS user.");
@@ -296,7 +298,8 @@ const connectDesktopBrowser = Effect.fn("sshHelper.connectDesktopBrowser")(
         new DesktopBrowserHelperError({
           cause: new Error("The local browser capability is unavailable."),
         }),
-    }),
+    });
+  },
 );
 
 const desktopBrowser = Command.make("desktop-browser", {

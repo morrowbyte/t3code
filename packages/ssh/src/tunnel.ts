@@ -142,6 +142,7 @@ export interface SshEnvironmentManagerShape {
     target: DesktopSshEnvironmentTarget,
     environmentId: string,
     events: Stream.Stream<Uint8Array>,
+    beforeClose?: Effect.Effect<void>,
   ) => Effect.Effect<
     SshDesktopBrowserTransport,
     SshEnvironmentEffectError,
@@ -1108,11 +1109,6 @@ export const resolveLoopbackSshHttpBaseUrl = Effect.fn("ssh/tunnel.resolveLoopba
   },
 );
 
-const reserveLocalTunnelPort = Effect.fn("ssh/tunnel.reserveLocalTunnelPort")(function* () {
-  const net = yield* NetService.NetService;
-  return yield* net.reserveLoopbackPort();
-});
-
 const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: {
   readonly key: string;
   readonly resolvedTarget: DesktopSshEnvironmentTarget;
@@ -1363,8 +1359,26 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
 ): Effect.fn.Return<SshEnvironmentManagerShape, never, Scope.Scope> {
   const managerScope = yield* Scope.Scope;
   const tunnels = new Map<string, SshTunnelEntry>();
+  const activeProxyPorts = new Map<number, symbol>();
   const targetLocks = yield* KeyedLock.make<string>();
   const authSecrets = new Map<string, string>();
+
+  const reserveLocalTunnelPort = Effect.fn("ssh/tunnel.reserveLocalTunnelPort")(function* (
+    claim?: symbol,
+  ) {
+    const net = yield* NetService.NetService;
+    const port = yield* net.reserveLoopbackPort();
+    if (activeProxyPorts.has(port)) {
+      return yield* new SshCommandError({
+        command: ["ssh"],
+        exitCode: null,
+        stderr: "",
+        message: "Reserved SSH port is still claimed by a desktop browser transport.",
+      });
+    }
+    if (claim !== undefined) activeProxyPorts.set(port, claim);
+    return port;
+  });
 
   // Keep one lock per target so reconnect cannot reuse a server while stop is pending.
   const withTargetLock = Effect.fn("ssh/tunnel.withTargetLock")(function* <A, E, R>(
@@ -1755,6 +1769,7 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
     target: DesktopSshEnvironmentTarget,
     environmentId: string,
     events: Stream.Stream<Uint8Array>,
+    beforeClose: Effect.Effect<void> = Effect.void,
   ): Effect.fn.Return<
     SshDesktopBrowserTransport,
     SshEnvironmentEffectError,
@@ -1797,7 +1812,15 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
           const stateKey = yield* remoteStateKey(entry.target);
           const sshCommand = yield* resolveSshCommand;
           const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-          const proxyPort = yield* reserveLocalTunnelPort();
+          const proxyClaim = Symbol();
+          const releaseProxyPort = (port: number) =>
+            Effect.sync(() => {
+              if (activeProxyPorts.get(port) === proxyClaim) activeProxyPorts.delete(port);
+            });
+          const proxyPort = yield* Effect.acquireRelease(
+            reserveLocalTunnelPort(proxyClaim),
+            releaseProxyPort,
+          ).pipe(Effect.provideService(Scope.Scope, browserScope));
           const child = yield* runWithSshAuth({
             key,
             target: entry.target,
@@ -1854,12 +1877,24 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
           ) {
             if (stopping) return yield* Deferred.await(completed).pipe(Effect.ignore);
             stopping = true;
+            yield* beforeClose;
             yield* child
               .kill({ killSignal: "SIGTERM", forceKillAfter: TUNNEL_SHUTDOWN_TIMEOUT_MS })
               .pipe(Effect.ignore);
+            yield* releaseProxyPort(proxyPort);
             yield* Deferred.fail(completed, error);
             yield* Deferred.fail(aborted, error);
           }, Effect.uninterruptible);
+          const completeTransport = Effect.fn("ssh/tunnel.openDesktopBrowser.complete")(
+            function* () {
+              if (stopping) return yield* Deferred.await(completed).pipe(Effect.ignore);
+              stopping = true;
+              yield* beforeClose;
+              yield* releaseProxyPort(proxyPort);
+              yield* Deferred.succeed(completed, undefined);
+            },
+            Effect.uninterruptible,
+          );
           yield* Scope.addFinalizer(
             browserScope,
             failTransport(failure("SSH desktop browser scope closed.")),
@@ -1881,11 +1916,7 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
             Effect.mapError(() => failure("Failed to monitor SSH desktop browser helper.")),
             Effect.flatMap((exitCode) =>
               Number(exitCode) === 0
-                ? Fiber.join(stderrDrain).pipe(
-                    Effect.andThen(() =>
-                      stopping ? Effect.void : Deferred.succeed(completed, undefined),
-                    ),
-                  )
+                ? Fiber.join(stderrDrain).pipe(Effect.andThen(completeTransport))
                 : failTransport(
                     failure("SSH desktop browser helper exited unsuccessfully.", Number(exitCode)),
                   ),

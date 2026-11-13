@@ -73,7 +73,6 @@ vi.mock(import("~/components/preview/usePreviewSession"), async (original) => {
       environmentId: EnvironmentId | null,
     ) {
       actual.useDesktopHostedPreviewSessions(environmentId);
-      // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tracks each real discovery hook binding through mount and cleanup
       useEffect(() => {
         if (environmentId === null) return;
         const binding = Symbol(environmentId);
@@ -301,6 +300,29 @@ describe("ElectronBrowserHost", () => {
     await act(() => vi.advanceTimersByTimeAsync(0));
     expect(mocks.closeTab).toHaveBeenCalledExactlyOnceWith(nativeRuntimeTabId);
     expect(screen.container.querySelector("webview")).toBe(legacy);
+
+    await act(() => {
+      legacy.dispatchEvent(new Event("render-process-gone"));
+    });
+    await act(() => vi.advanceTimersByTimeAsync(250));
+    const replacement = screen.container.querySelector("webview")!;
+    expect(replacement).not.toBeNull();
+    expect(replacement).not.toBe(legacy);
+    replacement.getWebContentsId = () => 9;
+    await act(() => {
+      replacement.dispatchEvent(new Event("dom-ready"));
+    });
+    expect(mocks.registerWebview).toHaveBeenLastCalledWith(legacyRuntimeTabId, 9);
+    const registrations = mocks.registerWebview.mock.calls.length;
+    await act(() => {
+      legacy.dispatchEvent(new Event("dom-ready"));
+      legacy.dispatchEvent(new Event("render-process-gone"));
+    });
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(mocks.registerWebview).toHaveBeenCalledTimes(registrations);
+    expect(screen.container.querySelector("webview")).toBe(replacement);
+    expect(mocks.createTab).toHaveBeenCalledTimes(3);
+    expect(mocks.closeTab).toHaveBeenCalledExactlyOnceWith(nativeRuntimeTabId);
   });
 
   it("clears known remote hosts on scope release and ignores its late query and events", async () => {

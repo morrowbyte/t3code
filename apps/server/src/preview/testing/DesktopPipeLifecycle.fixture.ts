@@ -34,6 +34,7 @@ const key = { threadId: "thread-1", tabId: "tab-1" };
 const remote = { threadId: "remote-thread", tabId: "remote-tab" };
 const encodeRegistration = Schema.encodeEffect(Schema.fromJsonString(DesktopBrowserRegistration));
 const encodeEvent = Schema.encodeEffect(Schema.fromJsonString(DesktopBrowserEvent));
+const isBrowserReady = Schema.is(DesktopBrowserReady);
 
 Effect.gen(function* () {
   const configContext = yield* Layer.build(
@@ -109,7 +110,7 @@ Effect.gen(function* () {
       yield* writer.write(`${registration}\n`);
       const [ready] = yield* incoming;
       if (
-        !Schema.is(DesktopBrowserReady)(ready) ||
+        !isBrowserReady(ready) ||
         ready.environmentId !== descriptor.environmentId ||
         ready.processEpoch !== descriptor.processEpoch
       ) {

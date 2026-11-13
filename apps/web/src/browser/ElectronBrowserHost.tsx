@@ -138,11 +138,11 @@ export function ElectronBrowserHost() {
   const previewByThreadKey = useActivePreviewSessions();
   const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
   const hostedEnvironmentIds = useDesktopBrowserHostedEnvironmentIds();
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- observes Main's ready target connections for this primary-environment scope
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- observes Main's ready target connections for this desktop bridge mount
   useEffect(() => {
     if (!isElectron || !previewBridge) return;
     return subscribeDesktopBrowserHostedEnvironments(previewBridge);
-  }, [primaryEnvironmentId]);
+  }, []);
   useDesktopHostedPreviewSessions(primaryEnvironmentId);
   const sessions = hostedBrowserSessions(
     previewByThreadKey,

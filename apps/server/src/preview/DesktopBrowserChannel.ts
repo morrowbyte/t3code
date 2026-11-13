@@ -2,6 +2,7 @@
 import * as NodeStream from "@effect/platform-node/NodeStream";
 import * as NodeSocketServer from "@effect/platform-node/NodeSocketServer";
 import { resolveDesktopAppControlAddress } from "@t3tools/shared/desktopAppControl";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   DesktopBrowserCommand,
   DesktopBrowserEvent,
@@ -228,6 +229,7 @@ interface DesktopAttachment {
 }
 
 const make = Effect.gen(function* () {
+  const platform = yield* HostProcess.Platform;
   const config = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -418,7 +420,7 @@ const make = Effect.gen(function* () {
   const localServer = yield* Effect.gen(function* () {
     const address = resolveDesktopAppControlAddress({
       stateDir: path.join(config.stateDir, "desktop-browser", processEpoch),
-      platform: process.platform,
+      platform,
       tempDir: NodeOS.tmpdir(),
       userId: process.getuid?.(),
       joinPath: path.join,

@@ -12,6 +12,7 @@ import {
   EnvironmentId,
   type DesktopBrowserPrivateEntryResponse,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -119,6 +120,7 @@ effectIt.effect(
 );
 
 const makeTarget = Effect.fn("DesktopBrowserChannel.test.makeTarget")(function* () {
+  const platform = yield* HostProcess.Platform;
   const configContext = yield* Layer.build(
     ServerConfig.layerTest(process.cwd(), { prefix: "t3-browser-os-" }),
   );
@@ -127,6 +129,7 @@ const makeTarget = Effect.fn("DesktopBrowserChannel.test.makeTarget")(function* 
   yield* Effect.addFinalizer(() => Scope.close(targetScope, Exit.void));
   const context = yield* Layer.build(
     DesktopChannel.layer.pipe(
+      Layer.provide(Layer.succeed(HostProcess.Platform, platform)),
       Layer.provide(Layer.succeed(ServerConfig.ServerConfig, config)),
       Layer.provide(
         Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
@@ -192,7 +195,7 @@ effectIt.live(
         const fs = yield* FileSystem.FileSystem;
         expect(channel.available).toBe(false);
         expect(descriptor.processId).toBe(process.pid);
-        if (process.platform !== "win32") {
+        if ((yield* HostProcess.Platform) !== "win32") {
           expect((yield* fs.stat(descriptorPath)).mode & 0o777).toBe(0o600);
         }
         const first = yield* makeLocalPeer(descriptor);
