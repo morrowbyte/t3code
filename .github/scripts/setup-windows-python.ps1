@@ -53,6 +53,7 @@ if (!$python) {
   $runtime = Join-Path $cacheParent "$version-x64"
   if (Test-Path -LiteralPath $runtime) { throw "A non-working Python cache already exists at $runtime." }
   $taskRoot = Join-Path $env:RUNNER_TEMP ("morrowbyte-python-" + [Guid]::NewGuid().ToString('N'))
+  $stagedRuntime = Join-Path $cacheParent ("staging-" + [Guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $taskRoot | Out-Null
   try {
     $archive = Join-Path $taskRoot 'python.zip'
@@ -60,14 +61,14 @@ if (!$python) {
     if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $archiveSha256) {
       throw 'Official CPython archive SHA256 does not match.'
     }
-    $stagedRuntime = Join-Path $taskRoot 'runtime'
+    New-Item -ItemType Directory -Path $cacheParent -Force | Out-Null
     Expand-Archive -LiteralPath $archive -DestinationPath $stagedRuntime
     if (!(Find-Python3 (Join-Path $stagedRuntime 'python.exe'))) { throw 'Downloaded runtime is not usable Python 3.' }
-    New-Item -ItemType Directory -Path $cacheParent -Force | Out-Null
     [IO.Directory]::Move($stagedRuntime, $runtime)
     $python = Find-Python3 (Join-Path $runtime 'python.exe')
     if (!$python) { throw 'Cached runtime is not usable Python 3.' }
   } finally {
+    if (Test-Path -LiteralPath $stagedRuntime) { Remove-Item -LiteralPath $stagedRuntime -Recurse -Force }
     Remove-Item -LiteralPath $taskRoot -Recurse -Force
   }
 }
