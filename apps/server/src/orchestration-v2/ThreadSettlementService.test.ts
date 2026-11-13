@@ -802,7 +802,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
           dev: 0n,
           ino: Option.none(),
           mode: 0o700,
-          nlink: Option.some(1),
+          nlink: Option.some(1n),
           uid: Option.none(),
           gid: Option.none(),
           rdev: Option.none(),
