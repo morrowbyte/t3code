@@ -24,6 +24,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -125,11 +126,21 @@ const result = (uuid: string, aborted: boolean) =>
     modelUsage: {},
   });
 
+const revokedAutomaticDeliveries = [
+  "deleted automatic message",
+  "paused automatic message",
+  "resumed automatic message",
+  "disabled-upsert automatic message",
+  "recreated automatic message",
+] as const;
 const deliveries = [
   "child completion",
   "scheduled message",
   "user steering",
   "promoted queued message",
+  ...revokedAutomaticDeliveries,
+  "one-time automatic message",
+  "paused manual message",
 ] as const;
 
 it.effect.each(deliveries)(
@@ -233,6 +244,7 @@ it.effect.each(deliveries)(
           const parent = before.runs[0]!;
           if (parent.rootNodeId === null) return yield* Effect.die("parent has no root node");
           const messageId = MessageId.make("automatic-notice");
+          const revokedAutomatic = revokedAutomaticDeliveries.some((entry) => entry === delivery);
           if (delivery === "child completion") {
             const taskId = NodeId.make("completed-child");
             const now = yield* DateTime.now;
@@ -302,25 +314,83 @@ it.effect.each(deliveries)(
             yield* orchestrator.dispatch(command);
             yield* orchestrator.dispatch(command);
             yield* orchestrator.recoverDelegatedTasks;
-          } else if (delivery === "scheduled message") {
+          } else if (
+            delivery === "scheduled message" ||
+            delivery.includes("automatic message") ||
+            delivery === "paused manual message"
+          ) {
             yield* Effect.gen(function* () {
               const service = yield* ScheduledTaskService.ScheduledTaskService;
-              const { task } = yield* service.upsert(
-                yield* decodeScheduledTask({
-                  title: "Status check",
-                  prompt: "Check the four tasks.",
-                  enabled: true,
-                  schedule: { type: "interval", everyMs: 60_000 },
-                  projectId,
+              const automatic = delivery.includes("automatic message");
+              const oneTime = delivery === "one-time automatic message";
+              const now = yield* DateTime.now;
+              const input = yield* decodeScheduledTask({
+                title: "Status check",
+                prompt: "Check the four tasks.",
+                enabled: true,
+                schedule: oneTime
+                  ? {
+                      type: "once",
+                      runAt: new Date(DateTime.toEpochMillis(now) + 60_000).toISOString(),
+                    }
+                  : { type: "interval", everyMs: 60_000 },
+                projectId,
+                threadId,
+                workspaceStrategy: { type: "root" },
+                modelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+              });
+              const { task } = yield* service.upsert(input);
+              if (automatic) {
+                const fired = yield* service.subscribeList().pipe(
+                  Stream.filter(({ tasks }) =>
+                    tasks.some(
+                      (entry) => entry.id === task.id && entry.lastRunStatus === "succeeded",
+                    ),
+                  ),
+                  Stream.take(1),
+                  Stream.runDrain,
+                  Effect.forkScoped,
+                );
+                yield* TestClock.adjust("1 minute");
+                yield* Fiber.join(fired);
+                if (oneTime) assert.equal((yield* service.list()).tasks[0]?.nextRunAt, null);
+              } else {
+                const ran = yield* service.runNow({ id: task.id });
+                assert.equal(ran.task.lastRunStatus, "succeeded");
+              }
+              if (
+                delivery === "deleted automatic message" ||
+                delivery === "recreated automatic message"
+              ) {
+                yield* service.delete({ id: task.id });
+                if (delivery === "recreated automatic message")
+                  yield* service.upsert({ ...input, id: task.id });
+              } else if (delivery === "disabled-upsert automatic message") {
+                yield* service.upsert({ ...input, id: task.id, enabled: false });
+              } else if (
+                delivery === "paused automatic message" ||
+                delivery === "resumed automatic message" ||
+                delivery === "paused manual message"
+              ) {
+                yield* service.setEnabled({ id: task.id, enabled: false });
+                if (delivery === "resumed automatic message")
+                  yield* service.setEnabled({ id: task.id, enabled: true });
+              }
+              if (revokedAutomatic) {
+                yield* orchestrator.dispatch({
+                  type: "message.dispatch",
+                  commandId: CommandId.make("valid-human-followup"),
                   threadId,
-                  workspaceStrategy: { type: "root" },
-                  modelSelection,
-                  runtimeMode: "full-access",
-                  interactionMode: "default",
-                }),
-              );
-              const ran = yield* service.runNow({ id: task.id });
-              assert.equal(ran.task.lastRunStatus, "succeeded");
+                  messageId: MessageId.make("valid-human-followup"),
+                  text: "Continue valid human work.",
+                  attachments: [],
+                  dispatchMode: { type: "queue_after_active" },
+                  createdBy: "user",
+                  creationSource: "web",
+                });
+              }
             }).pipe(
               Effect.provide(
                 ScheduledTaskService.layer.pipe(
@@ -419,7 +489,36 @@ it.effect.each(deliveries)(
           yield* orchestrator.resumeQueuedRuns;
           yield* worker.drain();
           if (!explicitSteer) {
-            const queued = (yield* orchestrator.getThreadProjection(threadId)).runs[1]!;
+            const projection = yield* orchestrator.getThreadProjection(threadId);
+            if (revokedAutomatic) {
+              const obsolete = projection.runs[1]!;
+              assert.equal(obsolete.status, "cancelled");
+              assert.equal(
+                projection.attempts.find((attempt) => attempt.id === obsolete.activeAttemptId)
+                  ?.status,
+                "cancelled",
+              );
+              assert.equal(
+                projection.nodes.find((node) => node.id === obsolete.rootNodeId)?.status,
+                "cancelled",
+              );
+              assert.equal(
+                projection.providerTurns.some(
+                  (turn) => turn.runAttemptId === obsolete.activeAttemptId,
+                ),
+                false,
+              );
+              assert.ok(
+                projection.messages.some((message) => message.id === obsolete.userMessageId),
+              );
+              assert.equal(
+                offers.some((offer) =>
+                  JSON.stringify(offer.message.content).includes("Check the four tasks."),
+                ),
+                false,
+              );
+            }
+            const queued = projection.runs[revokedAutomatic ? 2 : 1]!;
             const noticeFinished = yield* watch(
               (event) =>
                 event.type === "run.updated" &&
@@ -455,7 +554,7 @@ it.effect.each(deliveries)(
             explicitSteer ? 1 : 0,
           );
           if (!explicitSteer) {
-            assert.equal(after.runs.length, 2);
+            assert.equal(after.runs.length, revokedAutomatic ? 3 : 2);
             if (delivery === "child completion") {
               assert.equal(after.messages.filter((message) => message.id === messageId).length, 1);
               assert.equal(after.subagents[0]?.completionDelivery?.state, "delivered");

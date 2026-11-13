@@ -156,6 +156,7 @@ describe("runMigrations", () => {
         [81, "PrivilegedRecoveryIndexes"],
         [82, "ExecutionUsageIndexes"],
         [83, "RepairExecutionHistoryIndex"],
+        [84, "ScheduledTaskDeliveryGeneration"],
       ]);
       assert.deepStrictEqual(yield* retained, before);
       assert.deepStrictEqual(yield* runMigrations(), []);

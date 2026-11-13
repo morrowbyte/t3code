@@ -87,6 +87,7 @@ import Migration0080 from "./Migrations/080_ProjectionProjectsPinArchive.ts";
 import Migration0081 from "./Migrations/081_PrivilegedRecoveryIndexes.ts";
 import Migration0082 from "./Migrations/082_ExecutionUsageIndexes.ts";
 import Migration0083 from "./Migrations/083_RepairExecutionHistoryIndex.ts";
+import Migration0084 from "./Migrations/084_ScheduledTaskDeliveryGeneration.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -173,6 +174,7 @@ const migrationEntries = [
   [81, "PrivilegedRecoveryIndexes", Migration0081],
   [82, "ExecutionUsageIndexes", Migration0082],
   [83, "RepairExecutionHistoryIndex", Migration0083],
+  [84, "ScheduledTaskDeliveryGeneration", Migration0084],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
