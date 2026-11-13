@@ -372,7 +372,8 @@ function ServerBrowserSurfaceConnection(
     ) {
       const frame = localFrameRef.current;
       const queue = localSurfaceQueueRef.current;
-      if (!inputAllowed() || !frame || !previewBridge || !queue || !isLocalSurfaceInput(input))
+      const bridge = previewBridge;
+      if (!inputAllowed() || !frame || !bridge || !queue || !isLocalSurfaceInput(input))
         return false;
       const version = privateInputVersionRef.current;
       void queue
@@ -388,7 +389,7 @@ function ServerBrowserSurfaceConnection(
             latest.generation !== frame.generation
           )
             throw new Error("Private browser input is no longer current.");
-          return await previewBridge.surface.input({
+          return await bridge.surface.input({
             tabId: latest.tabId,
             surfaceId: latest.surfaceId,
             webContentsId: latest.webContentsId,
