@@ -282,7 +282,6 @@ approval_tests=(
   apps/server/src/orchestration-v2/ApprovalReviewOrderPolicy.test.ts
   apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts
   apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts
-  apps/web/src/components/chat/ApprovalActionSummary.test.tsx
   apps/mobile/src/features/threads/PendingApprovalCard.test.tsx
   apps/mobile/src/state/use-selected-thread-requests.test.tsx
 )
@@ -367,7 +366,6 @@ live_tests=(
   apps/server/src/voice/CodexLiveSessionService.test.ts
   apps/server/src/orchestration-v2/assistantStreaming.test.ts
   apps/web/src/components/streamable-ui/protocol.test.ts
-  apps/web/src/components/streamable-ui/StreamableUi.test.tsx
   apps/web/src/localDevLogin.test.ts
   apps/server/src/observability/RpcInstrumentation.test.ts
 )
@@ -452,6 +450,8 @@ focused_tests+=(
   apps/web/src/components/settings/UpdateHistoryPanel.test.tsx
 )
 renderer_tests=(
+  apps/web/src/components/chat/ApprovalActionSummary.browser.test.tsx
+  apps/web/src/components/streamable-ui/StreamableUi.browser.test.tsx
   apps/web/src/components/chat/ThreadDetailsBoat.browser.test.tsx
   apps/web/src/components/auth/PairingRouteSurface.browser.test.tsx
   apps/web/src/observatory/AgentObservatory.browser.test.tsx

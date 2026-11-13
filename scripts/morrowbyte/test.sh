@@ -3,6 +3,20 @@ set -euo pipefail
 python3 scripts/morrowbyte/release62-recovery.test.py
 
 bash -n scripts/morrowbyte/*.sh
+python3 - <<'PY'
+from pathlib import Path
+import re
+import subprocess
+
+source = Path("scripts/morrowbyte/check.sh").read_text()
+paths = set(re.findall(r"\b(?:apps|packages|scripts|packaging)/[\w./-]+\.test\.(?:tsx|ts|cjs|py|sh)\b", source))
+optional = set(re.findall(r'^\w+=([^\s]+)\nif \[\[ -f "\$\w+" \]\]; then', source, re.MULTILINE))
+tracked = set(subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0"))
+missing = sorted(path for path in paths - optional if path not in tracked or not Path(path).is_file())
+if missing:
+    raise SystemExit("Required source qualification tests are missing or untracked:\n" + "\n".join(missing))
+print(f"Source qualification test paths: {len(paths - optional)} required paths resolved.")
+PY
 bash scripts/morrowbyte/sync-upstream-nightly.test.sh
 bash scripts/morrowbyte/verify-desktop-source.test.sh
 actual="$(bash scripts/morrowbyte/resolve-version.sh 0.0.46 20261013 1)"
