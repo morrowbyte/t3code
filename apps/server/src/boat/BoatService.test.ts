@@ -1904,6 +1904,11 @@ it.effect.each(["other-owner", "same-owner", "legacy"] as const)(
       assert.equal(inspected.proposal.expected.ownerThreadId, ownerThreadId);
       assert.equal(inspected.proposal.expected.source === null, kind === "legacy");
       assert.equal(inspected.proposal.target.files[0]?.sha256.length, 64);
+      test.setCost(0.02);
+      const refreshed = yield* boat.read(projectId);
+      assert.equal(refreshed.instances[0]?.state, "archived");
+      assert.equal(refreshed.instances[0]?.costUsd, 0.02);
+      yield* boat.read(projectId);
       const receipt = yield* boat.transfer(
         { action: "commit", proposal: inspected.proposal },
         transferSession,
@@ -2020,10 +2025,17 @@ it.effect.each([
   "source",
   "active-lease",
   "pending-operation",
+  "state-roundtrip",
+  "resume-stop",
+  "resume-rejected",
 ] as const)("rejects a mismatched Boat transfer claim: %s", (kind) => {
-  const test = setup();
+  const test = setup((path) => {
+    if (kind !== "resume-rejected" || !path.endsWith("/resume")) return Effect.void;
+    test.setMachineState("archived");
+    return Effect.fail(new BoatError({ category: "provider", status: 400 }));
+  });
   return Effect.gen(function* () {
-    const { boat, targetRoot, fs, config } = yield* transferFixture(test);
+    const { boat, oldRoot, targetRoot, fs, config } = yield* transferFixture(test);
     test.setThread(ownerThreadId, { worktreePath: targetRoot, activeRunId: null });
     const input = {
       action: "inspect" as const,
@@ -2061,6 +2073,29 @@ it.effect.each([
         ...proposal.expected.source,
         workspaceRoot: "/different-source",
       };
+    if (kind === "state-roundtrip") {
+      test.setMachineState("ready");
+      yield* boat.read(projectId);
+      test.setMachineState("archived");
+      yield* boat.read(projectId);
+    }
+    if (kind === "resume-stop" || kind === "resume-rejected")
+      test.setThread(ownerThreadId, { worktreePath: oldRoot, activeRunId: null });
+    if (kind === "resume-stop") {
+      yield* boat.operate({ action: "resume", projectId, requestId: "transfer" }, ownerThreadId);
+      yield* boat.operate({ action: "stop", projectId, requestId: "transfer" }, ownerThreadId);
+    }
+    if (kind === "resume-rejected") {
+      const rejected = yield* boat
+        .operate({ action: "resume", projectId, requestId: "transfer" }, ownerThreadId)
+        .pipe(Effect.flip);
+      assert.equal(rejected.status, 400);
+      const stored = JSON.parse(yield* fs.readFileString(`${config.stateDir}/boat.json`));
+      assert.isNull(stored.instances[0].resumeOperation);
+      assert.equal(stored.instances[0].state, "archived");
+    }
+    if (kind === "resume-stop" || kind === "resume-rejected")
+      test.setThread(ownerThreadId, { worktreePath: targetRoot, activeRunId: null });
     let selected = boat;
     if (kind === "active-lease" || kind === "pending-operation") {
       const stored = JSON.parse(yield* fs.readFileString(`${config.stateDir}/boat.json`));

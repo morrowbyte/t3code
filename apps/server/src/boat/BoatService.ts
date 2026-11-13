@@ -577,7 +577,10 @@ export const make = Effect.gen(function* () {
                 usageHistoryKnownSince: usageTimeline[0]?.at ?? null,
                 revision:
                   item.revision +
-                  (patch.state !== undefined || patch.resumeOperation !== undefined ? 1 : 0),
+                  ((patch.state !== undefined && patch.state !== item.state) ||
+                  patch.resumeOperation !== undefined
+                    ? 1
+                    : 0),
                 // Snapshot transitions commit with the project template under this lock.
                 savedSnapshot: item.savedSnapshot,
               };
