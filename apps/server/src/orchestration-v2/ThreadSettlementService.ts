@@ -678,7 +678,7 @@ export const make = Effect.gen(function* () {
       const thread = yield* projections.getThread(threadId);
       if (thread.settledOverride !== "settled") return;
       const canCleanUp = Effect.fn("ThreadSettlementServiceV2.canCleanUpWorktree")(
-        function* (stoppingRunner = false) {
+        function* (stoppingRunner: boolean = false) {
           const owner = yield* projections.getThread(threadId);
           if (
             owner.settledOverride !== "settled" ||

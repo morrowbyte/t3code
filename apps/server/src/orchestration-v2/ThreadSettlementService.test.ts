@@ -706,7 +706,8 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
                 { ...shell(), ...thread },
               ]),
             );
-            for (const thread of snapshot.threads) threads.set(thread.id, thread);
+            for (const thread of snapshot.threads)
+              threads.set(thread.id, { ...thread, lastVisitedAt: thread.lastVisitedAt ?? null });
             const visible = [...threads.values()].filter(
               (thread) =>
                 (query?.projectId === undefined || thread.projectId === query.projectId) &&
@@ -798,7 +799,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
           mtime: Option.none(),
           atime: Option.none(),
           birthtime: Option.none(),
-          dev: 0,
+          dev: 0n,
           ino: Option.none(),
           mode: 0o700,
           nlink: Option.some(1),
