@@ -577,7 +577,10 @@ export const make = Effect.gen(function* () {
                 usageHistoryKnownSince: usageTimeline[0]?.at ?? null,
                 revision:
                   item.revision +
-                  (patch.state !== undefined || patch.resumeOperation !== undefined ? 1 : 0),
+                  ((patch.state !== undefined && patch.state !== item.state) ||
+                  patch.resumeOperation !== undefined
+                    ? 1
+                    : 0),
                 // Snapshot transitions commit with the project template under this lock.
                 savedSnapshot: item.savedSnapshot,
               };
@@ -1613,6 +1616,7 @@ export const make = Effect.gen(function* () {
           const stoppedAt = DateTime.formatIso(yield* DateTime.now);
           const next = yield* updateInstance(item, (current) => {
             if (
+              ledger.period !== period ||
               current.revision !== item.revision ||
               current.sandboxId !== item.sandboxId ||
               current.deletionOperationId
@@ -1624,7 +1628,7 @@ export const make = Effect.gen(function* () {
               (stopped || resumeInFlight.has(current.requestId));
             return {
               state: pending ? current.state : remote.sandbox.state,
-              costUsd: usage.dollars,
+              costUsd: Math.max(current.costUsd, usage.dollars),
               stoppedAt: pending
                 ? current.stoppedAt
                 : stopped

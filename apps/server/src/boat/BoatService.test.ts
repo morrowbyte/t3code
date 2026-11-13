@@ -1904,6 +1904,11 @@ it.effect.each(["other-owner", "same-owner", "legacy"] as const)(
       assert.equal(inspected.proposal.expected.ownerThreadId, ownerThreadId);
       assert.equal(inspected.proposal.expected.source === null, kind === "legacy");
       assert.equal(inspected.proposal.target.files[0]?.sha256.length, 64);
+      test.setCost(0.02);
+      const refreshed = yield* boat.read(projectId);
+      assert.equal(refreshed.instances[0]?.state, "archived");
+      assert.equal(refreshed.instances[0]?.costUsd, 0.02);
+      yield* boat.read(projectId);
       const receipt = yield* boat.transfer(
         { action: "commit", proposal: inspected.proposal },
         transferSession,
@@ -2020,10 +2025,17 @@ it.effect.each([
   "source",
   "active-lease",
   "pending-operation",
+  "state-roundtrip",
+  "resume-stop",
+  "resume-rejected",
 ] as const)("rejects a mismatched Boat transfer claim: %s", (kind) => {
-  const test = setup();
+  const test = setup((path) => {
+    if (kind !== "resume-rejected" || !path.endsWith("/resume")) return Effect.void;
+    test.setMachineState("archived");
+    return Effect.fail(new BoatError({ category: "provider", status: 400 }));
+  });
   return Effect.gen(function* () {
-    const { boat, targetRoot, fs, config } = yield* transferFixture(test);
+    const { boat, oldRoot, targetRoot, fs, config } = yield* transferFixture(test);
     test.setThread(ownerThreadId, { worktreePath: targetRoot, activeRunId: null });
     const input = {
       action: "inspect" as const,
@@ -2061,6 +2073,29 @@ it.effect.each([
         ...proposal.expected.source,
         workspaceRoot: "/different-source",
       };
+    if (kind === "state-roundtrip") {
+      test.setMachineState("ready");
+      yield* boat.read(projectId);
+      test.setMachineState("archived");
+      yield* boat.read(projectId);
+    }
+    if (kind === "resume-stop" || kind === "resume-rejected")
+      test.setThread(ownerThreadId, { worktreePath: oldRoot, activeRunId: null });
+    if (kind === "resume-stop") {
+      yield* boat.operate({ action: "resume", projectId, requestId: "transfer" }, ownerThreadId);
+      yield* boat.operate({ action: "stop", projectId, requestId: "transfer" }, ownerThreadId);
+    }
+    if (kind === "resume-rejected") {
+      const rejected = yield* boat
+        .operate({ action: "resume", projectId, requestId: "transfer" }, ownerThreadId)
+        .pipe(Effect.flip);
+      assert.equal(rejected.status, 400);
+      const stored = JSON.parse(yield* fs.readFileString(`${config.stateDir}/boat.json`));
+      assert.isNull(stored.instances[0].resumeOperation);
+      assert.equal(stored.instances[0].state, "archived");
+    }
+    if (kind === "resume-stop" || kind === "resume-rejected")
+      test.setThread(ownerThreadId, { worktreePath: targetRoot, activeRunId: null });
     let selected = boat;
     if (kind === "active-lease" || kind === "pending-operation") {
       const stored = JSON.parse(yield* fs.readFileString(`${config.stateDir}/boat.json`));
@@ -2608,10 +2643,10 @@ it.effect.each(["ready", "failed"] as const)(
   },
 );
 
-it.effect("keeps a process installed while an older usage read is suspended", () =>
+it.effect("keeps newer process and period usage when older reads finish", () =>
   Effect.gen(function* () {
-    const entered = yield* Deferred.make<void>();
-    const release = yield* Deferred.make<void>();
+    let entered = yield* Deferred.make<void>();
+    let release = yield* Deferred.make<void>();
     let hold = false;
     const test = setup((path) =>
       path.includes("/usage") && hold
@@ -2623,6 +2658,7 @@ it.effect("keeps a process installed while an older usage read is suspended", ()
         : Effect.void,
     );
     yield* Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-11-30T23:59:59Z"));
       const boat = yield* make;
       yield* boat.connect(Redacted.make("boat_fixture_private"));
       yield* boat.configure(projectId, {
@@ -2637,6 +2673,28 @@ it.effect("keeps a process installed while an older usage read is suspended", ()
       yield* boat.operate({ action: "prepare", projectId, requestId: "first" });
       yield* Deferred.succeed(release, undefined);
       assert.equal((yield* Fiber.join(reading)).instances[0]?.processId, 123);
+
+      entered = yield* Deferred.make<void>();
+      release = yield* Deferred.make<void>();
+      test.setCost(0.02);
+      hold = true;
+      const olderUsage = yield* boat.read(projectId).pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      test.setCost(0.03);
+      assert.equal((yield* boat.read(projectId)).instances[0]?.costUsd, 0.03);
+      yield* Deferred.succeed(release, undefined);
+      assert.equal((yield* Fiber.join(olderUsage)).instances[0]?.costUsd, 0.03);
+
+      entered = yield* Deferred.make<void>();
+      release = yield* Deferred.make<void>();
+      hold = true;
+      const previousPeriod = yield* boat.read(projectId).pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      yield* TestClock.setTime(Date.parse("2026-12-01T00:00:00Z"));
+      test.setCost(0.005);
+      assert.equal((yield* boat.read(projectId)).instances[0]?.costUsd, 0.005);
+      yield* Deferred.succeed(release, undefined);
+      assert.equal((yield* Fiber.join(previousPeriod)).instances[0]?.costUsd, 0.005);
     }).pipe(Effect.scoped, Effect.provide(test.services));
   }),
 );
