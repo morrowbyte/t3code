@@ -2687,24 +2687,25 @@ it.live("a desktop page that comes back reconnects without waiting for a viewer"
         .attachViewer({ ...viewerInput(opened.tabId, false), frames: false })
         .pipe(Effect.provideService(Scope.Scope, lostViewerScope));
       const lostSession = connection.context.sessions.at(-1)!;
-      const detachStarted = yield* Deferred.make<void>();
-      const detachReleased = yield* Deferred.make<void>();
-      const services = yield* Effect.context<never>();
+      const detachStarted = Promise.withResolvers<void>();
+      const detachReleased = Promise.withResolvers<void>();
+      let detachCompleted = false;
       lostSession.detach.mockImplementation(async () => {
-        Effect.runSyncWith(services)(Deferred.succeed(detachStarted, undefined));
-        await Effect.runPromiseWith(services)(Deferred.await(detachReleased));
+        detachStarted.resolve();
+        await detachReleased.promise;
+        detachCompleted = true;
       });
       const closing = yield* Scope.close(lostViewerScope, Exit.void).pipe(Effect.forkScoped);
       try {
-        yield* Deferred.await(detachStarted);
+        yield* Effect.promise(() => detachStarted.promise);
         expect(connection.closed).toBe(false);
         connection.disconnect();
         yield* Fiber.join(closing);
-        expect(yield* Deferred.isDone(detachReleased)).toBe(false);
+        expect(detachCompleted).toBe(false);
         expect(lostSession.detach).toHaveBeenCalledOnce();
         expect(connection.context.page.close).not.toHaveBeenCalled();
       } finally {
-        yield* Deferred.succeed(detachReleased, undefined);
+        detachReleased.resolve();
         yield* Fiber.join(closing);
       }
       return opened.tabId;
