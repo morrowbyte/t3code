@@ -17,6 +17,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
   ProjectId,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
@@ -54,6 +55,7 @@ import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { withInlineContext } from "./ContextHandoffDelivery.ts";
+import { ContextHandoffBudgetError } from "@t3tools/provider-core/server/failure";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -361,6 +363,7 @@ function makeLocalCommandHarness(input: {
     readonly contextRun: "current" | "failed" | "cancelled" | "delivered";
     readonly nativeForkFrom?: "idle" | "busy";
     readonly switchedProvider?: boolean;
+    readonly budgetFailure?: boolean;
   };
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
@@ -979,17 +982,20 @@ function makeLocalCommandHarness(input: {
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: (handoff) =>
-            input.sideChat?.nativeForkFrom === undefined
-              ? Effect.die("history read must fail first")
-              : Effect.succeed({
-                  ...handoff,
-                  id: ContextHandoffId.make("side-chat-fork-context"),
-                  createdByProviderInstanceId: handoff.toProviderInstanceId,
-                  status: "ready",
-                  summaryMessageId: null,
-                  summaryText: "PARENT_HISTORY",
-                  updatedAt: handoff.createdAt,
-                }),
+            input.sideChat?.budgetFailure
+              ? Effect.fail(new ContextHandoffBudgetError())
+              : input.sideChat?.nativeForkFrom === undefined &&
+                  input.sideChat?.budgetFailure !== false
+                ? Effect.die("history read must fail first")
+                : Effect.succeed({
+                    ...handoff,
+                    id: ContextHandoffId.make("side-chat-fork-context"),
+                    createdByProviderInstanceId: handoff.toProviderInstanceId,
+                    status: "ready",
+                    summaryMessageId: null,
+                    summaryText: "PARENT_HISTORY",
+                    updatedAt: handoff.createdAt,
+                  }),
         }),
         Layer.mock(EventSink.EventSinkV2)({
           writeIfRunCurrent,
@@ -1061,6 +1067,7 @@ function makeLocalCommandHarness(input: {
   return {
     getThreadRecords,
     getTurnStartContext,
+    providerSession,
     setProjection: (next: OrchestrationV2ThreadProjection) => {
       projection = next;
     },
@@ -1566,6 +1573,120 @@ effectIt.effect("recovers an abandoned failed turn before continuing its native 
 );
 
 effectIt.effect.each([
+  { path: "resume recovery", hasNative: true, nativeForkFrom: undefined, budgetFailure: true },
+  { path: "new retry", hasNative: false, nativeForkFrom: undefined, budgetFailure: true },
+  { path: "idle fork retry", hasNative: false, nativeForkFrom: "idle", budgetFailure: true },
+  { path: "busy fork retry", hasNative: false, nativeForkFrom: "busy", budgetFailure: true },
+  { path: "valid retry", hasNative: false, nativeForkFrom: undefined, budgetFailure: false },
+] as const)(
+  "validates $path before allocating native context",
+  ({ hasNative, nativeForkFrom, budgetFailure }) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        sideChat: {
+          contextRun: "delivered",
+          budgetFailure,
+          ...(nativeForkFrom === undefined ? {} : { nativeForkFrom }),
+        },
+      });
+      const projection = harness.projection();
+      const providerThread = {
+        ...projection.providerThreads[0]!,
+        nativeThreadRef: hasNative
+          ? {
+              driver: projection.providerThreads[0]!.driver,
+              nativeId: "native-resume-thread",
+              strength: "strong" as const,
+            }
+          : null,
+      };
+      const missedRun = projection.runs[0]!;
+      harness.setProjection({
+        ...projection,
+        runs: projection.runs.map((candidate) =>
+          candidate.id === missedRun.id ? { ...candidate, status: "failed" as const } : candidate,
+        ),
+        providerThreads: [providerThread],
+      });
+      const missedItem: OrchestrationV2ThreadProjection["turnItems"][number] = {
+        id: TurnItemId.make("missed-request"),
+        threadId: projection.thread.id,
+        runId: missedRun.id,
+        nodeId: null,
+        providerThreadId: providerThread.id,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "completed",
+        title: null,
+        startedAt: projection.updatedAt,
+        completedAt: projection.updatedAt,
+        updatedAt: projection.updatedAt,
+        type: "user_message",
+        messageId: missedRun.userMessageId,
+        inputIntent: "turn_start",
+        createdBy: "user",
+        creationSource: "web",
+        text: "Preserve my data. ".repeat(budgetFailure ? 2_000 : 1),
+        attachments: [],
+      };
+      harness.getTurnStartHistory.mockReturnValue(Effect.succeed([missedItem]));
+      const replacement = {
+        ...providerThread,
+        nativeThreadRef: {
+          driver: providerThread.driver,
+          nativeId: "replacement-native-thread",
+          strength: "strong" as const,
+        },
+      };
+      const ensureThread = vi.fn(() => Effect.succeed(replacement));
+      const forkThread = vi.fn(() => Effect.succeed(replacement));
+      const resumeThread = vi.fn(() =>
+        Effect.fail(
+          new ProviderAdapter.ProviderAdapterEventStreamError({
+            driver: providerThread.driver,
+            providerSessionId: ProviderSessionId.make("new-provider-session"),
+            cause: "native thread is gone",
+          }),
+        ),
+      );
+      harness.open.mockReturnValue(
+        Effect.succeed({
+          driver: providerThread.driver,
+          providerSession: harness.providerSession,
+          ensureThread,
+          resumeThread,
+          forkThread,
+          startTurn: harness.startTurn,
+        } as never),
+      );
+
+      yield* harness.start;
+
+      expect(resumeThread).toHaveBeenCalledTimes(hasNative ? 1 : 0);
+      expect(ensureThread).toHaveBeenCalledTimes(budgetFailure ? 0 : 1);
+      expect(forkThread).not.toHaveBeenCalled();
+      if (!budgetFailure) {
+        expect(harness.startRootRun).toHaveBeenCalledOnce();
+        expect(harness.projection().runs.at(-1)?.status).toBe("running");
+        expect(harness.projection().providerThreads[0]?.nativeThreadRef?.nativeId).toBe(
+          "replacement-native-thread",
+        );
+        return;
+      }
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(harness.projection().attempts[0]?.status).toBe("failed");
+      expect(harness.projection().nodes.find((node) => node.kind === "root_turn")?.status).toBe(
+        "failed",
+      );
+      expect(harness.projection().providerThreads).toEqual([providerThread]);
+    }),
+);
+
+effectIt.effect.each([
   { contextRun: "current", runtimeMode: "approval-required", context: "SIDE_CHAT_CONTEXT" },
   { contextRun: "failed", runtimeMode: "approval-required", context: "SIDE_CHAT_CONTEXT" },
   { contextRun: "cancelled", runtimeMode: "approval-required", context: "SIDE_CHAT_CONTEXT" },
@@ -1605,23 +1726,55 @@ effectIt.effect.each([
 );
 
 effectIt.effect.each([
-  { nativeForkFrom: "idle", forks: true, transferStatus: "consumed", handoffIds: [] },
+  {
+    nativeForkFrom: "idle",
+    forks: true,
+    transferStatus: "consumed",
+    handoffIds: [],
+    budgetFailure: false,
+  },
   {
     nativeForkFrom: "busy",
     forks: false,
     transferStatus: "resolved_portable",
     handoffIds: ["side-chat-fork-context"],
+    budgetFailure: false,
+  },
+  {
+    nativeForkFrom: "busy",
+    forks: false,
+    transferStatus: "pending",
+    handoffIds: [],
+    budgetFailure: true,
   },
 ] as const)(
   "runs a planned native side chat fork when the parent is $nativeForkFrom",
-  ({ nativeForkFrom, forks, transferStatus, handoffIds }) =>
+  ({ nativeForkFrom, forks, transferStatus, handoffIds, budgetFailure }) =>
     Effect.gen(function* () {
       const harness = makeLocalCommandHarness({
         text: "What is the main thread doing?",
-        sideChat: { contextRun: "current", nativeForkFrom },
+        sideChat: { contextRun: "current", nativeForkFrom, budgetFailure },
       });
 
       yield* harness.start;
+
+      if (budgetFailure) {
+        expect(harness.startTurn).not.toHaveBeenCalled();
+        expect(harness.projection().runs[0]?.status).toBe("failed");
+        expect(harness.projection().attempts[0]?.status).toBe("failed");
+        expect(harness.projection().nodes.find((node) => node.kind === "root_turn")?.status).toBe(
+          "failed",
+        );
+        expect(
+          harness.events.some(
+            (event) =>
+              event.type === "turn-item.updated" &&
+              event.payload.type === "error" &&
+              event.payload.failure.message.includes("handoff budget"),
+          ),
+        ).toBe(true);
+        return;
+      }
 
       expect(harness.forkThread).toHaveBeenCalledTimes(forks ? 1 : 0);
       expect(harness.projection().contextTransfers).toMatchObject([

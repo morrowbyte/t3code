@@ -3312,7 +3312,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
     }),
   );
 
-  it.effect("create_pr sends bounded checks to the model and omits rolled-back runs", () =>
+  it.effect("create_pr keeps bounded checks despite oversized requests", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
@@ -3432,6 +3432,16 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
               attachments: [],
             },
             {
+              ...itemBase(2, completedRun.id),
+              type: "user_message" as const,
+              messageId: MessageId.make("message:pr-thread-context:oversized"),
+              createdBy: "user" as const,
+              creationSource: "web" as const,
+              inputIntent: "turn_start" as const,
+              text: "Oversized PR request ".repeat(1_000),
+              attachments: [],
+            },
+            {
               ...itemBase(3, completedRun.id),
               type: "command_execution" as const,
               input: "vp test run",
@@ -3476,6 +3486,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       expect(generatedPrompt).toContain("Command: vp test run\nExit code: 0");
       expect(generatedPrompt).toContain("Tests 12 passed");
       expect(generatedPrompt).toContain("Make the PR writer see the thread");
+      expect(generatedPrompt).not.toContain("Oversized PR request");
       expect(generatedPrompt).toContain("Command: vp lint\nExit code: 1");
       expect(generatedPrompt).toContain("2 lint errors");
       expect(generatedPrompt).not.toContain("vp run abandoned");

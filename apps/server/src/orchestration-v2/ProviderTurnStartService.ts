@@ -56,6 +56,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   ContextHandoffBackgroundWorkError,
+  ContextHandoffBudgetError,
   knownProviderFailureMessage,
   makeProviderFailure,
 } from "@t3tools/provider-core/server/failure";
@@ -552,6 +553,14 @@ export const layer: Layer.Layer<
             },
           });
         },
+      );
+      const rejectHandoffBudget = Effect.fn("ProviderTurnStartService.rejectHandoffBudget")(
+        (error: ContextHandoffBudgetError) =>
+          settleStartFailure({
+            signal: "handoff-budget-rejected",
+            title: "Context handoff unavailable",
+            error,
+          }).pipe(Effect.as(undefined)),
       );
       if (message.attachments.length === 0 && message.text.trimStart().startsWith("/")) {
         const isEmptyCompaction =
@@ -1147,10 +1156,16 @@ export const layer: Layer.Layer<
           ...effectiveHandoffs.filter((candidate) => candidate.targetRunId === run.id),
         ];
       };
-      let resumedRetryHandoff: ReadonlyArray<OrchestrationV2ContextHandoff> | undefined;
+      let preparedRetryHandoff: ReadonlyArray<OrchestrationV2ContextHandoff> | undefined;
       let resumedHandoffContext: ReturnType<typeof handoffContextForThread> | undefined;
       let portableForkFallback: OrchestrationV2ContextHandoff | undefined;
       const loadedProviderThread = yield* Effect.gen(function* () {
+        if (nativeForkTransfer !== undefined || providerThread.nativeThreadRef === null) {
+          preparedRetryHandoff = yield* prepareRetryHandoff(
+            handoffContextForThread({ ...providerThread, nativeThreadRef: null }),
+          );
+          if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
+        }
         if (nativeForkTransfer !== undefined) {
           const sourceProjection = yield* projectionStore.getThreadRecords(
             nativeForkTransfer.sourceThreadId,
@@ -1303,9 +1318,9 @@ export const layer: Layer.Layer<
           const context = handoffContextForThread(resumed.success);
           context.budget = yield* Effect.cached(context.budget);
           resumedHandoffContext = context;
-          resumedRetryHandoff = yield* prepareRetryHandoff(context);
+          preparedRetryHandoff = yield* prepareRetryHandoff(context);
           const fits = yield* deliverContextHandoffs({
-            handoffs: [...handoffs, ...resumedRetryHandoff],
+            handoffs: [...handoffs, ...preparedRetryHandoff],
             providerThread: { ...resumed.success, id: providerThread.id },
             budget: context.budget,
             deferInline: isCompactionCommandMessage(message) || goalCommand,
@@ -1352,7 +1367,8 @@ export const layer: Layer.Layer<
           }
         }
         resumedHandoffContext = undefined;
-        resumedRetryHandoff = [];
+        preparedRetryHandoff = [];
+        const { handoff, transferId, createdAt } = yield* recoveryHandoff;
         if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
 
         yield* Effect.logWarning("Recovering provider context in a fresh native session", {
@@ -1379,7 +1395,6 @@ export const layer: Layer.Layer<
           }),
         );
         if (replacement === undefined) return undefined;
-        const { handoff, transferId, createdAt } = yield* recoveryHandoff;
         effectiveHandoffs = withRecoveryHandoff(handoff);
         resumeFellBack = true;
         yield* eventSink.write({
@@ -1422,7 +1437,7 @@ export const layer: Layer.Layer<
           ],
         });
         return replacement;
-      });
+      }).pipe(Effect.catchTags({ ContextHandoffBudgetError: rejectHandoffBudget }));
       if (loadedProviderThread === undefined) return;
       if (!(yield* isCurrentAttemptInStatus("starting"))) {
         return;
@@ -1453,7 +1468,12 @@ export const layer: Layer.Layer<
         legacyInputRunIds,
         budget,
       } = handoffContext;
-      const retryHandoff = resumedRetryHandoff ?? (yield* prepareRetryHandoff(handoffContext));
+      const retryHandoff =
+        preparedRetryHandoff ??
+        (yield* prepareRetryHandoff(handoffContext).pipe(
+          Effect.catchTags({ ContextHandoffBudgetError: rejectHandoffBudget }),
+        ));
+      if (retryHandoff === undefined) return;
       const runningProviderThread: OrchestrationV2ProviderThread = {
         ...loadedProviderThread,
         contextUsage: handoffUsage,

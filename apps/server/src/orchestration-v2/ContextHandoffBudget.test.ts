@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import { ContextHandoffBudgetError } from "@t3tools/provider-core/server/failure";
 import * as Schema from "effect/Schema";
 import {
   contextUsageForHandoff,
@@ -179,54 +180,109 @@ describe("handoff budget", () => {
       budget: 3_000,
     });
     assert.deepEqual(selected.messages, messages);
+    assert.deepEqual(selected.requiredItemIds, [messages[0]!.itemId]);
     assert.equal(selected.omittedItems, 2);
     assert.isAtMost(historyCost(selected.messages, selected.context), 3_000);
   });
 
-  it("keeps the latest human correction ahead of an agent message carried as user input", () => {
-    const original = {
-      ...message("original", "user", "Preserve my data."),
-      createdBy: "user" as const,
-    };
-    const correction = {
-      ...message("correction", "user", "Continue the authorized repair."),
-      createdBy: "user" as const,
-    };
-    const agent = {
-      ...message("agent", "user", "Only inspect; ask again before every repair. ".repeat(50)),
-      createdBy: "agent" as const,
-      senderThreadId: ThreadId.make("thread:coordinator"),
-    };
-    const selected = selectHistory({
-      messages: [original, correction, agent],
-      coverage: "Existing task",
-      budget: 1_500,
-    });
-    assert.deepEqual(
-      selected.messages.map((item) => item.itemId),
-      ["original", "correction"],
-    );
-    const competingPlan = message(
-      "plan",
-      "assistant",
-      "Stop for every technical detail. ".repeat(4),
-    );
-    const pairs = [1_100, 1_200, 1_300, 1_400, 1_500]
-      .map((budget) =>
-        selectHistory({
-          messages: [original, competingPlan, correction],
-          coverage: "Existing task",
-          budget,
-        }),
-      )
-      .filter((selection) => selection.messages.length === 2);
-    assert.isNotEmpty(pairs);
-    for (const pair of pairs) {
+  it.each(["agent", "system"] as const)(
+    "keeps the human correction ahead of %s input",
+    (createdBy) => {
+      const original = {
+        ...message("original", "user", "Preserve my data."),
+        createdBy: "user" as const,
+      };
+      const correction = {
+        ...message("correction", "user", "Continue the authorized repair."),
+        createdBy: "user" as const,
+      };
+      const agent = {
+        ...message("agent", "user", "Only inspect; ask again before every repair. ".repeat(50)),
+        createdBy,
+        ...(createdBy === "agent" ? { senderThreadId: ThreadId.make("thread:coordinator") } : {}),
+      };
+      const selected = selectHistory({
+        messages: [original, correction, agent],
+        coverage: "Existing task",
+        budget: 1_500,
+      });
       assert.deepEqual(
-        pair.messages.map((item) => item.itemId),
+        selected.messages.map((item) => item.itemId),
         ["original", "correction"],
       );
-    }
+      const competingPlan = message(
+        "plan",
+        "assistant",
+        "Stop for every technical detail. ".repeat(4),
+      );
+      const pairs = [1_100, 1_200, 1_300, 1_400, 1_500]
+        .map((budget) =>
+          selectHistory({
+            messages: [original, competingPlan, correction],
+            coverage: "Existing task",
+            budget,
+          }),
+        )
+        .filter((selection) => selection.messages.length === 2);
+      assert.isNotEmpty(pairs);
+      for (const pair of pairs) {
+        assert.deepEqual(
+          pair.messages.map((item) => item.itemId),
+          ["original", "correction"],
+        );
+      }
+    },
+  );
+
+  it("bounds coverage overhead while retaining the original human request and correction", () => {
+    const anchors = [
+      { ...message("original", "user", "Preserve my data."), createdBy: "user" as const },
+      { ...message("correction", "user", "Repair the backup."), createdBy: "user" as const },
+    ];
+    const selected = selectHistory({
+      messages: anchors,
+      coverage: "Detailed source-item coverage. ".repeat(100),
+      budget: 1_500,
+    });
+    assert.deepEqual(selected.messages, anchors);
+    assert.isAtMost(historyCost(selected.messages, selected.context), 1_500);
+    assert.include(selected.context, "t3_thread_read");
+  });
+
+  it("retains the human anchors of every source conversation", () => {
+    const conversations = ["first", "middle", "last"].map((source) => {
+      const threadId = ThreadId.make(`thread:${source}`);
+      return [
+        { ...message(`${source}:original`, "user", "Preserve my data."), threadId },
+        { ...message(`${source}:correction`, "user", "Complete the repair."), threadId },
+        { ...message(`${source}:plan`, "assistant", "Plan. ".repeat(230)), threadId },
+      ];
+    });
+    const selected = selectHistory({
+      messages: conversations.flat(),
+      coverage: "Combined source threads",
+      budget: 3_000,
+    });
+    assert.deepEqual(
+      selected.messages.filter((item) => item.role === "user"),
+      conversations.flatMap((items) => items.slice(0, 2)),
+    );
+    assert.isAtMost(historyCost(selected.messages, selected.context), 3_000);
+  });
+
+  it("rejects a hard cap that cannot preserve both intact human anchors", () => {
+    assert.throws(
+      () =>
+        selectHistory({
+          messages: [
+            { ...message("original", "user", "Keep all my data. ".repeat(80)), createdBy: "user" },
+            { ...message("correction", "user", "Repair the backup."), createdBy: "user" },
+          ],
+          coverage: "Historical coverage. ".repeat(50),
+          budget: 1_024,
+        }),
+      ContextHandoffBudgetError,
+    );
   });
 
   it("counts JSON escaping and UTF-8 bytes across many messages", () => {
@@ -234,6 +290,13 @@ describe("handoff budget", () => {
       message(`item:${i}`, i % 2 ? "assistant" : "user", '\u0000\\"🧪界'.repeat(15)),
     );
     for (const budget of [1_024, 4_000, 16_000]) {
+      if (budget === 1_024) {
+        assert.throws(
+          () => selectHistory({ messages: candidates, coverage: "Recovery", budget }),
+          ContextHandoffBudgetError,
+        );
+        continue;
+      }
       const selected = selectHistory({
         messages: candidates,
         coverage: "Retrieve omitted history",
@@ -469,7 +532,7 @@ describe("handoff delivery", () => {
   ])("records omitted recovery coverage separately from $label text", ({ native }) =>
     Effect.gen(function* () {
       const omittedBeforeDelivery = TurnItemId.make("item:omitted-during-preparation");
-      const oversized = message("item:oversized", "user", "x".repeat(20_000));
+      const oversized = message("item:oversized", "assistant", "x".repeat(20_000));
       let durable: OrchestrationV2ContextHandoff = {
         ...handoff,
         history: {
@@ -477,6 +540,7 @@ describe("handoff delivery", () => {
           messages: [...messages, oversized],
           omittedItems: 1,
           omittedItemIds: [omittedBeforeDelivery],
+          requiredItemIds: [messages[0]!.itemId],
         },
       };
       const result = yield* deliverContextHandoffs({
@@ -506,6 +570,7 @@ describe("handoff delivery", () => {
       );
       assert.deepEqual(durable.delivery?.omittedItemIds, [omittedBeforeDelivery, oversized.itemId]);
       assert.deepEqual(decodeHandoff(durable).delivery, durable.delivery);
+      assert.deepEqual(decodeHandoff(durable).history, durable.history);
     }),
   );
 
@@ -682,26 +747,106 @@ describe("handoff delivery", () => {
       assert.notInclude(serialized, "Preserve every line");
       assert.equal(serialized.split("Partial work").length - 1, 1);
       assert.include(serialized, "Latest result");
+
+      const required = [
+        messages[0]!,
+        message("item:second-request", "user", "b".repeat(9_000)),
+        message("item:third-request", "user", "c".repeat(9_000)),
+        message("item:last-request", "user", "Complete the repair."),
+      ];
+      const handoffs = [required.slice(0, 2), required.slice(2)].map((part, index) => ({
+        ...handoff,
+        id: ContextHandoffId.make(`handoff:part-${index}`),
+        history: {
+          messages: part,
+          coverage: "Same source conversation, separate handoffs",
+          omittedItems: 0,
+          requiredItemIds: part.map((item) => item.itemId),
+        },
+      }));
+      for (const budget of [16_000, 32_000]) {
+        let calls = 0;
+        let persisted = 0;
+        const result = yield* deliverContextHandoffs({
+          handoffs,
+          providerThread,
+          budget,
+          alreadyDeliveredItemIds: new Set(),
+          inject: (value) =>
+            Effect.sync(() => {
+              calls++;
+              if (budget === 32_000) assert.deepEqual(value.messages, required);
+              return true;
+            }),
+          persist: () =>
+            Effect.sync(() => {
+              persisted++;
+            }),
+        }).pipe(Effect.result);
+        assert.equal(result._tag, budget === 16_000 ? "Failure" : "Success");
+        assert.equal(calls, budget === 16_000 ? 0 : 1);
+        if (budget === 16_000) assert.equal(persisted, 0);
+      }
     }),
   );
 
-  it.effect("fails before delivery when even the coverage marker cannot fit", () =>
+  it.effect.each([
+    { label: "zero budget", budget: 0, history: handoff.history! },
+    {
+      label: "empty legacy history",
+      budget: 1_024,
+      history: { ...handoff.history!, messages: [], omittedItems: 235 },
+    },
+    {
+      label: "legacy original request omitted",
+      budget: 16_000,
+      history: {
+        ...handoff.history!,
+        messages: [messages[1]!],
+        omittedItems: 1,
+        omittedItemIds: [messages[0]!.itemId],
+      },
+    },
+    {
+      label: "legacy latest request omitted",
+      budget: 16_000,
+      history: {
+        ...handoff.history!,
+        omittedItems: 1,
+        omittedItemIds: [TurnItemId.make("item:latest-human-request")],
+      },
+    },
+    {
+      label: "required request missing from retained history",
+      budget: 16_000,
+      history: {
+        ...handoff.history!,
+        messages: [messages[1]!],
+        requiredItemIds: [messages[0]!.itemId],
+      },
+    },
+  ])("fails before delivery with insufficient retained history: $label", ({ budget, history }) =>
     Effect.gen(function* () {
       let calls = 0;
+      let persisted = 0;
       const result = yield* deliverContextHandoffs({
-        handoffs: [handoff],
+        handoffs: [{ ...handoff, history }],
         providerThread,
-        budget: 0,
+        budget,
         alreadyDeliveredItemIds: new Set(),
         inject: () =>
           Effect.sync(() => {
             calls++;
             return true;
           }),
-        persist: () => Effect.void,
+        persist: () =>
+          Effect.sync(() => {
+            persisted++;
+          }),
       }).pipe(Effect.result);
       assert.equal(result._tag, "Failure");
       assert.equal(calls, 0);
+      assert.equal(persisted, 0);
     }),
   );
 });

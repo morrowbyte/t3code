@@ -1183,6 +1183,7 @@ export const OrchestrationV2ContextHandoff = Schema.Struct({
       coverage: Schema.String,
       omittedItems: NonNegativeInt,
       omittedItemIds: Schema.optional(Schema.Array(TurnItemId)),
+      requiredItemIds: Schema.optional(Schema.Array(TurnItemId)),
     }),
   ),
   delivery: Schema.optional(

@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import { knownProviderFailureMessage } from "@t3tools/provider-core/server/failure";
 
 import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
@@ -46,19 +47,27 @@ export const unavailable = () =>
 
 export const dispatchFailure = (
   error: OrchestratorV2Error | ThreadManagement.ThreadManagementProviderInstanceDisabledError,
-) =>
-  error._tag === "ThreadManagementProviderInstanceDisabledError" ||
-  error._tag === "OrchestratorRuntimeModeAboveCeilingError"
-    ? new OrchestratorMcpFailure({ code: "invalid_request", message: error.message })
-    : (error._tag === "OrchestratorDispatchError" ||
-          error._tag === "OrchestratorCommandRejectedError") &&
-        typeof error.cause === "string" &&
-        error.cause.length > 0
-      ? new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message: Array.from(error.cause).slice(0, 1000).join(""),
-        })
-      : unavailable();
+) => {
+  if (
+    error._tag === "ThreadManagementProviderInstanceDisabledError" ||
+    error._tag === "OrchestratorRuntimeModeAboveCeilingError"
+  ) {
+    return new OrchestratorMcpFailure({ code: "invalid_request", message: error.message });
+  }
+  const knownMessage = knownProviderFailureMessage(error);
+  if (knownMessage !== undefined) {
+    return new OrchestratorMcpFailure({ code: "orchestration_error", message: knownMessage });
+  }
+  return (error._tag === "OrchestratorDispatchError" ||
+    error._tag === "OrchestratorCommandRejectedError") &&
+    typeof error.cause === "string" &&
+    error.cause.length > 0
+    ? new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: Array.from(error.cause).slice(0, 1000).join(""),
+      })
+    : unavailable();
+};
 
 export interface CallerLimits {
   readonly runtimeMode: RuntimeMode;
