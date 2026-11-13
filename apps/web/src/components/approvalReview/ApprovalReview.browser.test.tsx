@@ -124,7 +124,7 @@ it("shows the immutable human excerpt and complete original separately from the 
   expect(order.querySelector('[aria-label="Agent rationale"]')!.textContent).toContain(
     approval.approvalReview.agentRationale,
   );
-  await userEvent.click(screen.getByRole("button", { name: "Details öffnen: Originalauftrag" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Details öffnen: Originalauftrag: / }));
   await userEvent.click(screen.getByRole("button", { name: "Originalauftrag", exact: true }));
   expect(order.querySelector("[data-agent-message-original]")!.textContent).toBe(
     approval.approvalReview.originalOrder!.receipt.fullText,
