@@ -7,7 +7,6 @@ export default Effect.gen(function* () {
   yield* sql`
     CREATE INDEX orchestration_v2_projection_runs_usage_history_idx
     ON orchestration_v2_projection_runs(requested_at DESC, run_id DESC)
-    WHERE json_extract(payload_json, '$.delegationAdmission') IS NULL
   `;
   yield* sql`
     CREATE INDEX orchestration_v2_projection_provider_turns_attempt_idx
