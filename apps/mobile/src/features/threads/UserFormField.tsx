@@ -126,7 +126,7 @@ export function UserFormField({
         />
       )}
       {error ? (
-        <Text accessibilityRole="alert" className="font-sans text-xs text-danger">
+        <Text accessibilityRole="alert" className="font-sans text-xs text-danger-foreground">
           {error}
         </Text>
       ) : null}
