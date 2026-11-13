@@ -32,6 +32,7 @@ vi.mock("./useOpenLinkedThread", () => ({
   useOpenLinkedThread: () => harness.navigate,
 }));
 vi.mock("../../state/entities", () => ({ useThreadShell: harness.threadShell }));
+vi.mock("../../state/threads", () => ({ environmentThreadDetails: {} }));
 vi.mock("../agent-identity/AgentIdentityLabel", () => ({
   AgentIdentityLabel: () => <span>Existing agent identity</span>,
 }));
@@ -276,6 +277,9 @@ function button(label: string, scope: ParentNode = host) {
   expect(result).toBeDefined();
   return result!;
 }
+function orderDisclosure(kind: "human" | "synthetic test", scope: ParentNode) {
+  return scope.querySelector<HTMLButtonElement>(`button[aria-label^="Expand ${kind} order: "]`);
+}
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
@@ -490,7 +494,7 @@ describe("PendingApprovalCard", () => {
     expect(dialog.textContent).not.toContain(order.receipt.fullText);
     expect(dialog.textContent).toContain("Agent rationale");
     expect(dialog.textContent).toContain(pending.approvalReview.agentRationale);
-    act(() => harness.presses.get("Expand human order")!());
+    act(() => orderDisclosure("human", dialog)!.click());
     expect(dialog.textContent).toContain(order.receipt.fullText);
     for (const value of [
       order.receipt.sourceEnvironmentId,
@@ -550,7 +554,7 @@ describe("PendingApprovalCard", () => {
       expect(dialog.textContent).toContain("Original order unverified");
       expect(dialog.textContent).not.toContain("Host order and request channel verified");
       expect(dialog.textContent).not.toContain("Principal:");
-      expect(harness.presses.has("Expand human order")).toBe(false);
+      expect(orderDisclosure("human", dialog)).toBeNull();
       expect(button("Provider allows once", dialog).disabled).toBe(true);
       await act(async () => harness.presses.get("Provider allows once")!());
       expect(respond).not.toHaveBeenCalled();
@@ -620,7 +624,7 @@ describe("PendingApprovalCard", () => {
       expect(dialog.textContent).toContain("Package integrity verified");
       expect(dialog.textContent).toContain("Original order unverified");
       expect(dialog.textContent).not.toContain("Principal:");
-      expect(harness.presses.has("Expand human order")).toBe(false);
+      expect(orderDisclosure("human", dialog)).toBeNull();
       act(() => button("Show original request", dialog).click());
       expect(dialog.textContent).toContain(JSON.stringify({ approvalReview: bundle }));
       expect(button("Provider allows once", dialog).disabled).toBe(true);
@@ -644,7 +648,7 @@ describe("PendingApprovalCard", () => {
       const dialog = host.querySelector('[role="dialog"]')!;
       expect(dialog.textContent).toContain("Host order and request channel verified");
       expect(dialog.textContent).toContain("Synthetic test order · ACCEPT disabled");
-      act(() => harness.presses.get("Expand synthetic test order")!());
+      act(() => orderDisclosure("synthetic test", dialog)!.click());
       expect(dialog.textContent).toContain(order.receipt.fullText);
       expect(button("Provider allows once", dialog).disabled).toBe(true);
       await act(async () => harness.presses.get("Provider allows once")!());
@@ -695,7 +699,7 @@ describe("PendingApprovalCard", () => {
     expect(dialog.textContent).toContain("Package integrity verified");
     expect(dialog.textContent).toContain("Legacy original order · unverified");
     expect(dialog.textContent).not.toContain("Principal:");
-    expect(harness.presses.has("Expand human order")).toBe(false);
+    expect(orderDisclosure("human", dialog)).toBeNull();
     expect(button("Provider allows once", dialog).disabled).toBe(true);
     await act(async () => harness.presses.get("Provider allows once")!());
     expect(respond).not.toHaveBeenCalled();
@@ -726,7 +730,7 @@ describe("PendingApprovalCard", () => {
     expect(dialog.textContent).toContain("File SHA-256 mismatch: fixture.ps1");
     expect(dialog.textContent).not.toContain("Host order and request channel verified");
     expect(dialog.textContent).not.toContain("Principal:");
-    expect(harness.presses.has("Expand human order")).toBe(false);
+    expect(orderDisclosure("human", dialog)).toBeNull();
     expect(button("Provider allows once", dialog).disabled).toBe(true);
     await act(async () => harness.presses.get("Provider allows once")!());
     expect(respond).not.toHaveBeenCalled();
