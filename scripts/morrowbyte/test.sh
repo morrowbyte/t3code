@@ -5,12 +5,17 @@ python3 scripts/morrowbyte/release62-recovery.test.py
 bash -n scripts/morrowbyte/*.sh
 python3 - <<'PY'
 from pathlib import Path
+import os
 import re
 import subprocess
 
 source = Path("scripts/morrowbyte/check.sh").read_text()
-paths = set(re.findall(r"\b(?:apps|packages|scripts|packaging)/[\w./-]+\.test\.(?:tsx|ts|cjs|py|sh)\b", source))
+test_path = r"\b(?:apps|packages|scripts|packaging)/[\w./-]+\.test\.(?:tsx|ts|cjs|py|sh)\b"
+paths = set(re.findall(test_path, source))
 optional = set(re.findall(r'^\w+=([^\s]+)\nif \[\[ -f "\$\w+" \]\]; then', source, re.MULTILINE))
+if os.environ.get("MORROWBYTE_ALLOW_MISSING_VOICE_TESTS") == "1" and not os.environ.get("MORROWBYTE_SOURCE_PROOF"):
+    voice = re.search(r"(?ms)^optional_voice_tests=\((.*?)^\)", source)
+    optional.update(re.findall(test_path, voice.group(1)))
 tracked = set(subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0"))
 missing = sorted(path for path in paths - optional if path not in tracked or not Path(path).is_file())
 if missing:

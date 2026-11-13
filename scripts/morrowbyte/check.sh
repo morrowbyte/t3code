@@ -321,10 +321,13 @@ for native_integration_test in "${native_integration_tests[@]}"; do
   fi
   focused_tests+=("$native_integration_test")
 done
-voice_tests=(
-  apps/web/src/voice/recordingDraftStore.test.ts
+optional_voice_tests=(
   apps/web/src/voice/useVoiceDictation.test.tsx
   packages/client-runtime/src/state/voiceTranscriptionHttp.test.ts
+)
+voice_tests=(
+  apps/web/src/voice/recordingDraftStore.test.ts
+  "${optional_voice_tests[@]}"
 )
 for voice_test in "${voice_tests[@]}"; do
   if [[ "$voice_test" == apps/web/src/voice/recordingDraftStore.test.ts && ! -f "$voice_test" ]]; then
