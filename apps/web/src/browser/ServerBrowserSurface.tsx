@@ -285,6 +285,7 @@ function ServerBrowserSurfaceConnection(
   const [controlPending, setControlPending] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [streamGeneration, setStreamGeneration] = useState(0);
+  const streamGenerationRef = useRef(0);
   const [gone, setGone] = useState(false);
   const [promptText, setPromptText] = useState("");
   const [fileChooser, setFileChooser] = useState<PreviewStreamFileChooser | null>(null);
@@ -546,7 +547,7 @@ function ServerBrowserSurfaceConnection(
     privateInputVersionRef.current++;
     privateEntryRef.current = active;
     setPrivateEntry(active);
-    if (!active) setStreamGeneration((current) => current + 1);
+    if (!active) setStreamGeneration(++streamGenerationRef.current);
     if (active) {
       selectionRequestRef.current = null;
       props.onSelection?.(null);
@@ -790,6 +791,7 @@ function ServerBrowserSurfaceConnection(
           viewportChanged(viewport);
         },
         onControl: (next) => {
+          if (streamGenerationRef.current !== streamGeneration) return;
           unauthorizedRef.current = 0;
           setControlPending(native && next.controller === "you" && next.ready === false);
           const previous = controlRef.current;
@@ -809,6 +811,7 @@ function ServerBrowserSurfaceConnection(
           }
         },
         onConnectedChange: (connected) => {
+          if (streamGenerationRef.current !== streamGeneration) return;
           setReconnecting(!connected);
           if (connected) return;
           localFocusRef.current?.connectionLost();

@@ -614,6 +614,20 @@ describe("ServerBrowserSurface native controls", () => {
     expect(mocks.frameListeners.size).toBe(1);
     expect(canvas.width).toBeGreaterThan(0);
 
+    const resumedHandlers = mocks.createClient.mock.calls.at(-1)![1];
+    await act(() =>
+      resumedHandlers.onControl({
+        controller: "you",
+        canOperate: true,
+        ready: true,
+        generation: 3,
+      }),
+    );
+    await act(() =>
+      handlers.onControl({ controller: "none", canOperate: true, ready: false, generation: 2 }),
+    );
+    await expect.element(screen.getByRole("button", { name: "Release control" })).toBeVisible();
+
     await act(() => host.update({ kind: "pending", webContentsId: null, privateEntry: false }));
     expect(handle.current?.screenshot()).toBeNull();
     expect(canvas.width).toBe(0);
