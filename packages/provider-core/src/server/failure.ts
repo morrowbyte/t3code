@@ -22,7 +22,7 @@ export class ContextHandoffBudgetError extends Schema.TaggedError<ContextHandoff
   {},
 ) {
   override get message() {
-    return "The request leaves too little context for a provider handoff. Shorten the request or use a larger-context model; the current request has not been truncated.";
+    return "The handoff budget cannot preserve the required conversation context. The handoff was rejected without truncating human messages.";
   }
 }
 

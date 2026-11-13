@@ -56,6 +56,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   ContextHandoffBackgroundWorkError,
+  ContextHandoffBudgetError,
   knownProviderFailureMessage,
   makeProviderFailure,
 } from "@t3tools/provider-core/server/failure";
@@ -552,6 +553,14 @@ export const layer: Layer.Layer<
             },
           });
         },
+      );
+      const rejectHandoffBudget = Effect.fn("ProviderTurnStartService.rejectHandoffBudget")(
+        (error: ContextHandoffBudgetError) =>
+          settleStartFailure({
+            signal: "handoff-budget-rejected",
+            title: "Context handoff unavailable",
+            error,
+          }).pipe(Effect.as(undefined)),
       );
       if (message.attachments.length === 0 && message.text.trimStart().startsWith("/")) {
         const isEmptyCompaction =
@@ -1422,7 +1431,7 @@ export const layer: Layer.Layer<
           ],
         });
         return replacement;
-      });
+      }).pipe(Effect.catchTags({ ContextHandoffBudgetError: rejectHandoffBudget }));
       if (loadedProviderThread === undefined) return;
       if (!(yield* isCurrentAttemptInStatus("starting"))) {
         return;
@@ -1453,7 +1462,12 @@ export const layer: Layer.Layer<
         legacyInputRunIds,
         budget,
       } = handoffContext;
-      const retryHandoff = resumedRetryHandoff ?? (yield* prepareRetryHandoff(handoffContext));
+      const retryHandoff =
+        resumedRetryHandoff ??
+        (yield* prepareRetryHandoff(handoffContext).pipe(
+          Effect.catchTags({ ContextHandoffBudgetError: rejectHandoffBudget }),
+        ));
+      if (retryHandoff === undefined) return;
       const runningProviderThread: OrchestrationV2ProviderThread = {
         ...loadedProviderThread,
         contextUsage: handoffUsage,

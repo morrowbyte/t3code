@@ -68,7 +68,7 @@ import { GitManagerError, GitPullRequestMaterializationError } from "@t3tools/co
 import {
   historicalMessage,
   renderHistory,
-  selectHistory,
+  selectHistoryEffect,
 } from "@t3tools/provider-core/server/handoffBudget";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import {
@@ -697,7 +697,7 @@ export const make = Effect.gen(function* () {
     function* (threadId: ThreadId | undefined) {
       if (threadId === undefined) return undefined;
       const { visibleTurnItems } = yield* threads.getThreadProjection(threadId);
-      const selected = selectHistory({
+      const selected = yield* selectHistoryEffect({
         messages: visibleTurnItems.flatMap(
           ({ item }) => historicalMessage(limitCommandOutput(item)) ?? [],
         ),

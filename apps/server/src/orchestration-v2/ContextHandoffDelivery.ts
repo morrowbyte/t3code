@@ -9,7 +9,7 @@ import * as Schema from "effect/Schema";
 import {
   historyCost,
   renderHistory,
-  selectHistory,
+  selectHistoryEffect,
 } from "@t3tools/provider-core/server/handoffBudget";
 
 /** The provider prompt for a turn that carries inline context ahead of the user's text. */
@@ -38,6 +38,14 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     );
     if (pending.length === 0 || (input.deferInline && input.inject === undefined))
       return { context: "", delivered: Effect.void, unsent: Effect.void };
+    if (
+      pending.some(
+        (handoff) => handoff.history?.messages.length === 0 && handoff.history.omittedItems > 0,
+      )
+    ) {
+      if (input.deferInline) return { context: "", delivered: Effect.void, unsent: Effect.void };
+      return yield* new ContextHandoffBudgetError();
+    }
     const budget = typeof input.budget === "number" ? input.budget : yield* input.budget;
     let coverage = pending
       .map(
@@ -68,12 +76,15 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       oldContext && historyCost([], `${coverage}\n${oldContext}`) + 512 <= budget
         ? `${coverage}\n${oldContext}`
         : coverage;
-    const selected = selectHistory({
+    const selected = yield* selectHistoryEffect({
       messages,
       coverage: fullCoverage,
       omittedItems: pending.reduce((sum, handoff) => sum + (handoff.history?.omittedItems ?? 0), 0),
       budget,
-    });
+    }).pipe(
+      Effect.catch((cause) => (input.deferInline ? Effect.succeed(undefined) : Effect.fail(cause))),
+    );
+    if (selected === undefined) return { context: "", delivered: Effect.void, unsent: Effect.void };
     if (historyCost(selected.messages, selected.context) > budget) {
       if (input.deferInline) return { context: "", delivered: Effect.void, unsent: Effect.void };
       return yield* new ContextHandoffBudgetError();

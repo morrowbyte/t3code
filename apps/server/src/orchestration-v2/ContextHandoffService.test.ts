@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as ContextHandoffService from "./ContextHandoffService.ts";
+import { ContextHandoffBudgetError } from "@t3tools/provider-core/server/failure";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProjectionStoreThreadNotFoundError } from "./ProjectionStore.ts";
 
@@ -99,64 +100,28 @@ it.layer(layerTest)("ContextHandoffService legacy import", (it) => {
     }),
   );
 
-  it.effect("preserves role attribution when truncating imported history", () =>
+  it.effect.each([
+    { label: "with whitespace", text: `${"x".repeat(35_000)} retained final words` },
+    { label: "without whitespace", text: `${"🧪".repeat(20_000)}LATEST_SINGLE_TOKEN` },
+  ])("rejects an oversized human import $label instead of truncating it", ({ text }) =>
     Effect.gen(function* () {
       const service = yield* ContextHandoffService.ContextHandoffServiceV2;
-      const handoff = yield* service.prepareLegacyImport({
-        threadId: ThreadId.make("thread:legacy-context"),
-        targetRunId: RunId.make("run:first-v2"),
-        toProviderThreadId: ProviderThreadId.make("provider-thread:first-v2"),
-        toProviderInstanceId: ProviderInstanceId.make("codex"),
-        items: [
-          importedItem({
-            role: "user",
-            id: "long",
-            text: `${"x".repeat(35_000)} retained final words`,
-            ordinal: 1,
-          }),
-        ],
-        createdAt: DateTime.makeUnsafe("2026-01-02T00:00:00.000Z"),
-      });
-
-      assert.isAtMost(handoff.summaryText.length, 32_000);
-      assert.include(handoff.summaryText, "User:\n... retained final words");
-      assert.notMatch(handoff.summaryText, /\n+x+ retained final words/);
-    }),
-  );
-
-  it.effect("retains the newest oversized import even when it has no whitespace", () =>
-    Effect.gen(function* () {
-      const service = yield* ContextHandoffService.ContextHandoffServiceV2;
-      const handoff = yield* service.prepareLegacyImport({
-        threadId: ThreadId.make("thread:legacy-context"),
-        targetRunId: RunId.make("run:first-v2"),
-        toProviderThreadId: ProviderThreadId.make("provider-thread:first-v2"),
-        toProviderInstanceId: ProviderInstanceId.make("codex"),
-        items: [
-          importedItem({
-            role: "assistant",
-            id: "older",
-            text: "older message",
-            ordinal: 1,
-          }),
-          importedItem({
-            role: "user",
-            id: "long-single-token",
-            text: `${"🧪".repeat(20_000)}LATEST_SINGLE_TOKEN`,
-            ordinal: 2,
-          }),
-        ],
-        createdAt: DateTime.makeUnsafe("2026-01-02T00:00:00.000Z"),
-      });
-
-      assert.include(
-        handoff.history?.omittedItemIds ?? [],
-        TurnItemId.make("turn-item:long-single-token"),
+      const result = yield* service
+        .prepareLegacyImport({
+          threadId: ThreadId.make("thread:legacy-context"),
+          targetRunId: RunId.make("run:first-v2"),
+          toProviderThreadId: ProviderThreadId.make("provider-thread:first-v2"),
+          toProviderInstanceId: ProviderInstanceId.make("codex"),
+          items: [
+            importedItem({ role: "assistant", id: "older", text: "older message", ordinal: 1 }),
+            importedItem({ role: "user", id: "long", text, ordinal: 2 }),
+          ],
+          createdAt: DateTime.makeUnsafe("2026-01-02T00:00:00.000Z"),
+        })
+        .pipe(Effect.result);
+      assert.isTrue(
+        result._tag === "Failure" && result.failure instanceof ContextHandoffBudgetError,
       );
-      assert.isAtMost(handoff.summaryText.length, 32_000);
-      assert.include(handoff.summaryText, "User:\n... ");
-      assert.include(handoff.summaryText, "LATEST_SINGLE_TOKEN");
-      assert.notInclude(handoff.summaryText, "\ufffd");
     }),
   );
 });

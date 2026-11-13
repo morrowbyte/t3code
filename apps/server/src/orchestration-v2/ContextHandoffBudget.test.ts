@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import { ContextHandoffBudgetError } from "@t3tools/provider-core/server/failure";
 import * as Schema from "effect/Schema";
 import {
   contextUsageForHandoff,
@@ -229,11 +230,48 @@ describe("handoff budget", () => {
     }
   });
 
+  it("bounds coverage overhead while retaining the original human request and correction", () => {
+    const anchors = [
+      { ...message("original", "user", "Preserve my data."), createdBy: "user" as const },
+      { ...message("correction", "user", "Repair the backup."), createdBy: "user" as const },
+    ];
+    const selected = selectHistory({
+      messages: anchors,
+      coverage: "Detailed source-item coverage. ".repeat(100),
+      budget: 1_500,
+    });
+    assert.deepEqual(selected.messages, anchors);
+    assert.isAtMost(historyCost(selected.messages, selected.context), 1_500);
+    assert.include(selected.context, "t3_thread_read");
+  });
+
+  it("rejects a hard cap that cannot preserve both intact human anchors", () => {
+    assert.throws(
+      () =>
+        selectHistory({
+          messages: [
+            { ...message("original", "user", "Keep all my data. ".repeat(80)), createdBy: "user" },
+            { ...message("correction", "user", "Repair the backup."), createdBy: "user" },
+          ],
+          coverage: "Historical coverage. ".repeat(50),
+          budget: 1_024,
+        }),
+      ContextHandoffBudgetError,
+    );
+  });
+
   it("counts JSON escaping and UTF-8 bytes across many messages", () => {
     const candidates = Array.from({ length: 500 }, (_, i) =>
       message(`item:${i}`, i % 2 ? "assistant" : "user", '\u0000\\"🧪界'.repeat(15)),
     );
     for (const budget of [1_024, 4_000, 16_000]) {
+      if (budget === 1_024) {
+        assert.throws(
+          () => selectHistory({ messages: candidates, coverage: "Recovery", budget }),
+          ContextHandoffBudgetError,
+        );
+        continue;
+      }
       const selected = selectHistory({
         messages: candidates,
         coverage: "Retrieve omitted history",
@@ -469,7 +507,7 @@ describe("handoff delivery", () => {
   ])("records omitted recovery coverage separately from $label text", ({ native }) =>
     Effect.gen(function* () {
       const omittedBeforeDelivery = TurnItemId.make("item:omitted-during-preparation");
-      const oversized = message("item:oversized", "user", "x".repeat(20_000));
+      const oversized = message("item:oversized", "assistant", "x".repeat(20_000));
       let durable: OrchestrationV2ContextHandoff = {
         ...handoff,
         history: {
@@ -685,23 +723,29 @@ describe("handoff delivery", () => {
     }),
   );
 
-  it.effect("fails before delivery when even the coverage marker cannot fit", () =>
-    Effect.gen(function* () {
-      let calls = 0;
-      const result = yield* deliverContextHandoffs({
-        handoffs: [handoff],
-        providerThread,
-        budget: 0,
-        alreadyDeliveredItemIds: new Set(),
-        inject: () =>
-          Effect.sync(() => {
-            calls++;
-            return true;
-          }),
-        persist: () => Effect.void,
-      }).pipe(Effect.result);
-      assert.equal(result._tag, "Failure");
-      assert.equal(calls, 0);
-    }),
+  it.effect.each([0, 1_024])(
+    "fails before delivery with insufficient retained history at budget %s",
+    (budget) =>
+      Effect.gen(function* () {
+        let calls = 0;
+        const result = yield* deliverContextHandoffs({
+          handoffs: [
+            budget === 0
+              ? handoff
+              : { ...handoff, history: { ...handoff.history!, messages: [], omittedItems: 235 } },
+          ],
+          providerThread,
+          budget,
+          alreadyDeliveredItemIds: new Set(),
+          inject: () =>
+            Effect.sync(() => {
+              calls++;
+              return true;
+            }),
+          persist: () => Effect.void,
+        }).pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        assert.equal(calls, 0);
+      }),
   );
 });

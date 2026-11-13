@@ -21,8 +21,9 @@ import {
   handoffCoverage,
   historicalMessage,
   renderHistory,
-  selectHistory,
+  selectHistoryEffect,
 } from "@t3tools/provider-core/server/handoffBudget";
+import { ContextHandoffBudgetError } from "@t3tools/provider-core/server/failure";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { createOrchestrationV2TurnItemVisibility } from "@t3tools/shared/orchestrationV2Timeline";
 import type { ProjectionStoreV2Shape } from "./ProjectionStore.ts";
@@ -42,7 +43,10 @@ export class ContextHandoffPrepareError extends Schema.TaggedError<ContextHandof
   }
 }
 
-export const ContextHandoffServiceV2Error = Schema.Union([ContextHandoffPrepareError]);
+export const ContextHandoffServiceV2Error = Schema.Union([
+  ContextHandoffPrepareError,
+  ContextHandoffBudgetError,
+]);
 export type ContextHandoffServiceV2Error = typeof ContextHandoffServiceV2Error.Type;
 
 export interface ContextHandoffServiceV2Shape {
@@ -378,7 +382,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
             ),
           );
         const coverage = handoffCoverage({ ...input, coveredRunOrdinals: { from: 1, to: 1 } });
-        const selected = selectHistory({
+        const selected = yield* selectHistoryEffect({
           messages: input.items.flatMap((item) => {
             const message = historicalMessage(item);
             return message === null ? [] : [message];
@@ -400,7 +404,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
           summaryText: makeLegacyImportSummary(input.items),
           history: {
             messages: selected.messages,
-            coverage,
+            coverage: selected.coverage,
             omittedItems: selected.omittedItems,
             omittedItemIds: selected.omittedItemIds,
           },
@@ -448,7 +452,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
           coveredRunOrdinals: input.coveredRunOrdinals,
           items: input.deltaItems,
         });
-        const selected = selectHistory({
+        const selected = yield* selectHistoryEffect({
           messages: input.deltaItems.flatMap((item) => {
             const message = historicalMessage(item);
             return message === null ? [] : [message];
@@ -470,7 +474,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
           summaryText: makeForkDeltaSummary(input),
           history: {
             messages: selected.messages,
-            coverage,
+            coverage: selected.coverage,
             omittedItems: selected.omittedItems,
             omittedItemIds: selected.omittedItemIds,
           },
@@ -520,7 +524,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
         );
       const runStatuses = new Map(input.runs?.map((run) => [run.id, run.status]));
       const coverage = handoffCoverage(input);
-      const selected = selectHistory({
+      const selected = yield* selectHistoryEffect({
         messages: input.items.flatMap((item) => {
           const message = historicalMessage(item);
           return message === null
@@ -549,7 +553,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
         summaryText: renderHistory(selected.messages, selected.context),
         history: {
           messages: selected.messages,
-          coverage,
+          coverage: selected.coverage,
           omittedItems: selected.omittedItems,
           omittedItemIds: selected.omittedItemIds,
         },

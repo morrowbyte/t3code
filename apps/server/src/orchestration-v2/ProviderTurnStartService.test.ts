@@ -54,6 +54,7 @@ import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { withInlineContext } from "./ContextHandoffDelivery.ts";
+import { ContextHandoffBudgetError } from "@t3tools/provider-core/server/failure";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -361,6 +362,7 @@ function makeLocalCommandHarness(input: {
     readonly contextRun: "current" | "failed" | "cancelled" | "delivered";
     readonly nativeForkFrom?: "idle" | "busy";
     readonly switchedProvider?: boolean;
+    readonly budgetFailure?: boolean;
   };
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
@@ -979,17 +981,19 @@ function makeLocalCommandHarness(input: {
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: (handoff) =>
-            input.sideChat?.nativeForkFrom === undefined
-              ? Effect.die("history read must fail first")
-              : Effect.succeed({
-                  ...handoff,
-                  id: ContextHandoffId.make("side-chat-fork-context"),
-                  createdByProviderInstanceId: handoff.toProviderInstanceId,
-                  status: "ready",
-                  summaryMessageId: null,
-                  summaryText: "PARENT_HISTORY",
-                  updatedAt: handoff.createdAt,
-                }),
+            input.sideChat?.budgetFailure
+              ? Effect.fail(new ContextHandoffBudgetError())
+              : input.sideChat?.nativeForkFrom === undefined
+                ? Effect.die("history read must fail first")
+                : Effect.succeed({
+                    ...handoff,
+                    id: ContextHandoffId.make("side-chat-fork-context"),
+                    createdByProviderInstanceId: handoff.toProviderInstanceId,
+                    status: "ready",
+                    summaryMessageId: null,
+                    summaryText: "PARENT_HISTORY",
+                    updatedAt: handoff.createdAt,
+                  }),
         }),
         Layer.mock(EventSink.EventSinkV2)({
           writeIfRunCurrent,
@@ -1605,23 +1609,55 @@ effectIt.effect.each([
 );
 
 effectIt.effect.each([
-  { nativeForkFrom: "idle", forks: true, transferStatus: "consumed", handoffIds: [] },
+  {
+    nativeForkFrom: "idle",
+    forks: true,
+    transferStatus: "consumed",
+    handoffIds: [],
+    budgetFailure: false,
+  },
   {
     nativeForkFrom: "busy",
     forks: false,
     transferStatus: "resolved_portable",
     handoffIds: ["side-chat-fork-context"],
+    budgetFailure: false,
+  },
+  {
+    nativeForkFrom: "busy",
+    forks: false,
+    transferStatus: "pending",
+    handoffIds: [],
+    budgetFailure: true,
   },
 ] as const)(
   "runs a planned native side chat fork when the parent is $nativeForkFrom",
-  ({ nativeForkFrom, forks, transferStatus, handoffIds }) =>
+  ({ nativeForkFrom, forks, transferStatus, handoffIds, budgetFailure }) =>
     Effect.gen(function* () {
       const harness = makeLocalCommandHarness({
         text: "What is the main thread doing?",
-        sideChat: { contextRun: "current", nativeForkFrom },
+        sideChat: { contextRun: "current", nativeForkFrom, budgetFailure },
       });
 
       yield* harness.start;
+
+      if (budgetFailure) {
+        expect(harness.startTurn).not.toHaveBeenCalled();
+        expect(harness.projection().runs[0]?.status).toBe("failed");
+        expect(harness.projection().attempts[0]?.status).toBe("failed");
+        expect(harness.projection().nodes.find((node) => node.kind === "root_turn")?.status).toBe(
+          "failed",
+        );
+        expect(
+          harness.events.some(
+            (event) =>
+              event.type === "turn-item.updated" &&
+              event.payload.type === "error" &&
+              event.payload.failure.message.includes("handoff budget"),
+          ),
+        ).toBe(true);
+        return;
+      }
 
       expect(harness.forkThread).toHaveBeenCalledTimes(forks ? 1 : 0);
       expect(harness.projection().contextTransfers).toMatchObject([
