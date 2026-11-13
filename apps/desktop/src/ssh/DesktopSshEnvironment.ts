@@ -194,9 +194,7 @@ export const make = Effect.gen(function* () {
                 if (browserConnections.get(key) === binding) browserConnections.delete(key);
               }).pipe(
                 Effect.andThen(closeConnection),
-                Effect.andThen(
-                  Deferred.fail(ready, closedError),
-                ),
+                Effect.andThen(Deferred.fail(ready, closedError)),
                 Effect.andThen(Deferred.succeed(stopped, undefined)),
               ),
             );
@@ -206,8 +204,7 @@ export const make = Effect.gen(function* () {
               events,
               closeConnection,
             );
-            if (connectionStopped)
-              return yield* closedError;
+            if (connectionStopped) return yield* closedError;
             const activeConnection = browserHost.createConnection(
               descriptor.environmentId,
               transport.proxyUrl,
@@ -234,8 +231,7 @@ export const make = Effect.gen(function* () {
                 return decodeBrowserReady(line).pipe(
                   Effect.flatMap((receipt) =>
                     Effect.gen(function* () {
-                      if (connectionStopped)
-                        return yield* closedError;
+                      if (connectionStopped) return yield* closedError;
                       if (receipt.environmentId !== descriptor.environmentId)
                         return yield* new SshCommandError({
                           command: ["desktop-browser"],
