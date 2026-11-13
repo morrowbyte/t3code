@@ -273,7 +273,22 @@ const serviceUpdateStoppedCommand = Command.make("update-stopped", {
   Command.withHandler((flags) =>
     runServiceCommand(
       flags,
-      Effect.promise(() => import("../cloud/selfUpdate.ts")).pipe(
+      Effect.gen(function* () {
+        const status = yield* (yield* BootService.BootService).status;
+        const { baseDir } = yield* ServerConfig.ServerConfig;
+        const path = yield* Path.Path;
+        if (
+          !status.installed ||
+          status.installedBaseDir === undefined ||
+          path.resolve(status.installedBaseDir) !== path.resolve(baseDir)
+        ) {
+          return yield* new BootService.BootServiceCommandError({
+            step: "checking the selected service unit and T3 home",
+            cause: new Error("The selected service unit is missing or serves another T3 home."),
+          });
+        }
+        return yield* Effect.promise(() => import("../cloud/selfUpdate.ts"));
+      }).pipe(
         Effect.flatMap(({ updateStoppedRuntime }) =>
           updateStoppedRuntime({ targetVersion: flags.targetVersion }),
         ),
