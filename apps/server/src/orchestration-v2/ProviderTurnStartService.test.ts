@@ -17,6 +17,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
   ProjectId,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
@@ -983,7 +984,8 @@ function makeLocalCommandHarness(input: {
           prepareProviderHandoff: (handoff) =>
             input.sideChat?.budgetFailure
               ? Effect.fail(new ContextHandoffBudgetError())
-              : input.sideChat?.nativeForkFrom === undefined
+              : input.sideChat?.nativeForkFrom === undefined &&
+                  input.sideChat?.budgetFailure !== false
                 ? Effect.die("history read must fail first")
                 : Effect.succeed({
                     ...handoff,
@@ -1065,6 +1067,7 @@ function makeLocalCommandHarness(input: {
   return {
     getThreadRecords,
     getTurnStartContext,
+    providerSession,
     setProjection: (next: OrchestrationV2ThreadProjection) => {
       projection = next;
     },
@@ -1569,48 +1572,118 @@ effectIt.effect("recovers an abandoned failed turn before continuing its native 
   }),
 );
 
-effectIt.effect("rejects invalid recovery before creating a replacement native thread", () =>
-  Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({
-      text: "Continue",
-      sideChat: { contextRun: "delivered", budgetFailure: true },
-    });
-    const projection = harness.projection();
-    const providerThread = {
-      ...projection.providerThreads[0]!,
-      nativeThreadRef: {
-        driver: projection.providerThreads[0]!.driver,
-        nativeId: "native-resume-thread",
-        strength: "strong" as const,
-      },
-    };
-    harness.setProjection({ ...projection, providerThreads: [providerThread] });
-    const ensureThread = vi.fn(() => Effect.succeed(providerThread));
-    const resumeThread = vi.fn(() =>
-      Effect.fail(
-        new ProviderAdapter.ProviderAdapterEventStreamError({
+effectIt.effect.each([
+  { path: "resume recovery", hasNative: true, nativeForkFrom: undefined, budgetFailure: true },
+  { path: "new retry", hasNative: false, nativeForkFrom: undefined, budgetFailure: true },
+  { path: "idle fork retry", hasNative: false, nativeForkFrom: "idle", budgetFailure: true },
+  { path: "busy fork retry", hasNative: false, nativeForkFrom: "busy", budgetFailure: true },
+  { path: "valid retry", hasNative: false, nativeForkFrom: undefined, budgetFailure: false },
+] as const)(
+  "validates $path before allocating native context",
+  ({ hasNative, nativeForkFrom, budgetFailure }) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        sideChat: {
+          contextRun: "delivered",
+          budgetFailure,
+          ...(nativeForkFrom === undefined ? {} : { nativeForkFrom }),
+        },
+      });
+      const projection = harness.projection();
+      const providerThread = {
+        ...projection.providerThreads[0]!,
+        nativeThreadRef: hasNative
+          ? {
+              driver: projection.providerThreads[0]!.driver,
+              nativeId: "native-resume-thread",
+              strength: "strong" as const,
+            }
+          : null,
+      };
+      const missedRun = projection.runs[0]!;
+      harness.setProjection({
+        ...projection,
+        runs: projection.runs.map((candidate) =>
+          candidate.id === missedRun.id ? { ...candidate, status: "failed" as const } : candidate,
+        ),
+        providerThreads: [providerThread],
+      });
+      const missedItem: OrchestrationV2ThreadProjection["turnItems"][number] = {
+        id: TurnItemId.make("missed-request"),
+        threadId: projection.thread.id,
+        runId: missedRun.id,
+        nodeId: null,
+        providerThreadId: providerThread.id,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "completed",
+        title: null,
+        startedAt: projection.updatedAt,
+        completedAt: projection.updatedAt,
+        updatedAt: projection.updatedAt,
+        type: "user_message",
+        messageId: missedRun.userMessageId,
+        inputIntent: "turn_start",
+        createdBy: "user",
+        creationSource: "web",
+        text: "Preserve my data. ".repeat(budgetFailure ? 2_000 : 1),
+        attachments: [],
+      };
+      harness.getTurnStartHistory.mockReturnValue(Effect.succeed([missedItem]));
+      const replacement = {
+        ...providerThread,
+        nativeThreadRef: {
           driver: providerThread.driver,
-          providerSessionId: ProviderSessionId.make("new-provider-session"),
-          cause: "native thread is gone",
-        }),
-      ),
-    );
-    harness.open.mockReturnValue(
-      Effect.succeed({ driver: providerThread.driver, ensureThread, resumeThread } as never),
-    );
+          nativeId: "replacement-native-thread",
+          strength: "strong" as const,
+        },
+      };
+      const ensureThread = vi.fn(() => Effect.succeed(replacement));
+      const forkThread = vi.fn(() => Effect.succeed(replacement));
+      const resumeThread = vi.fn(() =>
+        Effect.fail(
+          new ProviderAdapter.ProviderAdapterEventStreamError({
+            driver: providerThread.driver,
+            providerSessionId: ProviderSessionId.make("new-provider-session"),
+            cause: "native thread is gone",
+          }),
+        ),
+      );
+      harness.open.mockReturnValue(
+        Effect.succeed({
+          driver: providerThread.driver,
+          providerSession: harness.providerSession,
+          ensureThread,
+          resumeThread,
+          forkThread,
+          startTurn: harness.startTurn,
+        } as never),
+      );
 
-    yield* harness.start;
+      yield* harness.start;
 
-    expect(resumeThread).toHaveBeenCalledOnce();
-    expect(ensureThread).not.toHaveBeenCalled();
-    expect(harness.startRootRun).not.toHaveBeenCalled();
-    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
-    expect(harness.projection().attempts[0]?.status).toBe("failed");
-    expect(harness.projection().nodes.find((node) => node.kind === "root_turn")?.status).toBe(
-      "failed",
-    );
-    expect(harness.projection().providerThreads).toEqual([providerThread]);
-  }),
+      expect(resumeThread).toHaveBeenCalledTimes(hasNative ? 1 : 0);
+      expect(ensureThread).toHaveBeenCalledTimes(budgetFailure ? 0 : 1);
+      expect(forkThread).not.toHaveBeenCalled();
+      if (!budgetFailure) {
+        expect(harness.startRootRun).toHaveBeenCalledOnce();
+        expect(harness.projection().runs.at(-1)?.status).toBe("running");
+        expect(harness.projection().providerThreads[0]?.nativeThreadRef?.nativeId).toBe(
+          "replacement-native-thread",
+        );
+        return;
+      }
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(harness.projection().attempts[0]?.status).toBe("failed");
+      expect(harness.projection().nodes.find((node) => node.kind === "root_turn")?.status).toBe(
+        "failed",
+      );
+      expect(harness.projection().providerThreads).toEqual([providerThread]);
+    }),
 );
 
 effectIt.effect.each([

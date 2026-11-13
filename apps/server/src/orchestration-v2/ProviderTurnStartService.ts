@@ -1156,10 +1156,16 @@ export const layer: Layer.Layer<
           ...effectiveHandoffs.filter((candidate) => candidate.targetRunId === run.id),
         ];
       };
-      let resumedRetryHandoff: ReadonlyArray<OrchestrationV2ContextHandoff> | undefined;
+      let preparedRetryHandoff: ReadonlyArray<OrchestrationV2ContextHandoff> | undefined;
       let resumedHandoffContext: ReturnType<typeof handoffContextForThread> | undefined;
       let portableForkFallback: OrchestrationV2ContextHandoff | undefined;
       const loadedProviderThread = yield* Effect.gen(function* () {
+        if (nativeForkTransfer !== undefined || providerThread.nativeThreadRef === null) {
+          preparedRetryHandoff = yield* prepareRetryHandoff(
+            handoffContextForThread({ ...providerThread, nativeThreadRef: null }),
+          );
+          if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
+        }
         if (nativeForkTransfer !== undefined) {
           const sourceProjection = yield* projectionStore.getThreadRecords(
             nativeForkTransfer.sourceThreadId,
@@ -1312,9 +1318,9 @@ export const layer: Layer.Layer<
           const context = handoffContextForThread(resumed.success);
           context.budget = yield* Effect.cached(context.budget);
           resumedHandoffContext = context;
-          resumedRetryHandoff = yield* prepareRetryHandoff(context);
+          preparedRetryHandoff = yield* prepareRetryHandoff(context);
           const fits = yield* deliverContextHandoffs({
-            handoffs: [...handoffs, ...resumedRetryHandoff],
+            handoffs: [...handoffs, ...preparedRetryHandoff],
             providerThread: { ...resumed.success, id: providerThread.id },
             budget: context.budget,
             deferInline: isCompactionCommandMessage(message) || goalCommand,
@@ -1361,7 +1367,7 @@ export const layer: Layer.Layer<
           }
         }
         resumedHandoffContext = undefined;
-        resumedRetryHandoff = [];
+        preparedRetryHandoff = [];
         const { handoff, transferId, createdAt } = yield* recoveryHandoff;
         if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
 
@@ -1463,7 +1469,7 @@ export const layer: Layer.Layer<
         budget,
       } = handoffContext;
       const retryHandoff =
-        resumedRetryHandoff ??
+        preparedRetryHandoff ??
         (yield* prepareRetryHandoff(handoffContext).pipe(
           Effect.catchTags({ ContextHandoffBudgetError: rejectHandoffBudget }),
         ));
