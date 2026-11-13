@@ -11,7 +11,10 @@ import type {
 
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import { ContextHandoffBudgetError } from "./failure.ts";
+
+const isContextHandoffBudgetError = Schema.is(ContextHandoffBudgetError);
 
 export const DEFAULT_HANDOFF_TOKEN_CAP = 16_000;
 const HANDOFF_BYTE_CAP = 64_000;
@@ -289,11 +292,13 @@ export function selectHistory(input: {
 
 export const selectHistoryEffect = Effect.fn("handoff.selectHistory")(
   (input: Parameters<typeof selectHistory>[0]) =>
-    Effect.try({ try: () => selectHistory(input), catch: (cause) => cause }).pipe(
-      Effect.catch((cause) =>
-        cause instanceof ContextHandoffBudgetError ? Effect.fail(cause) : Effect.die(cause),
-      ),
-    ),
+    Effect.try({
+      try: () => selectHistory(input),
+      catch: (cause) => {
+        if (isContextHandoffBudgetError(cause)) return cause;
+        throw cause;
+      },
+    }),
 );
 
 export function handoffCoverage(input: {

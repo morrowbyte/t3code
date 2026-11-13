@@ -16,7 +16,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as ContextHandoffService from "./ContextHandoffService.ts";
-import { ContextHandoffBudgetError } from "@t3tools/provider-core/server/failure";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProjectionStoreThreadNotFoundError } from "./ProjectionStore.ts";
 
@@ -120,7 +119,7 @@ it.layer(layerTest)("ContextHandoffService legacy import", (it) => {
         })
         .pipe(Effect.result);
       assert.isTrue(
-        result._tag === "Failure" && result.failure instanceof ContextHandoffBudgetError,
+        result._tag === "Failure" && result.failure._tag === "ContextHandoffBudgetError",
       );
     }),
   );
