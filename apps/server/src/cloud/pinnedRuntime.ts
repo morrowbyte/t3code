@@ -374,7 +374,11 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
     });
   }
 
-  const archivePath = path.join(stagingDir, PINNED_RUNTIME_ARCHIVE_FILE);
+  // Windows ZIP extraction keeps a seekable file; gzip streams the already verified bytes.
+  const archivePath =
+    input.platform === "win32" ? path.join(stagingDir, PINNED_RUNTIME_ARCHIVE_FILE) : "-";
+  const stdin = input.platform === "win32" ? undefined : archive;
+  const compressionArgs = input.platform === "win32" ? [] : ["--gzip"];
   yield* Effect.tryPromise({
     try: () => retention.check(archive.byteLength),
     catch: (cause) =>
@@ -383,21 +387,26 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
         cause,
       }),
   });
-  yield* fs
-    .writeFile(archivePath, archive)
-    .pipe(
-      Effect.mapError(
-        (cause) => new PinnedRuntimeInstallError({ step: "writing the t3 release archive", cause }),
-      ),
-    );
+  if (input.platform === "win32") {
+    yield* fs
+      .writeFile(archivePath, archive)
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new PinnedRuntimeInstallError({ step: "writing the t3 release archive", cause }),
+        ),
+      );
+  }
   const manifestResult = yield* input.runner
     .run({
       command: cliArchiveTarCommand(input.platform, process.env),
       args: [
         "-xOf",
         archivePath,
+        ...compressionArgs,
         `${fileName.replace(/\.(?:tar\.gz|zip)$/, "")}/${SERVER_RESTORE_MANIFEST}`,
       ],
+      stdin,
       timeout: PINNED_RUNTIME_INSTALL_TIMEOUT,
       maxOutputBytes: 16 * 1024 * 1024,
     })
@@ -424,7 +433,7 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
       );
       if (!Number.isSafeInteger(extractedBytes))
         throw new Error("The archive size is unsupported.");
-      // Reserve bounded install and qualification receipts while the archive still occupies disk.
+      // Reserve bounded receipts in addition to every file already on disk.
       await retention.check(extractedBytes + retention.metadataBytes(input.version));
     },
     catch: (cause) =>
@@ -439,7 +448,8 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
   yield* input.runner
     .run({
       command: cliArchiveTarCommand(input.platform, process.env),
-      args: ["-xf", archivePath, "-C", stagingDir, "--strip-components=1"],
+      args: ["-xf", archivePath, ...compressionArgs, "-C", stagingDir, "--strip-components=1"],
+      stdin,
       timeout: PINNED_RUNTIME_INSTALL_TIMEOUT,
     })
     .pipe(
@@ -455,7 +465,9 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
           }),
       ),
     );
-  yield* fs.remove(archivePath, { force: true }).pipe(Effect.ignore);
+  if (input.platform === "win32") {
+    yield* fs.remove(archivePath, { force: true }).pipe(Effect.ignore);
+  }
 });
 
 const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(function* (

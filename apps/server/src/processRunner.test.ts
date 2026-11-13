@@ -232,19 +232,20 @@ describe("runProcess", () => {
     }),
   );
 
-  it.effect("writes stdin before waiting for exit", () =>
+  it.effect.each([
+    { name: "text", stdin: "stdin payload" },
+    { name: "binary", stdin: Uint8Array.of(9, 0, 255, 128, 195, 40, 10, 7).subarray(1, -1) },
+  ])("writes $name stdin before waiting for exit", ({ stdin }) =>
     Effect.gen(function* () {
       const stdinWritten = yield* Deferred.make<void>();
-      const decoder = new TextDecoder();
+      const chunks: Uint8Array[] = [];
       const spawner = makeSpawner(() =>
         Effect.succeed(
           makeHandle({
             stdout: "stdin payload",
             stdin: Sink.forEach((chunk: Uint8Array) => {
-              const text = decoder.decode(chunk, { stream: true });
-              return text.includes("stdin payload")
-                ? Deferred.succeed(stdinWritten, undefined)
-                : Effect.void;
+              chunks.push(chunk);
+              return Deferred.succeed(stdinWritten, undefined);
             }),
             exitCode: Deferred.await(stdinWritten).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
           }),
@@ -254,11 +255,14 @@ describe("runProcess", () => {
       const result = yield* runWith(spawner)({
         command: "fake",
         args: ["stdin-echo"],
-        stdin: "stdin payload",
+        stdin,
       });
 
       expect(result.stdout).toBe("stdin payload");
       expect(result.code).toBe(0);
+      expect(Buffer.concat(chunks)).toEqual(
+        Buffer.from(typeof stdin === "string" ? new TextEncoder().encode(stdin) : stdin),
+      );
     }),
   );
 });

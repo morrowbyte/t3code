@@ -23,7 +23,7 @@ export interface ProcessRunInput {
   readonly spawnCwd?: string | undefined;
   readonly timeout?: Duration.Input | undefined;
   readonly env?: NodeJS.ProcessEnv | undefined;
-  readonly stdin?: string | undefined;
+  readonly stdin?: string | Uint8Array | undefined;
   /** Receives every stdout chunk, including bytes beyond the buffered output limit. */
   readonly onStdoutChunk?: ((chunk: Uint8Array) => void) | undefined;
   readonly maxOutputBytes?: number | undefined;
@@ -310,12 +310,13 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
       Effect.catchDefect((cause) => Effect.fail(toSpawnError(cause))),
     );
 
-  const stdin = input.stdin;
+  const stdin =
+    typeof input.stdin === "string" ? new TextEncoder().encode(input.stdin) : input.stdin;
   const onStdoutChunk = input.onStdoutChunk;
   const writeStdin =
     stdin === undefined
       ? Effect.void
-      : Stream.run(Stream.encodeText(Stream.make(stdin)), child.stdin).pipe(
+      : Stream.run(Stream.make(stdin), child.stdin).pipe(
           Effect.mapError(
             (cause) =>
               new ProcessStdinError({
@@ -323,7 +324,7 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
                 argumentCount: input.args.length,
                 cwd: input.cwd,
                 spawnCwd: input.spawnCwd,
-                stdinBytes: Buffer.byteLength(stdin),
+                stdinBytes: stdin.byteLength,
                 cause,
               }),
           ),
