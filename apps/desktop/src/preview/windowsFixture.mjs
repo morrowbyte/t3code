@@ -132,6 +132,20 @@ background:repeating-linear-gradient(90deg,#000 0px,#000 1px,#fff 1px,#fff 2px)}
       )),
     });
     const initial = await identity();
+    const isFixtureFrame = (frame, width, height) => {
+      const image = nativeImage.createFromBuffer(Buffer.from(frame.png));
+      const size = image.getSize();
+      if (size.width !== width || size.height !== height) return false;
+      const bitmap = image.toBitmap();
+      return [
+        [10, 80, [0, 0, 192, 255]],
+        [width - 10, 80, [0, 128, 0, 255]],
+        [10, height - 10, [192, 0, 0, 255]],
+        [width - 10, height - 10, [128, 0, 128, 255]],
+      ].every(([x, y, bgra]) =>
+        bgra.every((value, channel) => bitmap[(y * width + x) * 4 + channel] === value),
+      );
+    };
     let awaitingFrame;
     ipcMain.on("pr68-frame-error", (event, error) => {
       if (event.sender === owner.webContents && awaitingFrame) {
@@ -142,7 +156,12 @@ background:repeating-linear-gradient(90deg,#000 0px,#000 1px,#fff 1px,#fff 2px)}
     ipcMain.on("pr68-original-frame", (event, frame) => {
       if (event.sender !== owner.webContents) return;
       host.ack(frame);
-      if (awaitingFrame && frame.surfaceId === awaitingFrame.surfaceId) {
+      // Navigation and zoom may present an acknowledged transitional raster first.
+      if (
+        awaitingFrame &&
+        frame.surfaceId === awaitingFrame.surfaceId &&
+        isFixtureFrame(frame, awaitingFrame.width, awaitingFrame.height)
+      ) {
         const pending = awaitingFrame;
         awaitingFrame = undefined;
         pending.resolve(frame);
@@ -156,7 +175,7 @@ background:repeating-linear-gradient(90deg,#000 0px,#000 1px,#fff 1px,#fff 2px)}
       manifest.status = `awaiting-${name}-local-paint`;
       await saveManifest();
       const frameReady = new Promise((resolve, reject) => {
-        awaitingFrame = { surfaceId: name, resolve, reject };
+        awaitingFrame = { surfaceId: name, width, height, resolve, reject };
       });
       wc.setZoomFactor(zoom);
       host.resize();
