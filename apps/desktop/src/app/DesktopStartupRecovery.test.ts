@@ -21,6 +21,7 @@ import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import { createInitialDesktopUpdateState } from "../updates/updateMachine.ts";
+import * as DesktopConfig from "./DesktopConfig.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopState from "./DesktopState.ts";
 import { listen, resolveStartupRecoveryOffer } from "./DesktopStartupRecovery.ts";
@@ -119,6 +120,7 @@ effectIt.effect.each([
     } as unknown as Electron.BrowserWindow;
     const path = yield* Path.Path.pipe(Effect.provide(Path.layer));
     const quitting = yield* Ref.make(false);
+    const backendReady = yield* Ref.make(false);
     const primaryBackendStartup = yield* SubscriptionRef.make<DesktopState.PrimaryBackendStartup>({
       _tag: "Failing",
       reason: "The backend could not start after updating.",
@@ -130,15 +132,21 @@ effectIt.effect.each([
       status: "disabled",
     });
     const layer = Layer.mergeAll(
-      Layer.mock(DesktopState.DesktopState)({ primaryBackendStartup, quitting }),
-      Layer.mock(DesktopEnvironment.DesktopEnvironment)({
+      Layer.mock(DesktopState.DesktopState)({ primaryBackendStartup, quitting, backendReady }),
+      DesktopEnvironment.layer({
         appVersion: state.currentVersion,
-        stateDir: "/qa/profile",
-        logDir: "/qa/logs",
+        dirname: "/qa/app/apps/desktop/dist-electron",
+        homeDirectory: "/qa",
+        appPath: "/qa/app",
+        resourcesPath: "/qa/app/resources",
+        isPackaged: false,
+        runningUnderArm64Translation: false,
         platform: "linux",
         processArch: "x64",
-        path,
-      }),
+      }).pipe(
+        Layer.provide(DesktopConfig.layerTest({ T3CODE_HOME: "/qa/profile" })),
+        Layer.provide(Layer.succeed(Path.Path, path)),
+      ),
       Layer.mock(DesktopUpdates.DesktopUpdates)({
         subscribe: Effect.succeed({ latest: state, changes: Stream.never }),
         check: () => Effect.succeed({ checked: false, state }),

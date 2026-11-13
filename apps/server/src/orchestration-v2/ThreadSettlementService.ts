@@ -678,7 +678,7 @@ export const make = Effect.gen(function* () {
       const thread = yield* projections.getThread(threadId);
       if (thread.settledOverride !== "settled") return;
       const canCleanUp = Effect.fn("ThreadSettlementServiceV2.canCleanUpWorktree")(
-        function* (stoppingRunner = false) {
+        function* (stoppingRunner: boolean) {
           const owner = yield* projections.getThread(threadId);
           if (
             owner.settledOverride !== "settled" ||
@@ -744,9 +744,9 @@ export const make = Effect.gen(function* () {
         : stopRunners;
       if (!runnersStopped) return;
       // Stop confirmation only covers the captured child; the prune script still checks process refs.
-      if (!(yield* canCleanUp())) return;
+      if (!(yield* canCleanUp(false))) return;
       yield* terminals.closeIdle({ threadId });
-      if (!(yield* canCleanUp())) return;
+      if (!(yield* canCleanUp(false))) return;
       if ((yield* workspacePeers(worktreePath)).projectRoot) {
         settleActionRunAt.set(threadId, settledAtMs);
         return;
