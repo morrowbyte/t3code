@@ -148,6 +148,7 @@ export interface ThreadManagementSendInput {
   readonly messageId: MessageId;
   readonly replyTo?: OrchestrationV2ConversationMessage["replyTo"];
   readonly scheduledTaskId?: ScheduledTaskId;
+  readonly scheduledTaskDelivery?: OrchestrationV2ConversationMessage["scheduledTaskDelivery"];
   readonly senderThreadId?: ThreadId;
   readonly remoteSender?: import("@t3tools/contracts").OrchestrationV2RemoteSender;
   readonly text: string;
@@ -877,6 +878,9 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
         messageId: input.messageId,
         ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
+        ...(input.scheduledTaskDelivery === undefined
+          ? {}
+          : { scheduledTaskDelivery: input.scheduledTaskDelivery }),
         ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
         ...(input.remoteSender === undefined ? {} : { remoteSender: input.remoteSender }),
         ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
