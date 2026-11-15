@@ -102,6 +102,7 @@ type HookInput = {
   readonly cleanup?: boolean | undefined;
   readonly onDraftActiveChange?: ((active: boolean) => void) | undefined;
   readonly readDraft: () => DraftInput;
+  readonly subscribeDraft?: ((onChange: () => void) => () => void) | undefined;
   readonly commitDraft: (
     text: string,
     selection: { readonly start: number; readonly end: number },
@@ -208,9 +209,33 @@ export function useEnvironmentSpeechInput(input: HookInput) {
     text?: string;
   } | null>(null);
   const latestRef = useRef({ input, clientSettings, cleanupPrepared, projectWords });
+  const draftRevisionRef = useRef({
+    ownerKey: input.ownerKey,
+    text: input.readDraft().text,
+    revision: 0,
+  });
+  const pendingStartDraftRef = useRef<{
+    ownerKey: string;
+    text: string;
+    revision: number;
+  } | null>(null);
+  const refreshDraftRevision = useStableCallback(() => {
+    const current = latestRef.current.input;
+    const text = current.readDraft().text;
+    const revision = draftRevisionRef.current;
+    if (revision.ownerKey !== current.ownerKey || revision.text !== text) {
+      draftRevisionRef.current = {
+        ownerKey: current.ownerKey,
+        text,
+        revision: revision.revision + 1,
+      };
+    }
+    return draftRevisionRef.current;
+  });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes committed props and settings to the asynchronous recording controller
   useEffect(() => {
     latestRef.current = { input, clientSettings, cleanupPrepared, projectWords };
+    refreshDraftRevision();
   });
   const draftActivityRef = useRef({
     version: 0,
@@ -239,18 +264,12 @@ export function useEnvironmentSpeechInput(input: HookInput) {
   const releaseUnrecordedDraft = useStableCallback(() => {
     if (!draftActivityRef.current.retainedRecording) releaseRecordingDraft();
   });
-  const draftRevisionRef = useRef({ ownerKey: input.ownerKey, text: input.draftText, revision: 0 });
+  const subscribeDraft = input.subscribeDraft;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tracks committed draft revisions so a late transcript cannot overwrite an edited draft
   useEffect(() => {
-    const revision = draftRevisionRef.current;
-    if (revision.ownerKey !== input.ownerKey || revision.text !== input.draftText) {
-      draftRevisionRef.current = {
-        ownerKey: input.ownerKey,
-        text: input.draftText,
-        revision: revision.revision + 1,
-      };
-    }
-  }, [input.ownerKey, input.draftText]);
+    refreshDraftRevision();
+    return subscribeDraft?.(refreshDraftRevision);
+  }, [subscribeDraft, refreshDraftRevision]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns the recording controller bound to the consented destination; it is disposed with the consent
   useEffect(() => {
@@ -266,9 +285,17 @@ export function useEnvironmentSpeechInput(input: HookInput) {
         }
       | undefined;
 
-    const readDraft = (): VoiceDraftSnapshot => {
+    const readDraft = (): VoiceDraftSnapshot | null => {
       const current = latestRef.current.input;
       const draft = current.readDraft();
+      const pending = pendingStartDraftRef.current;
+      if (
+        pending &&
+        (pending.ownerKey !== current.ownerKey ||
+          pending.text !== draft.text ||
+          pending.revision !== refreshDraftRevision().revision)
+      )
+        return null;
       return { ownerKey: current.ownerKey, text: draft.text, selection: draft.selection };
     };
     const platform = createBrowserVoiceInputPlatform({
@@ -375,6 +402,8 @@ export function useEnvironmentSpeechInput(input: HookInput) {
       },
       onStateChange: (value) => {
         if (disposed) return;
+        if (value.phase === "recording" || value.phase === "idle" || value.phase === "error")
+          pendingStartDraftRef.current = null;
         if (value.phase === "recording") draftActivityRef.current.retainedRecording = true;
         if (value.phase === "idle") releaseRecordingDraft();
         if (value.phase === "error") {
@@ -395,7 +424,15 @@ export function useEnvironmentSpeechInput(input: HookInput) {
       controller.dispose();
       if (controllerRef.current === controller) controllerRef.current = null;
     };
-  }, [prepared, grantId, cloudProvider, cloudModel, releaseRecordingDraft, releaseUnrecordedDraft]);
+  }, [
+    prepared,
+    grantId,
+    cloudProvider,
+    cloudModel,
+    refreshDraftRevision,
+    releaseRecordingDraft,
+    releaseUnrecordedDraft,
+  ]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- probes the chosen environment's speech status once its connection is available
   useEffect(() => {
@@ -513,6 +550,8 @@ export function useEnvironmentSpeechInput(input: HookInput) {
     if (!controller || !prepared) return;
     if (controller.currentState.phase !== "idle" && controller.currentState.phase !== "error")
       return;
+    const startingDraft = refreshDraftRevision();
+    pendingStartDraftRef.current = startingDraft;
     draftActivityRef.current.version += 1;
     draftActivityRef.current.recording = true;
     publishDraftActivity(true);
@@ -545,6 +584,16 @@ export function useEnvironmentSpeechInput(input: HookInput) {
     if (!stillCurrent()) return;
     setStatus({ prepared, value: latestStatus });
     setQueuedStart(null);
+    const currentDraft = refreshDraftRevision();
+    if (
+      currentDraft.revision !== startingDraft.revision ||
+      currentDraft.ownerKey !== startingDraft.ownerKey ||
+      currentDraft.text !== startingDraft.text
+    ) {
+      pendingStartDraftRef.current = null;
+      releaseUnrecordedDraft();
+      return;
+    }
     if (latestStatus.supported && latestStatus.state === "missing-model") {
       releaseUnrecordedDraft();
       return loadSetupCatalog(prepared, latestStatus.modelId, request);

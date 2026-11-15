@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NetService from "@t3tools/shared/Net";
 import * as SshTunnel from "@t3tools/ssh/tunnel";
 import * as Effect from "effect/Effect";
@@ -27,6 +28,7 @@ it.effect("does not register buffered Ready after the helper stopped before host
     const manager = SshTunnel.SshEnvironmentManager.of({
       ensureEnvironment: () => Effect.succeed(bootstrap),
       disconnectEnvironment: () => Effect.void,
+      closeAllTunnels: Effect.void,
       openDesktopBrowser: (_target, _environmentId, _events, beforeClose) =>
         Effect.gen(function* () {
           yield* beforeClose ?? Effect.void;
@@ -72,9 +74,10 @@ it.effect("does not register buffered Ready after the helper stopped before host
       Effect.provideService(HttpClient.HttpClient, client),
       Effect.provide(
         Layer.mergeAll(
-          Layer.mock(DesktopSshPasswordPrompts.DesktopSshPasswordPrompts)({}),
+          Layer.mock(DesktopSshPasswordPrompts.DesktopSshPasswordPrompts, {}),
           NetService.layer,
           NodeServices.layer,
+          NodeCrypto.layerDigest,
         ),
       ),
     );

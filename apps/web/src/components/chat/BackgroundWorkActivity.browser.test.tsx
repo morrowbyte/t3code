@@ -8,7 +8,7 @@ import { ComposerBannerStack } from "./ComposerBannerStack";
 import { backgroundWorkNowItem } from "./ThreadActivityBanners";
 import { ThreadNow } from "./ThreadNow";
 import * as DateTime from "effect/DateTime";
-import { ThreadId, TurnItemId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, TurnItemId } from "@t3tools/contracts";
 import { getSyntaxHighlighterPromise } from "../../lib/syntaxHighlighting";
 
 const command =
@@ -20,6 +20,7 @@ describe("background process activity", () => {
     const original = `/run/current-system/sw/bin/bash -lc "python3 - <<'PY'\n${source}PY"`;
     const title = "Inspect recording permission preferences";
     const work = backgroundWorkNowItem({
+      environmentId: EnvironmentId.make("background-activity"),
       threadId: ThreadId.make("thread"),
       tasks: [{ taskId: "python", kind: "command", description: original }],
       turnItems: [

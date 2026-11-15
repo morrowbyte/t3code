@@ -593,6 +593,7 @@ export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshot.Type;
 export const PreviewAutomationSnapshotInput = Schema.Struct({
   fullScreenshot: Schema.optional(Schema.Boolean),
   pixelsRequired: Schema.optional(Schema.Boolean),
+  includeScreenshot: Schema.optional(Schema.Boolean),
 });
 export type PreviewAutomationSnapshotInput = typeof PreviewAutomationSnapshotInput.Type;
 

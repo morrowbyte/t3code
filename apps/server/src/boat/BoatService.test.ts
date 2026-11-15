@@ -44,7 +44,6 @@ import * as Git from "../vcs/GitVcsDriver.ts";
 import { PreviewManager } from "../preview/Manager.ts";
 import { DeviceService } from "../device/DeviceService.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
-import { chooseComputePlacement } from "../orchestration-v2/ComputePlacement.ts";
 import { BoatApi } from "./BoatApi.ts";
 import * as BoatSshTunnel from "./BoatSshTunnel.ts";
 import { make, sourceSyncScript } from "./BoatService.ts";
@@ -2892,18 +2891,14 @@ it.effect.each(["ready", "provisioned"])(
         resumed.instances[0]?.state,
         remoteState === "provisioned" ? "idle" : remoteState,
       );
-      assert.deepEqual(
-        chooseComputePlacement({
-          projectId,
-          ownerThreadId,
-          requestId: "first",
-          resources: null,
-          storageFailure: null,
-          forceBoat: true,
-          boat: resumed,
-        }),
-        { target: "boat", reason: "forced", requestId: "first", action: "renew" },
+      const renewed = yield* boat.operate(
+        { action: "renew", projectId, requestId: "first", ttlMinutes: 5 },
+        ownerThreadId,
       );
+      assert.equal(renewed.instances[0]?.sandboxId, resumed.instances[0]?.sandboxId);
+      assert.equal(renewed.instances[0]?.processId, resumed.instances[0]?.processId);
+      assert.equal(renewed.instances[0]?.previewUrl, resumed.instances[0]?.previewUrl);
+      assert.deepEqual(renewed.instances[0]?.leases, [ownerThreadId]);
       const lease = yield* boat.assertActiveLease(
         { requestId: "first", sandboxId: "bx_23456789" },
         ownerThreadId,

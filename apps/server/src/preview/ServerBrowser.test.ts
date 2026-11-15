@@ -486,6 +486,9 @@ const asSession = (providerSessionId: string) => ({
 const dependencies = Layer.mergeAll(
   Broker.layer,
   Manager.layer,
+  Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+    getEnvironmentId: Effect.succeed(scope.environmentId),
+  }),
   Layer.succeed(ServerEnvironment.ServerEnvironment, {
     getEnvironmentId: Effect.succeed(scope.environmentId),
     getDescriptor: Effect.die("unused descriptor"),

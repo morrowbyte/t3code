@@ -560,6 +560,8 @@ it.effect(
             recordImportedTranscript: () =>
               Effect.die("Skipped context must not be marked imported"),
           }),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
+          ThreadCommandExecutor.layer,
           IdAllocator.layer,
           ServerSettings.layerTest(),
         ),
@@ -618,6 +620,7 @@ it.effect("imports messages once and preserves the provider native resume bindin
           nativeSessionIdVerified: true,
           omittedMessageCount: 0,
         },
+        worktree: null,
       }),
   });
   const layerTest = AgentSessionImporter.layer.pipe(
@@ -649,6 +652,8 @@ it.effect("imports messages once and preserves the provider native resume bindin
           upsert: (input) => Effect.sync(() => void upserts.push(input)),
           recordImportedTranscript: (input) => Effect.sync(() => void recorded.push(input)),
         }),
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
+        ThreadCommandExecutor.layer,
         IdAllocator.layer,
         ServerSettings.layerTest(),
       ),

@@ -1,5 +1,5 @@
 import { LinearTransition, ReduceMotion } from "react-native-reanimated";
-import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
+import { useWorkspacePaneState } from "../layout/AdaptiveWorkspaceLayout";
 import { useContentTopInset } from "../../components/ui/useBarInset";
 import { usePaneRole } from "../../components/ui/Pane";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -211,7 +211,7 @@ export function HomeScreen(props: HomeScreenProps) {
     Platform.OS === "android" ? "bg-header" : contentBackground,
   );
   const columnMetrics = useNativeColumnLayoutMetrics();
-  const { lastSelectedThreadKey } = useAdaptiveWorkspaceLayout();
+  const { lastSelectedThreadKey } = useWorkspacePaneState();
   const activeNewTask = useActiveNewTask();
   const selectedThreadKey = activeNewTask
     ? null

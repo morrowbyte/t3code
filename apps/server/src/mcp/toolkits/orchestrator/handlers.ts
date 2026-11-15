@@ -240,6 +240,12 @@ const handlers = {
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
           return yield* service.sendToThread(scope, input);
         }),
+      (input) =>
+        Effect.gen(function* () {
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          return yield* service.replayThreadDelegation(scope, input);
+        }),
     ),
     // There the thread's parent is here, so only this side can make a follow-up a task.
     (input, environmentId, sent) =>
@@ -247,12 +253,6 @@ const handlers = {
         const scope = yield* McpInvocationContext.McpInvocationContext;
         const remote = yield* RemoteDelegation.RemoteDelegation;
         return yield* remote.followUp(scope, environmentId, input, sent);
-      }),
-    (input) =>
-      Effect.gen(function* () {
-        const scope = yield* McpInvocationContext.McpInvocationContext;
-        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        return yield* service.replayThreadDelegation(scope, input);
       }),
   ),
   t3_thread_wait: McpToolAccess.reads((input) =>

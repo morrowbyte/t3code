@@ -274,6 +274,11 @@ it.each(["direct", "workspace picker"])(
             handle={handle}
             environmentId={EnvironmentId.make("environment")}
             threadId={ThreadId.make("thread")}
+            composerDraftTarget={{
+              environmentId: EnvironmentId.make("environment"),
+              threadId: ThreadId.make("thread"),
+            }}
+            workspaceMutationId={null}
             projectId={ProjectId.make("project")}
             worktreePath={null}
             isServerThread

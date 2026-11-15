@@ -42,7 +42,7 @@ it("selects diff lines with the keyboard and creates a real comment draft", asyn
       options={{}}
       renderHeaderFilenameSuffix={() => null}
       renderHeaderPrefix={() => null}
-      onRevealSearchMatch={() => {}}
+      onFileCollapsedChange={() => {}}
     />,
     { container: host },
   );

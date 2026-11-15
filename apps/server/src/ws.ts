@@ -11,9 +11,6 @@ import type {
   NativeAuthorState,
   NativeAuthorError,
 } from "@t3tools/contracts";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
-
-import * as NodeCrypto from "node:crypto";
 import * as MainRendererDiagnosticsLocalClient from "./diagnostics/MainRendererDiagnosticsLocalClient.ts";
 import {
   OrchestrationDispatchCommandError,
@@ -48,6 +45,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { rpcInitialItems } from "./rpcInitialItems.ts";
 import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
 import {
@@ -532,10 +530,14 @@ function machineCatalogNames(provider: Pick<ServerProvider, "slashCommands" | "s
 // Stable across restarts, so a client's cached lists stay current until the catalog changes.
 // It covers the full entries: a changed description or input hint must reach the client too.
 const machineCatalogDigest = (provider: Pick<ServerProvider, "slashCommands" | "skills">) =>
-  NodeCrypto.createHash("sha256")
-    .update(JSON.stringify([provider.slashCommands, provider.skills]))
-    .digest("hex")
-    .slice(0, 16);
+  Effect.flatMap(Digest.Digest, (digest) =>
+    digest
+      .digestHex(
+        Digest.sha256,
+        new TextEncoder().encode(JSON.stringify([provider.slashCommands, provider.skills])),
+      )
+      .pipe(Effect.map((hex) => hex.slice(0, 16))),
+  );
 
 // Names, or the digest that stands for them, still change the config when the machine catalog
 // does, so the client refetches its cwd snapshot.
@@ -543,17 +545,19 @@ function withoutWorkspaceSnapshots(
   providers: ReadonlyArray<ServerProvider>,
   catalogsPerCwd: ReadonlySet<string> = new Set(),
   catalogDigests = false,
-): ServerProvider[] {
-  return providers.map(({ workspaceSnapshots: _workspaceSnapshots, ...provider }) => {
-    if (!catalogsPerCwd.has(provider.instanceId)) return provider;
+): Effect.Effect<ReadonlyArray<ServerProvider>, never, Digest.Digest> {
+  return Effect.forEach(providers, ({ workspaceSnapshots: _workspaceSnapshots, ...provider }) => {
+    if (!catalogsPerCwd.has(provider.instanceId)) return Effect.succeed(provider);
     return catalogDigests
-      ? {
-          ...provider,
-          slashCommands: [],
-          skills: [],
-          catalogDigest: machineCatalogDigest(provider),
-        }
-      : { ...provider, ...machineCatalogNames(provider) };
+      ? machineCatalogDigest(provider).pipe(
+          Effect.map((catalogDigest) => ({
+            ...provider,
+            slashCommands: [],
+            skills: [],
+            catalogDigest,
+          })),
+        )
+      : Effect.succeed({ ...provider, ...machineCatalogNames(provider) });
   });
 }
 
@@ -1042,6 +1046,7 @@ type WsRpcHandlerServices =
   | Digest.Digest
   | Signature.Signature
   | AssetSigner.AssetSigner
+  | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
   | Path.Path
   | TraceDiagnostics.TraceDiagnostics
@@ -2166,7 +2171,7 @@ const layerCoreWsRpc = (
           ? withUsageLimitsCommands(currentProviders, yield* usageLimitSources.current)
           : currentProviders;
         const providers = options.workspaceSnapshotsOnDemand
-          ? withoutWorkspaceSnapshots(
+          ? yield* withoutWorkspaceSnapshots(
               commandProviders,
               options.catalogsPerCwd,
               options.catalogDigests,
@@ -2921,31 +2926,37 @@ const layerCoreWsRpc = (
                 ? withUsageLimitsCommands(providers, yield* usageLimitSources.current)
                 : providers;
             if (instanceId === undefined || cwd === undefined) {
-              return { providers: withoutWorkspaceSnapshots(commandProviders) };
+              return { providers: yield* withoutWorkspaceSnapshots(commandProviders) };
             }
             const catalogOnDemand =
               input.providerCatalogsOnDemand === true &&
               (yield* providerInstances.getInstance(instanceId))?.snapshotForCwd !== undefined;
             return {
-              providers: commandProviders
-                .filter((provider) => provider.instanceId === instanceId)
-                .map((provider) => {
-                  const catalog =
-                    catalogOnDemand && input.machineCatalog === true
-                      ? machineCatalogNames(provider)
-                      : undefined;
-                  return {
-                    ...provider,
-                    // Callers read only the cwd snapshot; the config stream carries the rest.
-                    models: [],
-                    slashCommands: catalog?.slashCommands ?? [],
-                    skills: catalog?.skills ?? [],
-                    ...(catalog === undefined
-                      ? {}
-                      : { catalogDigest: machineCatalogDigest(provider) }),
-                    workspaceSnapshots: workspaceSnapshotOrCatalog(provider, cwd, catalogOnDemand),
-                  };
-                }),
+              providers: yield* Effect.forEach(
+                commandProviders.filter((provider) => provider.instanceId === instanceId),
+                (provider) =>
+                  Effect.gen(function* () {
+                    const catalog =
+                      catalogOnDemand && input.machineCatalog === true
+                        ? machineCatalogNames(provider)
+                        : undefined;
+                    return {
+                      ...provider,
+                      // Callers read only the cwd snapshot; the config stream carries the rest.
+                      models: [],
+                      slashCommands: catalog?.slashCommands ?? [],
+                      skills: catalog?.skills ?? [],
+                      ...(catalog === undefined
+                        ? {}
+                        : { catalogDigest: yield* machineCatalogDigest(provider) }),
+                      workspaceSnapshots: workspaceSnapshotOrCatalog(
+                        provider,
+                        cwd,
+                        catalogOnDemand,
+                      ),
+                    };
+                  }),
+              ),
             };
           }),
         [WS_METHODS.mcpAppsCallTool]: (input) => mcpAppRequests.callTool(input),
@@ -3115,11 +3126,11 @@ const layerCoreWsRpc = (
         [WS_METHODS.serverCheckSecretSource]: (input) => secretCheck.check(input.source),
         [WS_METHODS.serverGetTraceDiagnostics]: (input) => {
           const request = input.mainRendererSnapshot;
-          if (request === undefined) return;
-          TraceDiagnostics.readTraceDiagnostics({
-            traceFilePath: config.serverTracePath,
-            maxFiles: config.traceMaxFiles,
-          });
+          if (request === undefined)
+            return TraceDiagnostics.readTraceDiagnostics({
+              traceFilePath: config.serverTracePath,
+              maxFiles: config.traceMaxFiles,
+            });
           return authorizeEffect(
             AuthOrchestrationReadScope,
             Effect.gen(function* () {
@@ -3862,7 +3873,7 @@ const layerCoreWsRpc = (
                 Stream.mapEffect((commandProviders) =>
                   workspaceSnapshotsOnDemand
                     ? currentCatalogsPerCwd.pipe(
-                        Effect.map((catalogsPerCwd) =>
+                        Effect.flatMap((catalogsPerCwd) =>
                           withoutWorkspaceSnapshots(
                             commandProviders,
                             catalogsPerCwd,

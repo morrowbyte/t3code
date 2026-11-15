@@ -147,15 +147,13 @@ const deliveries = [
 
 it.effect.each(deliveries)(
   "delivers %s with Claude's native pending-tool cancellation behavior",
-  (delivery) =>
-    Effect.gen(function* () {
+  (delivery) => {
+    const batchAbort = new AbortController();
+    return Effect.gen(function* () {
       const cwd = yield* checkpointWorkspace("claude-automatic-delivery");
       const sdkMessages = yield* Queue.unbounded<SDKMessage>();
       const offers: SDKUserMessage[] = [];
       const nativeQueue: SDKUserMessage[] = [];
-      // @effect-diagnostics-next-line abortControllerInEffect:off - The fake SDK interrupts its batch independently of the test fiber.
-
-      const batchAbort = new AbortController();
       const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
         instanceId: modelSelection.instanceId,
         settings,
@@ -596,7 +594,8 @@ it.effect.each(deliveries)(
           NodeCrypto.layer,
         ),
       ),
-    ),
+    );
+  },
 );
 
 it.effect("applies an effort change to the running Claude query without waiting for a turn", () =>

@@ -9,7 +9,7 @@ import {
 import {
   resolveThreadWorkGroupInitialScroll,
   type ThreadWorkGroupScrollPosition,
-} from "./thread-feed-live-follow";
+} from "./thread-feed-scroll-position";
 
 function feedState(ids: ReadonlyArray<string>, scroll = 140, size = 100, isAtEnd = false) {
   return {

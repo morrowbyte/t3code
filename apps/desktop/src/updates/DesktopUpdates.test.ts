@@ -438,7 +438,7 @@ describe("DesktopUpdates", () => {
           );
         const harness = makeHarness({
           clientOnlyInventory: [],
-          restoreHold: Ref.get(hold).pipe(Effect.flatMap((read) => read)),
+          restoreHold: Ref.get(hold).pipe(Effect.flatten),
         });
 
         yield* Effect.scoped(

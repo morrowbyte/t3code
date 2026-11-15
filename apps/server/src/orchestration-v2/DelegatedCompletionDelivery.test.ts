@@ -7,6 +7,7 @@ import * as SourceControlProviderRegistry from "../sourceControl/SourceControlPr
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as ProviderInstallationGate from "../provider/ProviderInstallationGate.ts";
 import { assert, it, vi } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -67,6 +68,7 @@ const fixtureEnvironmentId = EnvironmentId.make(
   "environment:observatory-fixture:DelegatedCompletionDelivery",
 );
 const layerPlatformTest = Layer.mergeAll(
+  ProviderInstallationGate.layer,
   NodeServices.layer,
   NodeCrypto.layer,
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({

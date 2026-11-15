@@ -58,6 +58,7 @@ it.each([true, false])(
         insertTextAtEnd: unexpected,
         pasteTextAtEnd: unexpected,
         citeAssistantText: unexpected,
+        replyToResponse: unexpected,
         openModelPicker: unexpected,
         stepReasoningEffort: unexpected,
         toggleModelPicker: unexpected,

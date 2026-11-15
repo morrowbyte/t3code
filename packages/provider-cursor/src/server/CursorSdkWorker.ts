@@ -1,5 +1,6 @@
 // @effect-diagnostics globalTimers:off -- The worker has a finite parent-disconnect shutdown deadline.
 import type { RunResult } from "@cursor/sdk";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -208,7 +209,7 @@ export async function runCursorSdkWorker(): Promise<void> {
           clearTimeout(shutdown);
           transport.fail(new Error("Cursor SDK worker stopped."));
         }
-      }).pipe(Effect.provide(CursorSdk.layer)),
+      }).pipe(Effect.provide(CursorSdk.layer), Effect.provide(NodeServices.layer)),
     ),
   );
 }

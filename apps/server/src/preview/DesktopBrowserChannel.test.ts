@@ -567,6 +567,11 @@ effectIt.effect("protects unknown desktop visibility until an explicit hidden re
       Effect.provide(
         DesktopBrowserChannel.layer.pipe(
           Layer.provide(
+            Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+              getEnvironmentId: Effect.succeed(EnvironmentId.make("desktop-browser-test")),
+            }),
+          ),
+          Layer.provide(
             ServerConfig.layer({ ...config, desktopBrowserFd: 41, desktopBrowserControlFd: 42 }),
           ),
         ),
@@ -575,13 +580,13 @@ effectIt.effect("protects unknown desktop visibility until an explicit hidden re
   }).pipe(
     Effect.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "desktop-browser-channel-" }).pipe(
-        Layer.provide(NodeServices.layer),
+        Layer.provideMerge(NodeServices.layer),
       ),
     ),
   ),
 );
 
-it.live("closes a tab's relay connection when the desktop detaches the tab", () =>
+effectIt.live("closes a tab's relay connection when the desktop detaches the tab", () =>
   Effect.gen(function* () {
     const input = yield* Queue.unbounded<Uint8Array>();
     vi.mocked(NodeStream.fromReadable).mockReturnValue(Stream.fromQueue(input));
@@ -612,6 +617,11 @@ it.live("closes a tab's relay connection when the desktop detaches the tab", () 
       Effect.provide(
         DesktopBrowserChannel.layer.pipe(
           Layer.provide(
+            Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+              getEnvironmentId: Effect.succeed(EnvironmentId.make("desktop-browser-test")),
+            }),
+          ),
+          Layer.provide(
             ServerConfig.layer({ ...config, desktopBrowserFd: 41, desktopBrowserControlFd: 42 }),
           ),
         ),
@@ -620,7 +630,7 @@ it.live("closes a tab's relay connection when the desktop detaches the tab", () 
   }).pipe(
     Effect.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "desktop-browser-channel-" }).pipe(
-        Layer.provide(NodeServices.layer),
+        Layer.provideMerge(NodeServices.layer),
       ),
     ),
   ),

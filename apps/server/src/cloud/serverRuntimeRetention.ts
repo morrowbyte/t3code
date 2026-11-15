@@ -444,6 +444,7 @@ async function cleanUnused(baseDir: string, reuseVersion?: string) {
   return { ...snapshot, candidate };
 }
 
+// @effect-diagnostics-next-line extendsNativeError:off -- Launcher errors must load without Effect.
 export class ServerRuntimeRetentionBusyError extends Error {
   constructor(options: ErrorOptions) {
     super(
@@ -454,6 +455,7 @@ export class ServerRuntimeRetentionBusyError extends Error {
   }
 }
 
+// @effect-diagnostics-next-line extendsNativeError:off -- Launcher errors must load without Effect.
 export class ServerRuntimeRetentionLimitError extends Error {
   override name = "ServerRuntimeRetentionLimitError";
 }

@@ -172,11 +172,18 @@ const fetchReleaseAsset = Effect.fn("cloud.pinned_runtime.fetch_release_asset")(
             orElse: () => Stream.fail(new Cause.TimeoutError()),
           }),
           Stream.tap((chunk) =>
-            Effect.try(() => {
-              received += chunk.byteLength;
-              if (received > maxBytes)
-                throw new Error("The release asset exceeds the runtime storage budget.");
-              onProgress?.({ stage: "download", received, total });
+            Effect.try({
+              try: () => {
+                received += chunk.byteLength;
+                if (received > maxBytes)
+                  throw new Error("The release asset exceeds the runtime storage budget.");
+                onProgress?.({ stage: "download", received, total });
+              },
+              catch: (cause) =>
+                new PinnedRuntimeInstallError({
+                  step: "processing the release asset storage budget",
+                  cause,
+                }),
             }),
           ),
           Stream.runCollect,
@@ -194,19 +201,20 @@ const fetchReleaseAsset = Effect.fn("cloud.pinned_runtime.fetch_release_asset")(
       }),
     ),
     Effect.retry({ ...DOWNLOAD_RETRY, while: isTransientDownloadFailure }),
-    Effect.mapError(
-      (cause) =>
-        new PinnedRuntimeInstallError({
-          step: cause instanceof Cause.TimeoutError ? `${step} (timed out)` : step,
-          httpStatus:
-            HttpClientError.isHttpClientError(cause) && cause.reason._tag === "StatusCodeError"
-              ? cause.reason.response.status
-              : undefined,
-          downloadHost: URL.parse(
-            HttpClientError.isHttpClientError(cause) ? cause.request.url : url,
-          )?.host,
-          cause,
-        }),
+    Effect.mapError((cause) =>
+      isPinnedRuntimeInstallError(cause)
+        ? cause
+        : new PinnedRuntimeInstallError({
+            step: cause instanceof Cause.TimeoutError ? `${step} (timed out)` : step,
+            httpStatus:
+              HttpClientError.isHttpClientError(cause) && cause.reason._tag === "StatusCodeError"
+                ? cause.reason.response.status
+                : undefined,
+            downloadHost: URL.parse(
+              HttpClientError.isHttpClientError(cause) ? cause.request.url : url,
+            )?.host,
+            cause,
+          }),
     ),
   );
 });
@@ -665,7 +673,13 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
     if (!published) yield* input.validate(paths);
     return paths;
   }).pipe(
-    Effect.onError(() => Effect.tryPromise(() => retention.cancel(stagingDir)).pipe(Effect.ignore)),
+    Effect.onError(() =>
+      Effect.tryPromise({
+        try: () => retention.cancel(stagingDir),
+        catch: (cause) =>
+          new PinnedRuntimeInstallError({ step: "cancelling runtime retention admission", cause }),
+      }).pipe(Effect.ignore),
+    ),
     Effect.ensuring(fs.remove(stagingDir, { recursive: true, force: true }).pipe(Effect.ignore)),
   );
 });
@@ -1030,9 +1044,11 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
     }
   }
   const keep = new Set(input.keep);
-  const candidate = yield* Effect.tryPromise(() => readServerRuntimeCandidate(input.baseDir)).pipe(
-    Effect.option,
-  );
+  const candidate = yield* Effect.tryPromise({
+    try: () => readServerRuntimeCandidate(input.baseDir),
+    catch: (cause) =>
+      new PinnedRuntimeInstallError({ step: "reading the retained runtime candidate", cause }),
+  }).pipe(Effect.option);
   if (Option.isNone(candidate)) return pruned;
   if (candidate.value !== undefined) keep.add(candidate.value.version);
   const stateText = yield* fs
@@ -1056,9 +1072,11 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
       keep.add(state.update.fromVersion);
       keep.add(state.update.targetVersion);
     }
-    const retained = yield* Effect.tryPromise(() => inspectServerRestore(input.baseDir)).pipe(
-      Effect.option,
-    );
+    const retained = yield* Effect.tryPromise({
+      try: () => inspectServerRestore(input.baseDir),
+      catch: (cause) =>
+        new PinnedRuntimeInstallError({ step: "inspecting retained runtime restores", cause }),
+    }).pipe(Effect.option);
     if (Option.isSome(retained)) {
       for (const candidate of retained.value.candidates
         .filter((candidate) => candidate.blockedReason === null)
@@ -1090,9 +1108,11 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
     const sentinel = yield* fs
       .readFileString(path.join(directory, ".install-complete"))
       .pipe(Effect.option);
-    const recorded = yield* Effect.tryPromise(() =>
-      serverRuntimePruneRecorded(input.baseDir, version),
-    ).pipe(Effect.orElseSucceed(() => false));
+    const recorded = yield* Effect.tryPromise({
+      try: () => serverRuntimePruneRecorded(input.baseDir, version),
+      catch: (cause) =>
+        new PinnedRuntimeInstallError({ step: "reading the runtime prune receipt", cause }),
+    }).pipe(Effect.orElseSucceed(() => false));
     if (
       keep.has(version) ||
       (!recorded &&
@@ -1104,7 +1124,11 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
       )
     )
       continue;
-    yield* Effect.tryPromise(() => retireServerRuntime(input.baseDir, version, directory)).pipe(
+    yield* Effect.tryPromise({
+      try: () => retireServerRuntime(input.baseDir, version, directory),
+      catch: (cause) =>
+        new PinnedRuntimeInstallError({ step: "resuming retired runtime cleanup", cause }),
+    }).pipe(
       Effect.andThen(Effect.sync(() => pruned.add(directory))),
       Effect.catch((cause) =>
         Effect.logWarning("Could not resume an unused t3 runtime cleanup.", { version, cause }),
@@ -1125,7 +1149,11 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
     }
     const target = path.join(versionsDir, `${PINNED_RUNTIME_PRUNED_PREFIX}${version}`);
     if (yield* fs.exists(target).pipe(Effect.orElseSucceed(() => true))) continue;
-    yield* Effect.tryPromise(() => retireServerRuntime(input.baseDir, version, versionDir)).pipe(
+    yield* Effect.tryPromise({
+      try: () => retireServerRuntime(input.baseDir, version, versionDir),
+      catch: (cause) =>
+        new PinnedRuntimeInstallError({ step: "retiring an unused runtime", cause }),
+    }).pipe(
       Effect.andThen(Effect.sync(() => pruned.add(target))),
       Effect.catch((cause) =>
         Effect.logWarning("Could not remove an unused t3 runtime.", { version, cause }),
@@ -1148,9 +1176,11 @@ export const prunePinnedRuntimes = Effect.fn("cloud.pinned_runtime.prune")(funct
   const path = yield* Path.Path;
   return yield* pinnedRuntimeInstallLock.withPermit(
     Effect.acquireUseRelease(
-      Effect.tryPromise((signal) => acquireServerRuntimeRetention(input.baseDir, { signal })).pipe(
-        Effect.option,
-      ),
+      Effect.tryPromise({
+        try: (signal) => acquireServerRuntimeRetention(input.baseDir, { signal }),
+        catch: (cause) =>
+          new PinnedRuntimeInstallError({ step: "locking runtime retention for cleanup", cause }),
+      }).pipe(Effect.option),
       (retention) =>
         Option.isNone(retention)
           ? Effect.succeed([])
@@ -1162,9 +1192,11 @@ export const prunePinnedRuntimes = Effect.fn("cloud.pinned_runtime.prune")(funct
               const removed: Array<string> = [];
               for (const target of pruned) {
                 const version = path.basename(target).slice(PINNED_RUNTIME_PRUNED_PREFIX.length);
-                yield* Effect.tryPromise(() =>
-                  removeRetiredServerRuntime(input.baseDir, version),
-                ).pipe(
+                yield* Effect.tryPromise({
+                  try: () => removeRetiredServerRuntime(input.baseDir, version),
+                  catch: (cause) =>
+                    new PinnedRuntimeInstallError({ step: "removing a retired runtime", cause }),
+                }).pipe(
                   Effect.andThen(Effect.sync(() => removed.push(version))),
                   Effect.catch((cause) =>
                     Effect.logWarning("Could not remove an unused t3 runtime.", { target, cause }),

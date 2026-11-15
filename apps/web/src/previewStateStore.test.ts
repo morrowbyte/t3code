@@ -475,6 +475,7 @@ describe("previewStateStore (single-tab)", () => {
           revision: 12,
         });
         applyPreviewDesktopState(targetRef, previous.tabId, {
+          navStatus: previous.navStatus,
           hasWebContents: true,
           canGoBack: false,
           canGoForward: false,

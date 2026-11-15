@@ -809,7 +809,7 @@ export const layer: Layer.Layer<
       // Opening a session does not prompt the provider, so the workspace is still unchanged.
       const baseline = yield* runExecution.forkBaseline({
         appThread: projection.thread,
-        message: providerMessage,
+        message: { ...providerMessage, messageId: message.id },
         run,
         checkpointScope,
       });

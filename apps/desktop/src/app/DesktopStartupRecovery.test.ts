@@ -135,6 +135,7 @@ effectIt.effect.each([
     const path = yield* Path.Path.pipe(Effect.provide(Path.layer));
     const quitting = yield* Ref.make(false);
     const backendReady = yield* Ref.make(false);
+    const canInstallUpdates = yield* Ref.make(false);
     const primaryBackendStartup = yield* SubscriptionRef.make<DesktopState.PrimaryBackendStartup>({
       _tag: "Failing",
       reason: "The backend could not start after updating.",
@@ -147,7 +148,12 @@ effectIt.effect.each([
       status: "disabled",
     });
     const layer = Layer.mergeAll(
-      Layer.mock(DesktopState.DesktopState, { primaryBackendStartup, quitting, backendReady }),
+      Layer.mock(DesktopState.DesktopState, {
+        primaryBackendStartup,
+        quitting,
+        backendReady,
+        canInstallUpdates,
+      }),
       DesktopEnvironment.layer({
         appVersion: state.currentVersion,
         dirname: "/qa/app/apps/desktop/dist-electron",

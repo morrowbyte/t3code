@@ -1539,6 +1539,7 @@ describe("CodexAdapterV2 process spawning", () => {
       Effect.provide(
         Layer.mergeAll(
           IdAllocator.layer,
+          PortScanner.layerTest,
           McpProviderSessions.layer,
           NodeServices.layer,
           NodeCrypto.layer,
@@ -1576,7 +1577,7 @@ describe("CodexAdapterV2 dynamic tool projection", () => {
           result,
         });
         assert.deepEqual(projection.output, result);
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect.each(["inProgress", "completed", "failed"] as const)(
@@ -1615,7 +1616,7 @@ describe("CodexAdapterV2 dynamic tool projection", () => {
           assert.equal(projection.toolSource?.kind, "computer");
           assert.equal(projection.toolSource?.key, "native-app-name:editor");
         }
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("keeps a failed Sky MCP call in Computer Use when its error has no metadata", () =>
@@ -1977,7 +1978,6 @@ describe("CodexAdapterV2 native protocol logging", () => {
             }),
           close: () => Effect.void,
         },
-        threadId: ThreadId.make("thread-1"),
         providerSessionId: ProviderSessionId.make("provider-session-1"),
       });
       assert.exists(protocolLogger);
@@ -2024,7 +2024,6 @@ describe("CodexAdapterV2 native protocol logging", () => {
             }),
           close: () => Effect.void,
         },
-        threadId: ThreadId.make("thread-1"),
         providerSessionId: ProviderSessionId.make("provider-session-1"),
       });
       assert.exists(protocolLogger);
@@ -9163,6 +9162,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           undefined,
           undefined,
           undefined,
+          undefined,
+          undefined,
           (entry) => {
             const gate = streamed
               ? gates.find((gate) => entry.label === `item/completed/${gate.id}`)
@@ -10176,6 +10177,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             inbound("item/completed/stopped", "item/completed", backgroundCommandItem("completed")),
           ],
         }),
+        undefined,
+        undefined,
         undefined,
         undefined,
         undefined,

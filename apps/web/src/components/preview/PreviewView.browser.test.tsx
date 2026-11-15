@@ -114,7 +114,7 @@ vi.mock(import("~/previewStateStore"), async (original) => ({
         hasWebContents: true,
         navStatus: mocks.idleDesktopOverlay
           ? { _tag: "Idle" }
-          : { _tag: "Success", url: "http://example.com/", title: "Example" },
+          : { _tag: "Success", url: mocks.pageUrl, title: "Example" },
         canGoBack: mocks.canGoBack,
         canGoForward: mocks.canGoForward,
         loading: mocks.loading,
@@ -133,8 +133,14 @@ vi.mock(import("~/previewStateStore"), async (original) => ({
           "tab-1": {
             threadId: "thread-1",
             tabId: "tab-1",
-            runtime: mocks.nativeServerTab ? "server" : "desktop",
-            navStatus: { _tag: "Success", url: mocks.pageUrl, title: "Example" },
+            runtime:
+              mocks.idleServerTab || mocks.nativeServerTab || mocks.streamedServerTab
+                ? "server"
+                : "desktop",
+            navStatus:
+              mocks.idleServerTab || mocks.idleDesktopTab
+                ? { _tag: "Idle" }
+                : { _tag: "Success", url: mocks.pageUrl, title: "Example" },
             canGoBack: mocks.canGoBack,
             canGoForward: mocks.canGoForward,
             updatedAt: "2026-07-13T00:00:00.000Z",
@@ -142,9 +148,9 @@ vi.mock(import("~/previewStateStore"), async (original) => ({
         },
   })) as never,
 }));
-vi.mock(import("~/state/primaryEnvironment"), async () => {
+vi.mock(import("~/state/primaryEnvironment"), async (original) => {
   const { Atom } = await import("effect/reactivity");
-  return { primaryEnvironmentIdAtom: Atom.make(null) };
+  return { ...(await original()), primaryEnvironmentIdAtom: Atom.make(null) };
 });
 vi.mock(import("~/state/environments"), async (original) => ({
   ...(await original()),
@@ -168,7 +174,7 @@ vi.mock(import("./usePreviewSession"), async (original) => ({
 
 vi.mock(import("~/browser/previewRuntime"), async (original) => ({
   ...(await original()),
-  useRendersServerTabNatively: () => mocks.nativeServerTab,
+  useControlsNativePreviewTab: () => mocks.nativeServerTab,
 }));
 
 vi.mock(import("~/browser/browserViewportActions"), { spy: true });

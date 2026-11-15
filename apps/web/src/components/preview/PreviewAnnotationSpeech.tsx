@@ -40,6 +40,13 @@ export function PreviewAnnotationSpeech({
     projectId ? scopeProjectRef(threadRef.environmentId, projectId) : null,
   );
   const draft = useRef({ text: "", cursor: 0, selectionEnd: 0 });
+  const draftListeners = useRef(new Set<() => void>());
+  const subscribeDraft = useStableCallback((onChange: () => void) => {
+    draftListeners.current.add(onChange);
+    return () => {
+      draftListeners.current.delete(onChange);
+    };
+  });
   const keys = useRef<DictationKeyHandlers | null>(null);
   const guestFocused = useRef(false);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- notices focus returning from the preview guest to this window
@@ -55,6 +62,7 @@ export function PreviewAnnotationSpeech({
     };
   }, []);
   const speech = useEnvironmentSpeechInput({
+    subscribeDraft,
     environmentId: threadRef.environmentId,
     projectId,
     projectName: project?.title,
@@ -133,6 +141,7 @@ export function PreviewAnnotationSpeech({
             cursor: Math.min(event.cursor, event.text.length),
             selectionEnd: Math.min(event.selectionEnd ?? event.cursor, event.text.length),
           };
+          for (const listener of draftListeners.current) listener();
           if (event.action === "focus" || event.action === "key" || event.action === "start")
             guestFocused.current = true;
           if (event.action === "blur") guestFocused.current = false;

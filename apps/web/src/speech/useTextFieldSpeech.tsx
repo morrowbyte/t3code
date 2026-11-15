@@ -9,6 +9,7 @@ import {
 import { VoiceInputSetup } from "~/components/chat/VoiceInputSetup";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import { useDictationShortcut } from "./useDictationShortcut";
+import { useStableCallback } from "~/hooks/useStableCallback";
 import { useEnvironmentSpeechInput } from "./useEnvironmentSpeechInput";
 
 /** Binds dictation to a plain textarea draft; the shortcut targets it only while it has focus. */
@@ -27,7 +28,13 @@ export function useTextFieldSpeech(input: {
     latest.current = input;
   });
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const subscribeDraft = useStableCallback((onChange: () => void) => {
+    const field = latest.current.textareaRef.current;
+    field?.addEventListener("input", onChange);
+    return () => field?.removeEventListener("input", onChange);
+  });
   const speech = useEnvironmentSpeechInput({
+    subscribeDraft,
     environmentId: input.environmentId,
     projectId: input.projectId,
     ownerKey: input.ownerKey,

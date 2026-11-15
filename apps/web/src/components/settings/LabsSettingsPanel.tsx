@@ -272,11 +272,9 @@ function LegacyPlanModeRow() {
   return (
     <SettingsRow
       {...searchableSetting("legacy-plan-mode")}
-      settingKeys={["planModeEnabled"]}
       description="Restore Build/Plan, /plan, /default, and Shift+Tab. Off uses build mode."
       control={
-        <ScopedSwitch
-          settingKeys={["planModeEnabled"]}
+        <Switch
           checked={settings.planModeEnabled}
           onCheckedChange={(checked) => updateSettings({ planModeEnabled: Boolean(checked) })}
           aria-label="Plan mode (legacy)"

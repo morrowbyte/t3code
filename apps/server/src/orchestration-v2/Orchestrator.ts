@@ -3363,6 +3363,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       readonly failedRunId?: RunId;
       readonly endedRunId?: RunId;
       readonly queuedRunId?: RunId;
+      readonly latestRunEnded?: boolean;
+      readonly userStarted?: boolean;
     },
   ) {
     let next = options;
@@ -7525,7 +7527,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 turn.status !== "pending" &&
                 turn.status !== "running"))))
       ) {
-        if (dispatchMode.onInactive === "reject") {
+        if (dispatchMode.type === "steer_active" && dispatchMode.onInactive === "reject") {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
@@ -15699,11 +15701,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* dispatchThreadCreate(command, events);
         const initialMessage = threadCreateInitialMessage(command);
         if (initialMessage !== undefined) {
-          cancelUnsettledEffects = yield* dispatchMessage(
-            withoutGuestAttribution(initialMessage),
-            events,
-            effects,
-          );
+          cancelUnsettledEffects =
+            (yield* dispatchMessage(withoutGuestAttribution(initialMessage), events, effects)) ??
+            undefined;
         }
         break;
       }
@@ -15831,7 +15831,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (continuation !== undefined) yield* refuseNativeSubagentMessage(command);
         yield* dispatchThreadMutation(command, events, effects);
         if (continuation !== undefined) {
-          cancelUnsettledEffects = yield* dispatchMessage(continuation, events, effects);
+          cancelUnsettledEffects =
+            (yield* dispatchMessage(continuation, events, effects)) ?? undefined;
           yield* recordSubagentFollowup(continuation, events).pipe(mapDispatchError(command));
         }
         break;
@@ -17295,7 +17296,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 ? { ...task, cancelledRunId: cancelledRun.id, updatedAt: now }
                 : undefined;
             // The marker, Stop receipt and interrupt outbox commit together under both locks.
-            yield* dispatchWithReceiptEffect(command, [], cancelledTask);
+            yield* dispatchWithReceiptEffect(command, undefined, [], cancelledTask);
           }),
         );
         yield* finalizeAppOwnedSubagent(command.threadId).pipe(mapDispatchError(command));

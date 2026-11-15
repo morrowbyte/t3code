@@ -763,7 +763,7 @@ it.effect.each(["provider-turn.start", "provider-turn.steer"] as const)(
       );
 
       const exit = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-        Effect.flatMap((worker) => worker.runOnce),
+        Effect.flatMap((worker) => worker.runOnce()),
         Effect.provide(layerWorker),
         Effect.exit,
       );
@@ -850,7 +850,7 @@ it.effect.each(["worker shutdown", "provider cancellation"] as const)(
         Layer.provide(Layer.merge(layerOutbox, layerExecutor)),
       );
       const running = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-        Effect.flatMap((worker) => worker.runOnce),
+        Effect.flatMap((worker) => worker.runOnce()),
         Effect.provide(layerWorker),
         Effect.forkChild,
       );

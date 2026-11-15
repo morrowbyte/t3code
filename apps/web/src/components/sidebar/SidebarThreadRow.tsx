@@ -1178,7 +1178,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       <ThreadRenameInput
         title={renamingTitle}
         onTitleChange={onRenameTitleChange}
-        onCommit={() => onCommitRename(threadRef, renamingTitle, thread.title)}
+        onCommit={() => onCommitRename(threadRef, renamingTitle)}
         onCancel={onCancelRename}
       />
     ) : (

@@ -179,7 +179,7 @@ it.effect.each([
     if (cleanupState !== "none") {
       const pending = Option.getOrThrow(yield* queue.get("effect:finalization-queue:capture"));
       assert.equal(
-        DateTime.formatIso(Option.getOrThrow(yield* queue.nextClaimableAt)),
+        DateTime.formatIso(Option.getOrThrow(yield* queue.nextClaimableAt())),
         pending.availableAt,
       );
     }

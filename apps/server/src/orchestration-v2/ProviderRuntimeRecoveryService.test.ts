@@ -1035,7 +1035,7 @@ it.effect(
         );
         yield* Effect.gen(function* () {
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-          const executing = yield* worker.runOnce.pipe(Effect.forkScoped);
+          const executing = yield* worker.runOnce().pipe(Effect.forkScoped);
           yield* Deferred.await(startedAgain);
           yield* orchestrator.dispatch({
             type: "run.interrupt",

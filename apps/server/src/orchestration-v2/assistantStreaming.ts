@@ -17,7 +17,7 @@ const TOP_LEVEL_HEADING_PATTERN = /^#{1,6}(?:[ \t]|$)/;
 const PARTIAL_LIST_ITEM_START_PATTERN = /[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t][ \t\r]*[^ \t\r]/y;
 
 interface AssistantTextScan {
-  readonlytext: string;
+  readonly text: string;
   // Start of the partial line; every line before it has been scanned.
 
   readonly lineStart: number;

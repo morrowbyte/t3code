@@ -453,7 +453,8 @@ export function UsageLimitsSection({
               <View className="flex-row items-center gap-2">
                 <ProviderIcon provider={account.driver} size={18} />
                 <Text className="text-sm font-t3-medium text-foreground">
-                  {DRIVER_LABEL[account.driver] ?? account.driver} · {accountName(account)}
+                  {providerClients.get(account.driver)?.label ?? account.driver} ·{" "}
+                  {accountName(account)}
                 </Text>
               </View>
               <Text selectable className="text-xl font-t3-bold tabular-nums text-foreground">

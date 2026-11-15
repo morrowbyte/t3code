@@ -1585,7 +1585,9 @@ it.effect.each([0, 1])(
       assert.equal(command.options.detached, false);
       assert.equal(command.options.windowsHide, true);
       assert.equal(command.options.stdout, "ignore");
-      const source = Buffer.from(command.args.at(-1)!, "base64").toString("utf16le");
+      const encodedCommand = command.args.at(-1);
+      assert.ok(typeof encodedCommand === "string");
+      const source = Buffer.from(encodedCommand, "base64").toString("utf16le");
       assert.include(source, "Invoke-Item -LiteralPath");
       assert.include(source, "C:\\links\\Plan.pdf");
       assert.include(source, "-ErrorAction Stop");
@@ -1602,7 +1604,9 @@ it.effect("opens the canonical Obsidian URI with encoded spaces, umlauts and URI
     }).pipe(Effect.provide(fixture.layer));
     const command = fixture.spawned.at(-1);
     assert.ok(command);
-    const source = Buffer.from(command.args.at(-1)!, "base64").toString("utf16le");
+    const encodedCommand = command.args.at(-1);
+    assert.ok(typeof encodedCommand === "string");
+    const source = Buffer.from(encodedCommand, "base64").toString("utf16le");
     assert.include(source, `obsidian://open?path=${encodeURIComponent(fixture.canonicalPath)}`);
     assert.notInclude(source, "junction");
   }),

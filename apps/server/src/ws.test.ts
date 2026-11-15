@@ -295,6 +295,7 @@ it.effect("resends late file apps while preserving settings and editor discoveri
           Deferred.await(settingsSent).pipe(Effect.as(["default", "obsidian"] as const)),
       },
       { resolveTargets: () => Effect.succeed([]) },
+      { resolve: () => Effect.succeed([]) },
     ).pipe(
       Stream.tap((event) =>
         event.type === "settingsUpdated" ? Deferred.succeed(settingsSent, undefined) : Effect.void,
@@ -1046,6 +1047,12 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
   }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer)),
 );
 
+const layerConnectedEnvironmentRpcServices = Layer.mergeAll(
+  Layer.mock(ConnectedEnvironmentBroker.ConnectedEnvironmentBroker)({}),
+  Layer.mock(ConnectedEnvironmentAdmission.ConnectedEnvironmentAdmission)({}),
+  Layer.mock(OrchestratorMcpService.OrchestratorMcpService)({}),
+);
+
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(BoatService.BoatService)({}),
@@ -1140,6 +1147,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
 );
 
 const layerConfigSources = Layer.mergeAll(
+  layerConnectedEnvironmentRpcServices,
   Keybindings.layer,
   AssetSigner.layer.pipe(Layer.provide(ServerSecretStore.layer)),
   ServerSettings.layer.pipe(
@@ -1389,9 +1397,9 @@ it.effect.each([
             },
             {},
             yield* ServerBrowser.ServerBrowser,
-            {} as ConnectedEnvironmentBroker.ConnectedEnvironmentBroker["Service"],
-            {} as ConnectedEnvironmentAdmission.ConnectedEnvironmentAdmission["Service"],
-            {} as OrchestratorMcpService.OrchestratorMcpService["Service"],
+            yield* ConnectedEnvironmentBroker.ConnectedEnvironmentBroker,
+            yield* ConnectedEnvironmentAdmission.ConnectedEnvironmentAdmission,
+            yield* OrchestratorMcpService.OrchestratorMcpService,
             () => Effect.void,
             { secretReferences: true },
           ).pipe(Layer.provide(configRpcServices)),
@@ -1550,6 +1558,9 @@ it.effect("access changes made while the snapshot loads reach the client after i
           },
           {},
           yield* ServerBrowser.ServerBrowser,
+          yield* ConnectedEnvironmentBroker.ConnectedEnvironmentBroker,
+          yield* ConnectedEnvironmentAdmission.ConnectedEnvironmentAdmission,
+          yield* OrchestratorMcpService.OrchestratorMcpService,
           () => Effect.void,
           { secretReferences: true },
         ).pipe(
@@ -1767,9 +1778,9 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
           },
           {},
           yield* ServerBrowser.ServerBrowser,
-          {} as ConnectedEnvironmentBroker.ConnectedEnvironmentBroker["Service"],
-          {} as ConnectedEnvironmentAdmission.ConnectedEnvironmentAdmission["Service"],
-          {} as OrchestratorMcpService.OrchestratorMcpService["Service"],
+          yield* ConnectedEnvironmentBroker.ConnectedEnvironmentBroker,
+          yield* ConnectedEnvironmentAdmission.ConnectedEnvironmentAdmission,
+          yield* OrchestratorMcpService.OrchestratorMcpService,
           () => Effect.void,
           { secretReferences: true },
         ).pipe(Layer.provide(configRpcServices)),
@@ -2103,6 +2114,7 @@ it.effect("a missing thread worktree gets its project's skills in the cwd snapsh
             Layer.mock(ProjectEnrichment.ProjectEnrichmentService)({}),
             Layer.mock(WorkspacePaths.WorkspacePaths)({}),
             Layer.mock(EventSink.EventSinkV2)({}),
+            Layer.mock(OrchestrationEventStore.OrchestrationEventStore)({}),
             IdAllocator.layer,
             Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({}),
             Layer.mock(ThreadCommandExecutor.ThreadCommandExecutor)({}),
@@ -2143,6 +2155,9 @@ it.effect("a missing thread worktree gets its project's skills in the cwd snapsh
           },
           {},
           yield* ServerBrowser.ServerBrowser,
+          yield* ConnectedEnvironmentBroker.ConnectedEnvironmentBroker,
+          yield* ConnectedEnvironmentAdmission.ConnectedEnvironmentAdmission,
+          yield* OrchestratorMcpService.OrchestratorMcpService,
           () => Effect.void,
           { secretReferences: true },
         ).pipe(Layer.provide(services)),
@@ -2222,6 +2237,9 @@ it.effect("a git action that fails partway still refreshes the repository status
           },
           {},
           yield* ServerBrowser.ServerBrowser,
+          yield* ConnectedEnvironmentBroker.ConnectedEnvironmentBroker,
+          yield* ConnectedEnvironmentAdmission.ConnectedEnvironmentAdmission,
+          yield* OrchestratorMcpService.OrchestratorMcpService,
           () => Effect.void,
           { secretReferences: true },
         ).pipe(
@@ -2800,6 +2818,9 @@ it.effect("ACP session RPCs list a thread missing its history and repair it on i
           },
           {},
           yield* ServerBrowser.ServerBrowser,
+          yield* ConnectedEnvironmentBroker.ConnectedEnvironmentBroker,
+          yield* ConnectedEnvironmentAdmission.ConnectedEnvironmentAdmission,
+          yield* OrchestratorMcpService.OrchestratorMcpService,
           () => Effect.void,
           { secretReferences: true },
         ).pipe(
@@ -2840,6 +2861,7 @@ it.effect("ACP session RPCs list a thread missing its history and repair it on i
     Effect.provide(
       Layer.mergeAll(
         EventSink.layer.pipe(Layer.provideMerge(acpStores)),
+        layerConnectedEnvironmentRpcServices,
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),

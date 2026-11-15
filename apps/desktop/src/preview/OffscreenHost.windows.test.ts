@@ -3,9 +3,11 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { it as effectIt } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
+import * as Config from "effect/Config";
 import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -24,7 +26,9 @@ effectIt.live.skipIf(HostProcess.Platform.defaultValue() !== "win32")(
       const path = yield* Path.Path;
       const digest = yield* Digest.Digest;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const artifactsRoot = process.env.NATIVE_PREVIEW_ARTIFACTS;
+      const artifactsRoot = yield* Config.String("NATIVE_PREVIEW_ARTIFACTS").pipe(
+        Config.withDefault(undefined),
+      );
       if (artifactsRoot) yield* fs.makeDirectory(artifactsRoot, { recursive: true, mode: 0o700 });
       const artifacts = yield* fs.makeTempDirectory({
         ...(artifactsRoot ? { directory: artifactsRoot } : {}),
@@ -172,5 +176,5 @@ effectIt.live.skipIf(HostProcess.Platform.defaultValue() !== "win32")(
         status: "captured-awaiting-pixel-review",
       });
       expect(manifest.stages).toHaveLength(3);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.provide(NodeCrypto.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

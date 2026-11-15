@@ -2071,7 +2071,7 @@ export async function main(options: LauncherOptions = {}): Promise<void> {
   try {
     // What the service manager started the launcher with. It locates the unit; service.env
     // changes only what the server gets.
-    const managerEnvironment = {
+    const managerEnvironment: NodeJS.ProcessEnv = {
       ...process.env,
       T3CODE_HOME: baseDir,
       ...(options.serviceUnit === undefined ? {} : { [SERVICE_UNIT_ENV]: options.serviceUnit }),

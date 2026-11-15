@@ -3686,7 +3686,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           EffectWorker.OrchestrationEffectExecutorV2.of({
             execute: (effect) =>
               effect.threadId === otherThreadId
-                ? Deferred.succeed(otherStarted, undefined)
+                ? Deferred.succeed(otherStarted, undefined).pipe(Effect.asVoid)
                 : Ref.updateAndGet(wedgedCount, (count) => count + 1).pipe(
                     Effect.flatMap((count) =>
                       count === wedgedThreadIds.length

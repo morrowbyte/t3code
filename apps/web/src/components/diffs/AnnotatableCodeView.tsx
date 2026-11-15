@@ -397,7 +397,6 @@ export function AnnotatableCodeView({
         items={items}
         selectedLines={selectedLines}
         onSelectedLinesChange={setSelectedLines}
-        onRevealSearchMatch={(item) => onFileCollapsedChange(item.id, false)}
         options={{
           ...options,
           enableGutterUtility: !hasOpenComment,

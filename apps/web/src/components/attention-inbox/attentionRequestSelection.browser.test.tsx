@@ -3,7 +3,10 @@ import { EnvironmentId, NodeId, RuntimeRequestId, TurnItemId } from "@t3tools/co
 import { expect, it } from "vite-plus/test";
 import { render } from "../../../test/render";
 import { makeThreadProjectionFixture } from "../../test-fixtures";
-import { usePendingThreadRequests } from "../chat/usePendingThreadRequests";
+import {
+  usePendingThreadRequests,
+  usePendingUserInputDraft,
+} from "../chat/usePendingThreadRequests";
 
 function questionProjection() {
   const projection = makeThreadProjectionFixture();
@@ -70,6 +73,12 @@ function Probe({
     composerRef,
     setThreadError: () => {},
   });
+  const { activePendingDraftAnswers } = usePendingUserInputDraft({
+    environmentId,
+    activeThreadId: projection.thread.id,
+    activePendingUserInput: state.activePendingUserInput,
+    supportsQuestionAttachments: false,
+  });
   return (
     <>
       <output aria-label="Active question">
@@ -82,7 +91,7 @@ function Probe({
         {state.pendingUserInputs.length + state.pendingApprovals.length}
       </output>
       <output aria-label="Draft answer">
-        {state.activePendingDraftAnswers.answer?.customAnswer ?? "empty"}
+        {activePendingDraftAnswers.answer?.customAnswer ?? "empty"}
       </output>
       <button
         type="button"

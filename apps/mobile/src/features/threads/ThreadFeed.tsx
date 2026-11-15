@@ -3686,7 +3686,7 @@ const ThreadFeedContent = memo(function ThreadFeedContent(
     readingPosition &&
     !messageJumpPending &&
     !presentedFeed.some((entry) => entry.id === readingPosition.anchor.key)
-      ? messageFoldRunId(props.feed, readingPosition.anchor.key)
+      ? messageFoldRunId(props.feed, readingPosition.anchor.key, presentedFeed)
       : null;
   if (readingRunId && !expandedTurnIds.has(readingRunId)) {
     setInteractionState((current) => ({

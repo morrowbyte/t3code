@@ -16,6 +16,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
 import { useEnvironmentScope } from "../../state/session";
+import { useProject, useThreadShell } from "../../state/entities";
 import { environmentThreadDetails, environmentThreadShells } from "../../state/threads";
 import { useThreadRequests } from "../../state/use-selected-thread-requests";
 import { PendingApprovalCard } from "./PendingApprovalCard";
@@ -35,6 +36,10 @@ function RequestCard(props: {
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const maxHeight = useDerivedValue(() => 320);
+  const shell = useThreadShell(props.group.origin);
+  const project = useProject(
+    shell ? { environmentId: props.group.origin.environmentId, projectId: shell.projectId } : null,
+  );
   const { connectedEnvironments } = useRemoteConnections();
   const environmentLabel = connectedEnvironments.find(
     (entry) => entry.environmentId === props.group.origin.environmentId,
@@ -61,6 +66,8 @@ function RequestCard(props: {
           inline
           origin={props.group.origin}
           environmentId={props.group.origin.environmentId}
+          threadId={props.group.origin.threadId}
+          workspaceRoot={props.group.worktreePath ?? project?.workspaceRoot ?? null}
           pendingUserInput={request.activePendingUserInput}
           maxHeight={maxHeight}
           collapsed={collapsed}

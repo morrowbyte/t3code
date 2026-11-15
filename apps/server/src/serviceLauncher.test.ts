@@ -23,6 +23,7 @@ import {
 import {
   databaseBackupBlocker,
   Launcher,
+  main,
   readServiceEnvironment,
   type BackupSpaceProbe,
   readServiceState,

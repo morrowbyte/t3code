@@ -516,7 +516,15 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
     Effect.gen(function* () {
       const { makeService, commands, control } = yield* makeHarness();
       control.busNeedsRuntimeDir = true;
-      const service = yield* makeService(undefined, "1.2.3", undefined, false, undefined, true);
+      const service = yield* makeService(
+        undefined,
+        "1.2.3",
+        undefined,
+        false,
+        undefined,
+        undefined,
+        true,
+      );
 
       expect(yield* service.install().pipe(Effect.flip)).toMatchObject({
         _tag: "BootServicePrerequisiteError",
@@ -531,7 +539,15 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       const { makeService, commands, control } = yield* makeHarness();
       control.linger = undefined;
       control.managerReachable = false;
-      const service = yield* makeService(undefined, "1.2.3", undefined, false, undefined, true);
+      const service = yield* makeService(
+        undefined,
+        "1.2.3",
+        undefined,
+        false,
+        undefined,
+        undefined,
+        true,
+      );
 
       expect(yield* service.install().pipe(Effect.flip)).toMatchObject({
         _tag: "BootServicePrerequisiteError",
@@ -669,6 +685,7 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
           undefined,
           false,
           undefined,
+          undefined,
           false,
           null,
         );
@@ -682,6 +699,7 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
           undefined,
           false,
           undefined,
+          undefined,
           false,
           null,
         );
@@ -694,12 +712,22 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
           undefined,
           false,
           undefined,
+          undefined,
           false,
           "/replacement/bin",
         );
         expect((yield* replacementCli.status).current).toBe(false);
         expect((yield* replacementCli.install()).installBinDir).toBe("/replacement/bin");
-        const laterCli = yield* makeService("", "1.2.4", undefined, false, undefined, false, "");
+        const laterCli = yield* makeService(
+          "",
+          "1.2.4",
+          undefined,
+          false,
+          undefined,
+          undefined,
+          false,
+          "",
+        );
         expect((yield* laterCli.status).current).toBe(true);
         expect((yield* laterCli.install()).installBinDir).toBe("/replacement/bin");
       }),

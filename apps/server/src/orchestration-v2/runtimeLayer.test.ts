@@ -10,6 +10,7 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as ProviderInstallationGate from "../provider/ProviderInstallationGate.ts";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
@@ -114,6 +115,7 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as DeviceHost from "../device/DeviceHost.ts";
 import * as DeviceService from "../device/DeviceService.ts";
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
@@ -140,6 +142,7 @@ const layerRuntime = RuntimeLayer.layer.pipe(
 
 const fixtureEnvironmentId = EnvironmentId.make("environment:observatory-fixture:runtimeLayer");
 const layerPlatformTest = Layer.mergeAll(
+  ProviderInstallationGate.layer,
   NodeServices.layer,
   NodeCrypto.layer,
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
@@ -1501,6 +1504,10 @@ it.effect.each(["enabled", "opt-out", "missing", "deleted", "foreign"] as const)
       }).pipe(
         Effect.provide(
           RuntimeLayer.layerProduction.pipe(
+            Layer.provide(DocumentText.layer),
+            Layer.provide(
+              Layer.effect(DeviceService.DeviceService, DeviceService.makeWithHosts(new Map())),
+            ),
             Layer.provide(ManagedPolicy.layerTest()),
             Layer.provide(layerTurnCosts),
             Layer.provide(layerCompute),

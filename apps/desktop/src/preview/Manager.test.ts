@@ -262,7 +262,7 @@ const managerLayer = (platform: NodeJS.Platform = "darwin") =>
     Layer.provideMerge(DesktopBrowserHost.layer),
     Layer.provideMerge(layerBrowserSession),
     Layer.provideMerge(
-      Layer.mock(PreviewPasskeys.PreviewPasskeys)({
+      Layer.mock(PreviewPasskeys.PreviewPasskeys, {
         bridgeEnabled: false,
         installSessionHandlers: () => {},
         attachGuest: () => () => {},
@@ -1324,7 +1324,7 @@ describe("PreviewManager", () => {
           }
           expect(target?.current()).toBe(false);
           expect(
-            Exit.isFailure(yield* Effect.exit(Effect.tryPromise(() => target!.enterPrivate()))),
+            Exit.isFailure(yield* Effect.exit(tryAutofill(() => target!.enterPrivate()))),
           ).toBe(true);
           expect(fixture.wc.executeJavaScriptInIsolatedWorld).not.toHaveBeenCalled();
           expect(fixture.wc.insertText).not.toHaveBeenCalled();
@@ -1395,7 +1395,7 @@ describe("PreviewManager", () => {
           entered.resolve();
           return settled.promise;
         });
-        const assertion = yield* Effect.tryPromise(async () => {
+        const assertion = yield* tryAutofill(async () => {
           await target!.assertPrivate();
         }).pipe(Effect.forkScoped);
         yield* Effect.promise(() => entered.promise);
@@ -1795,13 +1795,15 @@ describe("PreviewManager", () => {
             }
             return found;
           });
+        const browserHost = yield* DesktopBrowserHost.make;
         const manager = yield* PreviewManager.make.pipe(
           Effect.provideService(FileSystem.FileSystem, { ...fs, exists }),
           Effect.provide(
             Layer.mergeAll(
               layerEnvironment,
               layerBrowserSession,
-              Layer.mock(DesktopBrowserHost.DesktopBrowserHost)({
+              Layer.mock(DesktopBrowserHost.DesktopBrowserHost, {
+                ...browserHost,
                 attach: () => {},
                 detach: () => {},
                 setShown: () => {},
@@ -1812,12 +1814,12 @@ describe("PreviewManager", () => {
                 placeDownload: () => true,
                 configureTargetSession: async () => {},
               }),
-              Layer.mock(PreviewPasskeys.PreviewPasskeys)({
+              Layer.mock(PreviewPasskeys.PreviewPasskeys, {
                 bridgeEnabled: false,
                 installSessionHandlers: () => {},
                 attachGuest: () => () => {},
               }),
-              Layer.mock(DesktopRendererHistory.DesktopRendererHistory)({}),
+              Layer.mock(DesktopRendererHistory.DesktopRendererHistory, {}),
               Layer.succeed(HostProcess.Platform, "linux"),
             ),
           ),

@@ -242,7 +242,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
           }),
         );
         if (!instance.consumeResetCredit) throw new Error("Missing native reset credit operation");
-        yield* instance.consumeResetCredit().pipe(Effect.exit);
+        yield* instance.consumeResetCredit(undefined).pipe(Effect.exit);
         expect(commands).toHaveLength(1);
         expect(commands[0]?.command).toBe(binary);
         expect(commands[0]?.env.WEA28_RESET_MARKER).toBe("selected-instance");

@@ -241,7 +241,7 @@ export function getKeyboardTraitOptions(
     | "modelOptions"
     | "instanceId"
     | "reportedModelSelection"
-    | "planModeEnabled"
+    | "includePlanAgent"
   > & { readonly prompt: string },
   kind: "reasoning" | "serviceTier",
 ) {
@@ -252,7 +252,7 @@ export function getKeyboardTraitOptions(
     readPromptUltrathink(input.prompt),
     input.modelOptions,
     true,
-    input.planModeEnabled,
+    input.includePlanAgent,
   );
   if (selected.modelIsUnavailable) return [];
   const descriptor =

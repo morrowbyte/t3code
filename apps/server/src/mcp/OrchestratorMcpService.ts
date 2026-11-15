@@ -1998,10 +1998,11 @@ const make = Effect.gen(function* () {
       task.completionDelivery?.state !== "acknowledged" &&
       task.completionDelivery?.state !== "disposed"
     ) {
-      const parentProjection = yield* loadCallerRecords(scope.thread.threadId, ["runs"]);
+      const callerThread = scope.thread;
+      const parentProjection = yield* loadCallerRecords(callerThread.threadId, ["runs"]);
       const observingRun = ThreadManagementService.latestActiveRun({
         runs: parentProjection.runs.filter(
-          (run) => run.providerInstanceId === scope.thread.providerInstanceId,
+          (run) => run.providerInstanceId === callerThread.providerInstanceId,
         ),
       });
       const acknowledgementRequestKey = yield* requestKey(undefined);
@@ -2114,10 +2115,11 @@ const make = Effect.gen(function* () {
       task.completionDelivery?.state !== "acknowledged" &&
       task.completionDelivery?.state !== "disposed"
     ) {
-      const parentProjection = yield* loadCallerRecords(scope.thread.threadId, ["runs"]);
+      const callerThread = scope.thread;
+      const parentProjection = yield* loadCallerRecords(callerThread.threadId, ["runs"]);
       const observingRun = ThreadManagementService.latestActiveRun({
         runs: parentProjection.runs.filter(
-          (run) => run.providerInstanceId === scope.thread.providerInstanceId,
+          (run) => run.providerInstanceId === callerThread.providerInstanceId,
         ),
       });
       yield* threadManagement
@@ -2719,7 +2721,11 @@ const make = Effect.gen(function* () {
               (run.delegatedTaskId === input.taskId || run.id === current.childRunId),
           )
         ) {
-          if (yield* cancelOrphan) return { taskId: input.taskId, status: "cancelled" };
+          if (yield* cancelOrphan)
+            return {
+              taskId: input.taskId,
+              status: "cancelled",
+            } satisfies OrchestratorMcpTaskCancelResult;
           return yield* failure(
             "task_not_cancellable",
             `Delegated task ${input.taskId} has no interruptible child run.`,
@@ -2737,7 +2743,7 @@ const make = Effect.gen(function* () {
         return {
           taskId: input.taskId,
           status: "cancel_requested",
-        };
+        } satisfies OrchestratorMcpTaskCancelResult;
       }),
   );
 
@@ -4178,6 +4184,10 @@ const make = Effect.gen(function* () {
               yield* threadLaunch.checkWorktreeBase({ projectId, workspaceStrategy }).pipe(
                 Effect.catchTags({
                   ThreadLaunchBaseRefError: (error) => failure("invalid_request", error.message),
+                  ThreadLaunchBranchConflictError: (error) =>
+                    failure("invalid_request", error.message),
+                  ThreadLaunchNotRepositoryError: (error) =>
+                    failure("invalid_request", error.message),
                 }),
               );
             return {

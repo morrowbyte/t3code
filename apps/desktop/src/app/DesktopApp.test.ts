@@ -44,6 +44,7 @@ import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import * as ElectronSafeStorage from "../electron/ElectronSafeStorage.ts";
+import * as DesktopBrowserHost from "../preview/DesktopBrowserHost.ts";
 import * as PreviewPasskeys from "../preview/Passkeys.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
@@ -220,6 +221,7 @@ it.effect.each([false, true])(
       const app = yield* runApp.pipe(
         Effect.provide(
           Layer.mergeAll(
+            DesktopBrowserHost.layer,
             Layer.mock(BrowserImport.BrowserImport, {}),
             Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {}),
             Layer.mock(DesktopBackendConfiguration.DesktopBackendConfiguration, {}),
@@ -311,6 +313,7 @@ const makeFixture = (input: {
     const state = {
       quitting: yield* Ref.make(input.quitting ?? false),
       backendReady: yield* Ref.make(false),
+      canInstallUpdates: yield* Ref.make(false),
       primaryBackendStartup: yield* SubscriptionRef.make<DesktopState.PrimaryBackendStartup>({
         _tag: "Starting",
       }),

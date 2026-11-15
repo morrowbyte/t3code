@@ -72,9 +72,9 @@ describe("V2 assistant streaming", () => {
     const running = message("partial");
     const final = message("complete", false);
     const buffered = makeAssistantStreamingFilter("turn");
-    expect(buffered(running, 0)).toBeNull();
-    expect(buffered(message("First\n\nSecond\n\n"), 500)).toBeNull();
-    expect(buffered(final, 501)).toBe(final);
+    expect(buffered.filter(running, 0)).toBeNull();
+    expect(buffered.filter(message("First\n\nSecond\n\n"), 500)).toBeNull();
+    expect(buffered.filter(final, 501)).toBe(final);
   });
 
   it("streams complete native visual records before the fence closes", () => {
@@ -83,16 +83,16 @@ describe("V2 assistant streaming", () => {
     const point = '{"type":"point","id":"c","label":"Day 1","value":12}\n';
     const partial = '{"type":"point","id":"c","label":"Day 2","value":1';
     const filter = makeAssistantStreamingFilter("paragraph");
-    expect(filter(turnItem(opening + chart + partial), 0)).toMatchObject({
+    expect(filter.filter(turnItem(opening + chart + partial), 0)).toMatchObject({
       turnItem: { text: opening + chart, streaming: true },
     });
-    expect(filter(turnItem(opening + chart + point + partial), 100)).toBeNull();
-    expect(filter(turnItem(opening + chart + point + partial), 400)).toMatchObject({
+    expect(filter.filter(turnItem(opening + chart + point + partial), 100)).toBeNull();
+    expect(filter.filter(turnItem(opening + chart + point + partial), 400)).toMatchObject({
       turnItem: { text: opening + chart + point, streaming: true },
     });
     const final = turnItem(opening + chart + point + "```", false);
-    expect(filter(final, 401)).toBe(final);
-    expect(makeAssistantStreamingFilter("turn")(turnItem(opening + chart), 0)).toBeNull();
+    expect(filter.filter(final, 401)).toBe(final);
+    expect(makeAssistantStreamingFilter("turn").filter(turnItem(opening + chart), 0)).toBeNull();
   });
 
   it.each(["```t3-ui", "~~~~t3-ui", "  ```t3-ui"])(
@@ -119,28 +119,28 @@ describe("V2 assistant streaming", () => {
       const item = (text: string, streaming = true) => turnItem(text, streaming, type);
       const filter = makeAssistantStreamingFilter("paragraph");
       const first = item("First");
-      expect(filter(first, 0)).toBe(type === "reasoning" ? first : null);
-      expect(filter(item("First\n\nSec"), 410)).toMatchObject({
+      expect(filter.filter(first, 0)).toBe(type === "reasoning" ? first : null);
+      expect(filter.filter(item("First\n\nSec"), 410)).toMatchObject({
         turnItem: {
           text: type === "reasoning" ? "First\n\nSec" : "First\n\n",
           streaming: true,
           type,
         },
       });
-      expect(filter(item("First\n\nSecond\n\nThi"), 510)).toBeNull();
-      expect(filter(item("First\n\nSecond\n\nThi"), 810)).toMatchObject({
+      expect(filter.filter(item("First\n\nSecond\n\nThi"), 510)).toBeNull();
+      expect(filter.filter(item("First\n\nSecond\n\nThi"), 810)).toMatchObject({
         turnItem: {
           text: type === "reasoning" ? "First\n\nSecond\n\nThi" : "First\n\nSecond\n\n",
           streaming: true,
         },
       });
       const final = item("First\n\nSecond\n\nThird", false);
-      expect(filter(final, 820)).toBe(final);
+      expect(filter.filter(final, 820)).toBe(final);
 
       const buffered = makeAssistantStreamingFilter("turn");
       const partial = item("First\n\nSecond");
-      expect(buffered(partial, 0)).toBe(type === "reasoning" ? partial : null);
-      expect(buffered(final, 1)).toBe(final);
+      expect(buffered.filter(partial, 0)).toBe(type === "reasoning" ? partial : null);
+      expect(buffered.filter(final, 1)).toBe(final);
     },
   );
 
@@ -169,11 +169,11 @@ describe("V2 assistant streaming", () => {
           completedAt: null,
         },
       };
-      expect(filter(running, 0)).toBeNull();
+      expect(filter.filter(running, 0)).toBeNull();
       const completed = { ...running, node: { ...running.node, status: "completed" as const } };
-      expect(filter(completed, 1)).toBe(completed);
+      expect(filter.filter(completed, 1)).toBe(completed);
       const tool = { ...running, node: { ...running.node, kind: "tool_call" as const } };
-      expect(filter(tool, 2)).toBe(tool);
+      expect(filter.filter(tool, 2)).toBe(tool);
     },
   );
 });

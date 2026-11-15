@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Bridges the standalone restore controller to Electron lifecycle callbacks.
 import * as DesktopRestoreStore from "@t3tools/shared/desktopRestore";
+import * as Config from "effect/Config";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -23,99 +24,123 @@ const decodePackage = Schema.decodeUnknownSync(
   ),
 );
 
+const optionalRestoreSetting = (name: string) =>
+  Config.String(name).pipe(Config.withDefault(undefined));
+
+const RestoreConfig = Config.all({
+  nixUpdaterPath: optionalRestoreSetting("T3CODE_NIX_UPDATER"),
+  nixDataDir: optionalRestoreSetting("T3CODE_NIX_DATA_DIR"),
+  legacyNixDataDir: optionalRestoreSetting("T3_MORROWBYTE_DATA_DIR"),
+  xdgDataHome: optionalRestoreSetting("XDG_DATA_HOME"),
+  nixLauncherPath: optionalRestoreSetting("T3CODE_NIX_LAUNCHER"),
+  maxVersions: optionalRestoreSetting("T3CODE_DESKTOP_RESTORE_MAX_VERSIONS"),
+  maxBytes: optionalRestoreSetting("T3CODE_DESKTOP_RESTORE_MAX_BYTES"),
+});
+
+class DesktopRestoreOperationError extends Schema.TaggedError<
+  DesktopRestoreOperationError,
+  { readonly brand: unique symbol }
+>()("DesktopRestoreOperationError", {
+  operation: Schema.Literals(["register", "close-session", "mark-healthy"]),
+  cause: Schema.Defect(),
+}) {}
+
 export const observe = Effect.fn("DesktopRestore.observe")(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
-  if (
-    !environment.isPackaged ||
-    environment.platform !== "linux" ||
-    (Option.isNone(environment.appImagePath) && !process.env.T3CODE_NIX_UPDATER)
-  )
+  if (!environment.isPackaged || environment.platform !== "linux") return;
+  const nixUpdaterPath = yield* optionalRestoreSetting("T3CODE_NIX_UPDATER").pipe(Effect.option);
+  if (Option.isNone(nixUpdaterPath)) {
+    yield* logWarning("Desktop restore configuration failed; restore remains unavailable.");
     return;
+  }
+  if (Option.isNone(environment.appImagePath) && !nixUpdaterPath.value) return;
   const pool = yield* DesktopBackendPool.DesktopBackendPool;
   const state = yield* DesktopState.DesktopState;
   const context = yield* Effect.context<never>();
   let session: (() => Promise<void>) | undefined;
-  const register = Effect.tryPromise(async () => {
-    const Electron = await import("electron");
-    const metadata = decodePackage(
-      await NodeFSP.readFile(NodePath.join(environment.appPath, "package.json"), "utf8"),
-    );
-    const build = metadata.t3codeRestore;
-    if (build === undefined) return;
-    if (build.version !== environment.appVersion)
-      throw new Error("Restore build metadata version mismatch.");
-    const baseDir = await NodeFSP.realpath(environment.baseDir);
-    const nixDataDir = process.env.T3CODE_NIX_UPDATER
-      ? await NodeFSP.realpath(
-          process.env.T3CODE_NIX_DATA_DIR ??
-            process.env.T3_MORROWBYTE_DATA_DIR ??
-            NodePath.join(
-              process.env.XDG_DATA_HOME ??
-                NodePath.join(environment.homeDirectory, ".local", "share"),
-              "t3code-morrowbyte",
-            ),
-        )
-      : null;
-    const appImage = Option.getOrUndefined(environment.appImagePath);
-    const identity: DesktopRestoreStore.DesktopRestoreIdentity = {
-      kind: nixDataDir === null ? "appimage" : "nix",
-      baseDir,
-      installPath:
-        nixDataDir === null
-          ? await NodeFSP.realpath(appImage!)
-          : NodePath.join(nixDataDir, "current"),
-      launcherPath:
-        nixDataDir === null
-          ? await NodeFSP.realpath(appImage!)
-          : (process.env.T3CODE_NIX_LAUNCHER ?? ""),
-      stateDir: await NodeFSP.realpath(environment.stateDir),
-      userDataDir: await NodeFSP.realpath(Electron.app.getPath("userData")),
-      profileId: Option.getOrNull(environment.profileId),
-      environmentId: (
-        await NodeFSP.readFile(NodePath.join(environment.stateDir, "environment-id"), "utf8")
-      ).trim(),
-      updaterPath:
-        nixDataDir === null
-          ? null
-          : NodePath.join(nixDataDir, "current", "libexec", "t3code-morrowbyte-update"),
-      nixDataDir,
-    };
-    await DesktopRestoreStore.registerDesktopRestoreBuild({
-      baseDir,
-      identity,
-      build,
-      ...(process.env.T3CODE_DESKTOP_RESTORE_MAX_VERSIONS
-        ? { maxVersions: Number(process.env.T3CODE_DESKTOP_RESTORE_MAX_VERSIONS) }
-        : {}),
-      ...(process.env.T3CODE_DESKTOP_RESTORE_MAX_BYTES
-        ? { maxBytes: Number(process.env.T3CODE_DESKTOP_RESTORE_MAX_BYTES) }
-        : {}),
-    });
-    if (session === undefined)
-      session = await DesktopRestoreStore.startDesktopRestoreSession({
-        baseDir,
-        appDataDirectory: environment.appDataDirectory,
-        passwordStore: Electron.app.commandLine.hasSwitch("password-store")
-          ? Electron.app.commandLine.getSwitchValue("password-store")
-          : null,
-        quiesce: () =>
-          Effect.runPromiseWith(context)(
-            Effect.gen(function* () {
-              if (yield* Ref.get(state.quitting))
-                return yield* Effect.die(new Error("Desktop is already quitting."));
-              yield* Ref.set(state.quitting, true);
-              const instances = yield* pool.list;
-              yield* Effect.forEach(
-                instances,
-                (instance) => instance.stop({ timeout: Duration.seconds(5) }),
-                { concurrency: "unbounded" },
-              );
-            }),
-          ),
-        quit: () => Electron.app.quit(),
-      });
-    return { baseDir, identity, build };
-  }).pipe(
+  const register = RestoreConfig.pipe(
+    Effect.flatMap((config) =>
+      Effect.tryPromise({
+        try: async () => {
+          const Electron = await import("electron");
+          const metadata = decodePackage(
+            await NodeFSP.readFile(NodePath.join(environment.appPath, "package.json"), "utf8"),
+          );
+          const build = metadata.t3codeRestore;
+          if (build === undefined) return;
+          if (build.version !== environment.appVersion)
+            throw new Error("Restore build metadata version mismatch.");
+          const baseDir = await NodeFSP.realpath(environment.baseDir);
+          const nixDataDir = config.nixUpdaterPath
+            ? await NodeFSP.realpath(
+                config.nixDataDir ??
+                  config.legacyNixDataDir ??
+                  NodePath.join(
+                    config.xdgDataHome ??
+                      NodePath.join(environment.homeDirectory, ".local", "share"),
+                    "t3code-morrowbyte",
+                  ),
+              )
+            : null;
+          const appImage = Option.getOrUndefined(environment.appImagePath);
+          const identity: DesktopRestoreStore.DesktopRestoreIdentity = {
+            kind: nixDataDir === null ? "appimage" : "nix",
+            baseDir,
+            installPath:
+              nixDataDir === null
+                ? await NodeFSP.realpath(appImage!)
+                : NodePath.join(nixDataDir, "current"),
+            launcherPath:
+              nixDataDir === null
+                ? await NodeFSP.realpath(appImage!)
+                : (config.nixLauncherPath ?? ""),
+            stateDir: await NodeFSP.realpath(environment.stateDir),
+            userDataDir: await NodeFSP.realpath(Electron.app.getPath("userData")),
+            profileId: Option.getOrNull(environment.profileId),
+            environmentId: (
+              await NodeFSP.readFile(NodePath.join(environment.stateDir, "environment-id"), "utf8")
+            ).trim(),
+            updaterPath:
+              nixDataDir === null
+                ? null
+                : NodePath.join(nixDataDir, "current", "libexec", "t3code-morrowbyte-update"),
+            nixDataDir,
+          };
+          await DesktopRestoreStore.registerDesktopRestoreBuild({
+            baseDir,
+            identity,
+            build,
+            ...(config.maxVersions ? { maxVersions: Number(config.maxVersions) } : {}),
+            ...(config.maxBytes ? { maxBytes: Number(config.maxBytes) } : {}),
+          });
+          if (session === undefined)
+            session = await DesktopRestoreStore.startDesktopRestoreSession({
+              baseDir,
+              appDataDirectory: environment.appDataDirectory,
+              passwordStore: Electron.app.commandLine.hasSwitch("password-store")
+                ? Electron.app.commandLine.getSwitchValue("password-store")
+                : null,
+              quiesce: () =>
+                Effect.runPromiseWith(context)(
+                  Effect.gen(function* () {
+                    if (yield* Ref.get(state.quitting))
+                      return yield* Effect.die(new Error("Desktop is already quitting."));
+                    yield* Ref.set(state.quitting, true);
+                    const instances = yield* pool.list;
+                    yield* Effect.forEach(
+                      instances,
+                      (instance) => instance.stop({ timeout: Duration.seconds(5) }),
+                      { concurrency: "unbounded" },
+                    );
+                  }),
+                ),
+              quit: () => Electron.app.quit(),
+            });
+          return { baseDir, identity, build };
+        },
+        catch: (cause) => new DesktopRestoreOperationError({ operation: "register", cause }),
+      }),
+    ),
     Effect.catch(() =>
       logWarning(
         "Desktop restore registration or health verification failed; restore remains unavailable.",
@@ -123,8 +148,11 @@ export const observe = Effect.fn("DesktopRestore.observe")(function* () {
     ),
   );
   yield* Effect.addFinalizer(() =>
-    Effect.tryPromise(async () => {
-      await session?.();
+    Effect.tryPromise({
+      try: async () => {
+        await session?.();
+      },
+      catch: (cause) => new DesktopRestoreOperationError({ operation: "close-session", cause }),
     }).pipe(Effect.ignore),
   );
   const registration = yield* register;
@@ -134,7 +162,10 @@ export const observe = Effect.fn("DesktopRestore.observe")(function* () {
       Effect.gen(function* () {
         const current = registration ?? (yield* register);
         if (current === undefined) return;
-        yield* Effect.tryPromise(() => DesktopRestoreStore.markDesktopRestoreHealthy(current)).pipe(
+        yield* Effect.tryPromise({
+          try: () => DesktopRestoreStore.markDesktopRestoreHealthy(current),
+          catch: (cause) => new DesktopRestoreOperationError({ operation: "mark-healthy", cause }),
+        }).pipe(
           Effect.catch(() => logWarning("Desktop restore runtime health verification failed.")),
         );
       }),

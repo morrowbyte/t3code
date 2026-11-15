@@ -32,7 +32,7 @@ import { mobilePreferencesAtom } from "../state/preferences";
 import { useOpenLinkedThread } from "../features/threads/useOpenLinkedThread";
 import { useLinkedEnvironments } from "../state/peerLinks";
 import { ComposerContextSheet } from "./ComposerContextSheet";
-import type { FilePreviewItem } from "./FilePreviewModal.types";
+import type { FilePreviewItem } from "./ui/FilePreviewModal.types";
 import { AppText as Text } from "./ui/AppText";
 import {
   composerDocumentAttachment,

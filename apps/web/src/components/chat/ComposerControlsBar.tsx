@@ -89,6 +89,7 @@ export function ComposerControlsBar(props: {
   terminalOpen: boolean;
   modelPickerOpen: boolean;
   onModelPickerOpenChange: (open: boolean) => void;
+  restoreModelPickerKeyboardFocus?: (() => HTMLElement | false | undefined) | undefined;
   modelPickerIconClassName: string | undefined;
   getModelDisabledReason: ChatComposerProps["getModelDisabledReason"];
 }) {
@@ -137,6 +138,7 @@ export function ComposerControlsBar(props: {
     terminalOpen,
     modelPickerOpen,
     onModelPickerOpenChange,
+    restoreModelPickerKeyboardFocus,
     modelPickerIconClassName,
     getModelDisabledReason,
   } = props;
@@ -255,6 +257,9 @@ export function ComposerControlsBar(props: {
         ? { activeProviderIconClassName: modelPickerIconClassName }
         : {})}
       onOpenChange={onModelPickerOpenChange}
+      {...(restoreModelPickerKeyboardFocus
+        ? { restoreKeyboardFocus: restoreModelPickerKeyboardFocus }
+        : {})}
       getModelDisabledReason={getModelDisabledReason}
       onOpenProviderSetup={onOpenProviderSetup}
     />

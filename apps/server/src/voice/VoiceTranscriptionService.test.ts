@@ -535,6 +535,7 @@ function recoveryServiceLayer(
             recommendedVersion: null,
             recommendedRange: null,
           }),
+        checkForUpdate: unexpected,
         start: unexpected,
         cancel: () => unexpected,
         state: unexpected,

@@ -5,12 +5,16 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
-import { getEnvironmentSpeechModels } from "@t3tools/client-runtime/voice-input";
+import {
+  getEnvironmentSpeechModels,
+  getEnvironmentSpeechStatus,
+} from "@t3tools/client-runtime/voice-input";
 import {
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   type EnvironmentSpeechModel,
+  type EnvironmentSpeechStatus,
   type ProjectId,
   type SpeechCustomWords,
   type SpeechPostProcessingOptions,
@@ -62,6 +66,7 @@ const mocks = vi.hoisted(() => ({
   transcripts: [] as Array<string | Error>,
   committed: vi.fn(),
   draft: "",
+  draftListeners: new Set<() => void>(),
 }));
 
 vi.mock("../state/session", () => ({
@@ -119,7 +124,7 @@ vi.mock("./runEnvironmentSpeech", () => ({ runEnvironmentSpeech: Effect.runPromi
 vi.mock("../components/ui/toast", () => ({ toastManager: { add: vi.fn() } }));
 vi.mock("@t3tools/client-runtime/voice-input", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@t3tools/client-runtime/voice-input")>()),
-  getEnvironmentSpeechStatus: (prepared: PreparedConnection) =>
+  getEnvironmentSpeechStatus: vi.fn<typeof getEnvironmentSpeechStatus>((prepared) =>
     Effect.sync(() => {
       mocks.statusRequests.push(prepared.environmentId);
       if (mocks.statusUnavailable) throw new Error("Temporarily offline");
@@ -137,6 +142,7 @@ vi.mock("@t3tools/client-runtime/voice-input", async (importOriginal) => ({
         benchmarkTier: "cpu",
       };
     }),
+  ),
   downloadEnvironmentSpeechModel: (_prepared: PreparedConnection, modelId: string) =>
     Effect.promise(async () => {
       await mocks.download(modelId);
@@ -243,6 +249,7 @@ function setup(options: { readonly destination?: string | null } = {}) {
   mocks.transcripts = [];
   mocks.committed.mockClear();
   mocks.draft = "";
+  mocks.draftListeners.clear();
 }
 
 function setDestination(environmentId: string | null) {
@@ -274,7 +281,12 @@ function Probe(props: {
     ownerKey: pending === "question" ? "question" : "draft",
     disabled: pending === "approval",
     ...(props.protectDraft ? { onDraftActiveChange } : {}),
-    draftText: mocks.draft,
+    subscribeDraft: (onChange) => {
+      mocks.draftListeners.add(onChange);
+      return () => {
+        mocks.draftListeners.delete(onChange);
+      };
+    },
     readDraft: () => ({
       text: mocks.draft,
       selection: { start: mocks.draft.length, end: mocks.draft.length },
@@ -312,7 +324,6 @@ function InactiveEditor(props: { readonly onDraftActiveChange: (active: boolean)
   useEnvironmentSpeechInput({
     environmentId: THREAD_ENV as EnvironmentId,
     ownerKey: "inactive-draft",
-    draftText: "",
     readDraft: () => ({ text: "", selection: { start: 0, end: 0 } }),
     commitDraft: () => {},
     ...props,
@@ -983,6 +994,39 @@ it("shares one status probe per destination across every mounted editor", async 
   expect(mocks.voice.available).toBe(true);
   expect(mocks.statusRequests).toEqual(["env-a"]);
 });
+
+it.each([false, true])(
+  "abandons a queued start after the draft changes (restored before render: %s)",
+  async (restore) => {
+    setup({ destination: "env-a" });
+    mocks.draft = "Original draft";
+    await using _screen = await render(<Probe protectDraft />);
+    const status = mocks.voice.status;
+    if (!status) throw new Error("Speech status did not load");
+    const response = Deferred.makeUnsafe<EnvironmentSpeechStatus>();
+    vi.mocked(getEnvironmentSpeechStatus).mockReturnValueOnce(Deferred.await(response));
+    let starting: Promise<void> | undefined;
+    await act(() => {
+      starting = mocks.voice.start();
+    });
+    await act(() => {
+      mocks.draft = "Edited draft";
+      for (const listener of mocks.draftListeners) listener();
+      if (restore) {
+        mocks.draft = "Original draft";
+        for (const listener of mocks.draftListeners) listener();
+      }
+      Deferred.doneUnsafe(response, Effect.succeed(status));
+    });
+    await act(() => starting);
+    expect(mocks.microphoneRequests).toEqual([]);
+    expect(mocks.voice.state.phase).toBe("idle");
+    expect(mocks.draftActive).toBe(false);
+    expect(mocks.committed).not.toHaveBeenCalled();
+    await act(() => mocks.voice.start());
+    expect(mocks.voice.state.phase).toBe("recording");
+  },
+);
 
 it("lets the user retry after a status failure without reselecting the destination", async () => {
   setup({ destination: "env-a" });

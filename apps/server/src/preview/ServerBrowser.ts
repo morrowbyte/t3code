@@ -3242,7 +3242,7 @@ const make = Effect.gen(function* () {
           fullScreenshot: snapshotInput?.fullScreenshot,
           includeScreenshot,
         } as const;
-        const read = () =>
+        const read = async () =>
           snapshotInput?.pixelsRequired === false
             ? ServerBrowserPage.snapshotMetadata(rendering)
             : ServerBrowserPage.snapshot(rendering);

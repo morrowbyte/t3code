@@ -168,8 +168,7 @@ const layerProviderSessionManagerProvided = ProviderSessionManager.layer.pipe(
       IdAllocator.layer,
       layerProviderEventIngestorProvided,
       ProjectionStore.layer,
-      ProviderInstallationGate.layer,
-    ),
+    ).pipe(Layer.provideMerge(ProviderInstallationGate.layer)),
   ),
 );
 
@@ -447,10 +446,9 @@ export const layerProduction = Layer.mergeAll(
       Layer.mergeAll(
         layerThreadManagementProvided,
         layerManagedProjectFoldersProvided,
-        layerProjectService,
         layerCommandReceiptStoreProvided,
         layerEventStoreProvided,
-      ),
+      ).pipe(Layer.provideMerge(layerProjectService)),
     ),
   ),
   WorktreeBranchSync.layer.pipe(

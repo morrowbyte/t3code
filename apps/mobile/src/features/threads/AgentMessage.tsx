@@ -78,7 +78,7 @@ export const AgentMessage = memo(function AgentMessage(
       {!originalOrder ? (
         <View className="shrink-0">
           <SymbolView
-            name={props.direction === "outgoing" ? "arrow.up.right" : "arrow.down.left"}
+            name={props.direction === "outgoing" ? "arrow.up.right" : "arrow.down"}
             size={20}
             tintColorClassName="accent-foreground-muted"
           />

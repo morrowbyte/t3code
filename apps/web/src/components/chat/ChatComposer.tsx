@@ -29,6 +29,7 @@ import {
   questionAttachmentDraftId,
   trackOpenQuestionAttachmentDraft,
   useQuestionAttachmentPreparation,
+  usePendingUserInputAnswers,
 } from "../../questionAttachments";
 import type {
   KeybindingCommand,
@@ -2237,7 +2238,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isComposerApprovalState ||
     activePendingIsResponding ||
     activePendingProgress?.activeQuestion?.allowCustomAnswer === false;
+  const subscribeSpeechDraft = useStableCallback((onChange: () => void) => {
+    const unsubscribeDraft = useComposerDraftStore.subscribe(onChange);
+    const unsubscribeAnswers = usePendingUserInputAnswers.subscribe(onChange);
+    return () => {
+      unsubscribeDraft();
+      unsubscribeAnswers();
+    };
+  });
   const speechInput = useEnvironmentSpeechInput({
+    subscribeDraft: subscribeSpeechDraft,
     environmentId,
     projectId: activeProjectId,
     projectName,
@@ -2723,7 +2733,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     );
   };
   const submitCitationAndSend = () => {
-    return submitComposer(
+    const submission = submitComposer(
       undefined,
       resolveComposerDispatchMode({
         running: phase === "running" || phase === "connecting",
@@ -2732,6 +2742,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         canSteer,
       }),
     );
+    return submission !== false;
   };
   const submitCitationAndSendStable = useStableCallback(submitCitationAndSend);
   // A question took the editor while a citation comment was

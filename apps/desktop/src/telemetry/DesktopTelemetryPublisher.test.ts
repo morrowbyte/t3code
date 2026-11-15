@@ -446,18 +446,20 @@ it.effect(
             Layer.succeed(DesktopShellEnvironment.DesktopShellEnvironment, {
               installIntoProcess: Effect.succeed(false),
               awaitDiscovery: Effect.succeed(false),
+              awaitUserShellDiscovery: Effect.succeed(false),
               updates: Stream.empty,
             }),
-            Layer.mock(ElectronPowerMonitor.ElectronPowerMonitor)({
+            Layer.mock(ElectronPowerMonitor.ElectronPowerMonitor, {
               isOnBatteryPower: Effect.succeed(false),
               getSystemIdleTime: Effect.succeed(0),
               getSystemIdleState: () => Effect.succeed("active"),
-              getCurrentThermalState: Effect.succeed("nominal"),
+              getCurrentThermalState:
+                Effect.succeed<ElectronPowerMonitor.ElectronThermalState>("nominal"),
               onSimpleEvent: () => Effect.void,
               onThermalStateChange: () => Effect.void,
               onSpeedLimitChange: () => Effect.void,
             }),
-            Layer.mock(MainRendererDiagnostics.MainRendererDiagnostics)({
+            Layer.mock(MainRendererDiagnostics.MainRendererDiagnostics, {
               read: () =>
                 Effect.gen(function* () {
                   reads++;

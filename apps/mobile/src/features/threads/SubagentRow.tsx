@@ -57,11 +57,7 @@ export function SubagentRow(props: {
     <View className="flex-row gap-3">
       <View className="h-5 justify-center">
         {props.conversation ? (
-          <SymbolView
-            name="arrow.down.left"
-            size={20}
-            tintColorClassName="accent-foreground-muted"
-          />
+          <SymbolView name="arrow.down" size={20} tintColorClassName="accent-foreground-muted" />
         ) : (
           <SubagentStatusDot tone={presentation.tone} placement="sheet" />
         )}

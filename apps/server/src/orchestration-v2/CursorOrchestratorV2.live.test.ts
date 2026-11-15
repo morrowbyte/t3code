@@ -34,6 +34,7 @@ import * as CodexInstallation from "../provider/CodexInstallation.ts";
 import * as CodexManagedTokenBroker from "../provider/CodexManagedTokenBroker.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ModelManifest from "../provider/ModelManifest.ts";
+import * as ProviderInstallationGate from "../provider/ProviderInstallationGate.ts";
 import * as ProviderInstanceRegistryHydration from "../provider/ProviderInstanceRegistryHydration.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -53,6 +54,7 @@ import { CURSOR_MODEL_SELECTION, SUBAGENT_PROMPT } from "./testkit/fixtures/shar
 
 const fixtureEnvironmentId = EnvironmentId.make("00000000-0000-4000-8000-000000000001");
 const layerPlatformTest = Layer.mergeAll(
+  ProviderInstallationGate.layer,
   Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
@@ -117,6 +119,7 @@ const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pi
       AntigravityInstallation.AntigravityInstallation.layer.pipe(
         Layer.provide(layerServerConfig.pipe(Layer.provide(layerPlatformTest))),
         Layer.provide(FetchHttpClient.layer),
+        Layer.provide(Layer.mergeAll(layerServerSettings, ModelManifest.layerTest)),
         Layer.provide(layerPlatformTest),
       ),
       Layer.mock(CodexInstallation.CodexInstallation)({
@@ -133,11 +136,11 @@ const layerLive = RuntimeLayer.layer.pipe(
   Layer.provide(TestUsageService.layer),
   Layer.provide(ProviderTurnStartServiceTestkit.layer),
   Layer.provide(McpSessionRegistryTestkit.layer),
-  Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStore),
   Layer.provide(layerServerConfig),
   Layer.provide(layerServerSettings),
   Layer.provide(layerProviderInstanceRegistry),
+  Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(ResetCreditCoordinator.layer),
   Layer.provide(layerBackgroundPolicy),
   Layer.provide(layerPlatformTest),

@@ -1176,7 +1176,10 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             <>
               {row.message.inputIntent === "steer" ||
               row.message.inputIntent === "promoted_queued_to_steer" ? (
-                <UserMessageIntentMarker intent={row.message.inputIntent} />
+                <UserMessageIntentMarker
+                  intent={row.message.inputIntent}
+                  unread={row.projectedItem?.item.status === "pending"}
+                />
               ) : null}
               {row.projectedItem &&
               row.projectedItem.item.status !== "completed" &&
