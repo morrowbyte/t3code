@@ -339,7 +339,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
     }),
   );
 
-  it.effect("advertises desktopAppUpdate only with desktop mode and the control fd", () =>
+  it.effect("requires desktop mode, control fd and update support for desktopAppUpdate", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -361,20 +361,34 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
           ),
         );
 
-      const withFd = yield* describeWith({ mode: "desktop", desktopTelemetryControlFd: 5 });
+      const withFd = yield* describeWith({
+        mode: "desktop",
+        desktopTelemetryControlFd: 5,
+        desktopAppUpdate: true,
+      });
       expect(withFd.capabilities.serverSelfUpdate).toBe("desktop-managed");
       expect(withFd.capabilities.desktopAppUpdate).toBe(true);
       expect(withFd.capabilities.serverSelfUpdateProgress).toBe(true);
       expect(withFd.capabilities.serverUpdateThreadContinuation).toBeUndefined();
 
-      const withoutFd = yield* describeWith({ mode: "desktop" });
+      const withoutFd = yield* describeWith({ mode: "desktop", desktopAppUpdate: true });
       expect(withoutFd.capabilities.serverSelfUpdate).toBeUndefined();
       expect(withoutFd.capabilities.desktopAppUpdate).toBeUndefined();
       expect(withoutFd.capabilities.serverSelfUpdateProgress).toBeUndefined();
       expect(withoutFd.capabilities.serverUpdateThreadContinuation).toBeUndefined();
 
-      const web = yield* describeWith({ mode: "web", desktopTelemetryControlFd: 5 });
+      const web = yield* describeWith({
+        mode: "web",
+        desktopTelemetryControlFd: 5,
+        desktopAppUpdate: true,
+      });
       expect(web.capabilities.desktopAppUpdate).toBeUndefined();
+      const disabled = yield* describeWith({
+        mode: "desktop",
+        desktopTelemetryControlFd: 5,
+        desktopAppUpdate: false,
+      });
+      expect(disabled.capabilities.desktopAppUpdate).toBeUndefined();
     }),
   );
 

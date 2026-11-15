@@ -209,6 +209,7 @@ describe("runMigrations", () => {
         [101, "ProviderTurnAttemptIndex"],
         [102, "TurnItemMessageOrdinalIndex"],
         [103, "TurnItemInlineWorkOutput"],
+        [104, "SubagentParentIndexJsonValid"],
       ]);
       assert.deepStrictEqual(yield* retained, before);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -477,6 +478,7 @@ it.effect("registers every migration file", () =>
     const path = yield* Path.Path;
     const dir = path.join(import.meta.dirname, "Migrations");
     const shippedForkIds: Record<string, number> = {
+      SubagentParentIndexJsonValid: 104,
       TurnItemMessageOrdinalIndex: 102,
       TurnItemInlineWorkOutput: 103,
       ProviderTurnAttemptIndex: 101,

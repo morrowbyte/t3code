@@ -404,9 +404,12 @@ describe("AgentScope service", () => {
   );
 
   it.effect("stops agents a killed server left before the first launch", () =>
-    withFakeSystemd(({ scope, units, calls, stateDir }) =>
+    withFakeSystemd(({ scope, units, calls, stateDir, cgroupRoot }) =>
       Effect.gen(function* () {
-        units.set(ownedAgentSlice(stateDir), { activeState: "active", result: "success" });
+        exitedAgent(units, cgroupRoot, ownedAgentSlice(stateDir), {
+          populated: true,
+          oomKills: 0,
+        });
         const agent = yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" });
         const stops = calls.filter(([, verb]) => verb === "stop");
         expect(stops).toEqual([["--user", "stop", ownedAgentSlice(stateDir)]]);
@@ -514,9 +517,12 @@ describe("AgentScope service", () => {
   );
   it.effect("refuses a new launch when stopping the previous server's exact slice fails", () =>
     withFakeSystemd(
-      ({ scope, units, calls, stateDir }) =>
+      ({ scope, units, calls, stateDir, cgroupRoot }) =>
         Effect.gen(function* () {
-          units.set(ownedAgentSlice(stateDir), { activeState: "active", result: "success" });
+          exitedAgent(units, cgroupRoot, ownedAgentSlice(stateDir), {
+            populated: true,
+            oomKills: 0,
+          });
           const launch = yield* scope
             .wrap({ command: "agent", args: [], name: "t", threadId: "a" })
             .pipe(Effect.exit);

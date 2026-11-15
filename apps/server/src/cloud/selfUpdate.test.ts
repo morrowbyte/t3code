@@ -293,13 +293,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server self upda
       expect(error.reason).toBe(
         `Could not prepare t3@1.1.0 while downloading the t3 release ${asset} (HTTP ${status} from cdn.example).`,
       );
-      expect(order).toEqual([]);
+      expect(order).toEqual(["prepare"]);
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       expect(yield* fs.readDirectory(path.join(baseDir, "runtime", "versions"))).toEqual([]);
       failDownload = false;
       expect((yield* selfUpdate.update({ targetVersion: "1.1.0" })).updateId).toBe("launcher-id");
-      expect(order).toEqual(["extract", "preflight", "accept"]);
+      expect(order).toEqual(["prepare", "prepare", "extract", "preflight", "accept"]);
     }),
   );
 
@@ -438,9 +438,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server self upda
         targetVersion: "1.1.0",
         method: "boot-service",
       });
-      expect(order).toEqual(["download", "extract", "preflight"]);
+      expect(order).toEqual(["prepare", "download", "extract", "preflight"]);
       expect((yield* selfUpdate.update({ targetVersion: "1.1.0" })).updateId).toBe("launcher-id");
-      expect(order).toEqual(["download", "extract", "preflight", "preflight", "accept"]);
+      expect(order).toEqual([
+        "prepare",
+        "download",
+        "extract",
+        "preflight",
+        "prepare",
+        "preflight",
+        "accept",
+      ]);
     }),
   );
 
@@ -461,7 +469,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server self upda
       expect(exit._tag === "Failure" ? String(exit.cause) : "launcher handoff").toBe(
         "launcher handoff",
       );
-      expect(order).toEqual(["download", "extract", "preflight", "accept"]);
+      expect(order).toEqual(["prepare", "download", "extract", "preflight", "accept"]);
     }),
   );
 

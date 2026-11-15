@@ -432,8 +432,12 @@ it.effect("registers real MCP tools and returns bound data while rejecting an ou
           .pipe(
             Effect.provideService(McpInvocationContext.McpInvocationContext, outside),
             Effect.provideService(McpSchema.McpServerClient, client),
+            Effect.flip,
           );
-        expect(refused.isError).toBe(true);
+        expect(refused).toMatchObject({
+          _tag: "InvalidParams",
+          message: "Tool 'jarvis_submit' not found",
+        });
         expect(yield* Ref.get(f.calls)).toHaveLength(1);
       }).pipe(Effect.provide(layer));
     }),

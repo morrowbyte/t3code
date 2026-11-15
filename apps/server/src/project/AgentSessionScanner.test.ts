@@ -4217,13 +4217,11 @@ it.layer(NodeServices.layer)("Codex compaction recovery outcomes", (it) => {
       }),
   );
 
-  it.effect("distinguishes metadata-only from a synthetic generic plaintext summary", () =>
+  it.effect("ignores metadata-only sessions and reports plaintext summaries", () =>
     Effect.gen(function* () {
       const lines = opaqueCompactionShapeFixtures[0].trim().split("\n");
       const metadataOnly = yield* scanRecoveryFixture([lines[0], lines[2]].join("\n"));
-      expect(metadataOnly.outcomes).toMatchObject([
-        { outcome: { recoverability: "metadata-only", reason: "no-visible-messages" } },
-      ]);
+      expect(metadataOnly.outcomes).toEqual([]);
       // Generic negative fixture, not the format observed in the six native records.
       lines[1] = JSON.stringify({
         type: "response_item",
