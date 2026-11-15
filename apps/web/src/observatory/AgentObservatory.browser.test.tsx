@@ -39,7 +39,11 @@ vi.mock("@t3tools/client-runtime/observatory", async (importOriginal) => {
   };
 });
 vi.mock("../connection/catalog", () => ({ environmentCatalog: { catalogValueAtom: null } }));
-vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: null }));
+vi.mock("../connection/runtime", async () => {
+  const { Atom } = await import("effect/reactivity");
+  const Layer = await import("effect/Layer");
+  return { connectionAtomRuntime: Atom.runtime(Layer.empty) };
+});
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>();
   return { ...actual, useNavigate: () => openThread };

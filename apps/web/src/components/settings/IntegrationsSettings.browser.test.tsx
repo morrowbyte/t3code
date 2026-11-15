@@ -7,6 +7,8 @@ import { StrictMode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
+import "~/index.css";
+
 import { render } from "../../../test/render";
 import { ensureClientSettingsHydrated, persistClientSettingsPatch } from "../../hooks/useSettings";
 import { buildSidebarProjectSnapshots } from "../../sidebarProjectGrouping";

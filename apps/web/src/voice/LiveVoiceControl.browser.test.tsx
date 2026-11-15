@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { act, fakeTimers, render as renderUi, stubGlobal } from "../../test/render";
 import {
+  COMPOSER_CONTEXT_PREVIEW_COMMENT_MAX_CHARS,
   EnvironmentId,
   LiveVoiceError,
   liveVoicePublicErrorMessage,
@@ -895,7 +896,17 @@ describe("selected preview context during a call", () => {
       await act(async () => voiceFixture.publish?.({ ...state, lease }));
     expect(commands.context).not.toHaveBeenCalled();
     await act(async () => voiceFixture.publish?.(state));
-    expect(commands.context.mock.calls[0]?.[0].input.context).toHaveLength(24_000);
+    const boundedContext = commands.context.mock.calls[0]?.[0].input.context;
+    const truncationMarker = "\n… truncated …";
+    const boundedComment =
+      "x".repeat(COMPOSER_CONTEXT_PREVIEW_COMMENT_MAX_CHARS - truncationMarker.length) +
+      truncationMarker;
+    expect(boundedComment).toHaveLength(COMPOSER_CONTEXT_PREVIEW_COMMENT_MAX_CHARS);
+    expect(boundedContext).toContain(`comment: ${boundedComment}`);
+    expect(boundedContext).not.toContain("x".repeat(COMPOSER_CONTEXT_PREVIEW_COMMENT_MAX_CHARS));
+    expect(boundedContext).toContain("http://localhost:7191");
+    expect(boundedContext).toContain("Selected preview");
+    expect(boundedContext?.length).toBeLessThanOrEqual(24_000);
     await act(async () =>
       usePreviewSelectionStore
         .getState()
@@ -907,7 +918,12 @@ describe("selected preview context during a call", () => {
     );
     expect(commands.context).toHaveBeenLastCalledWith({
       environmentId: environmentA,
-      input: expect.objectContaining({ generation: 2, revision: 2 }),
+      input: {
+        leaseId: "selected-context-lease",
+        generation: 2,
+        revision: 2,
+        context: boundedContext,
+      },
     });
   });
 
