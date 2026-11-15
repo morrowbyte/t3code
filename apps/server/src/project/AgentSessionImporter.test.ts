@@ -414,7 +414,20 @@ it.effect("tolerates a missing transcript owner but propagates failed ownership 
       source: source.source,
     });
     const importer = yield* makeImporter([source]);
-    expect(yield* importer.run).toEqual({ importedCount: 1, skippedCount: 0 });
+    expect(yield* importer.run).toEqual({
+      importedCount: 1,
+      skippedCount: 0,
+      outcomes: [
+        {
+          providerInstanceId: source.source.providerInstanceId,
+          providerSessionId: source.source.providerSessionId,
+          status: "imported",
+          recoverability: "conversation",
+          reason: "imported",
+          nativeContinuationEligible: true,
+        },
+      ],
+    });
 
     yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = '{}' WHERE thread_id = ${threadId}`;
     expect(yield* Effect.flip(importer.run)).toMatchObject({
@@ -636,6 +649,10 @@ it.effect("imports messages once and preserves the provider native resume bindin
             imported
               ? Effect.succeed({
                   thread: { id: threadId, projectId, historyOrigin: "v1_import" },
+                  messages: [
+                    { role: "user", text: "Fix it" },
+                    { role: "assistant", text: "Fixed" },
+                  ],
                 } as never)
               : Effect.fail(new Orchestrator.OrchestratorProjectionError({ threadId })),
         }),
@@ -677,7 +694,7 @@ it.effect("imports messages once and preserves the provider native resume bindin
       ],
     });
     expect(yield* importer.importRecentAgentThreads({ projectId })).toEqual({
-      importedCount: 1,
+      importedCount: 0,
       skippedCount: 0,
       outcomes: [
         {
@@ -742,7 +759,28 @@ it.effect("counts only new threads when re-importing cached and recovered transc
     );
     const recovered = candidate(CODEX_MODEL_SELECTION, "recovered");
     const initial = yield* makeImporter([cached, recovered]);
-    expect(yield* initial.run).toEqual({ importedCount: 2, skippedCount: 0 });
+    expect(yield* initial.run).toEqual({
+      importedCount: 2,
+      skippedCount: 0,
+      outcomes: [
+        {
+          providerInstanceId: cached.source.providerInstanceId,
+          providerSessionId: null,
+          status: "imported",
+          recoverability: "conversation",
+          reason: "imported",
+          nativeContinuationEligible: false,
+        },
+        {
+          providerInstanceId: recovered.source.providerInstanceId,
+          providerSessionId: recovered.source.providerSessionId,
+          status: "imported",
+          recoverability: "conversation",
+          reason: "imported",
+          nativeContinuationEligible: true,
+        },
+      ],
+    });
     const before = yield* events.read({ threadId: importId(recovered) }).pipe(Stream.runCollect);
     // The file changed on disk but still holds the imported messages.
     recovered.source.size += 100;
@@ -757,7 +795,44 @@ it.effect("counts only new threads when re-importing cached and recovered transc
       { _tag: "Skipped" },
     ]);
 
-    expect(yield* repeated.run).toEqual({ importedCount: 1, skippedCount: 1 });
+    expect(yield* repeated.run).toEqual({
+      importedCount: 1,
+      skippedCount: 1,
+      outcomes: [
+        {
+          providerInstanceId: cached.source.providerInstanceId,
+          providerSessionId: null,
+          status: "already-imported",
+          recoverability: "conversation",
+          reason: "already-imported",
+          nativeContinuationEligible: false,
+        },
+        {
+          providerInstanceId: recovered.source.providerInstanceId,
+          providerSessionId: recovered.source.providerSessionId,
+          status: "already-imported",
+          recoverability: "conversation",
+          reason: "already-imported",
+          nativeContinuationEligible: true,
+        },
+        {
+          providerInstanceId: duplicate.providerInstanceId,
+          providerSessionId: duplicate.providerSessionId,
+          status: "duplicate",
+          recoverability: "conversation",
+          reason: "duplicate",
+          nativeContinuationEligible: false,
+        },
+        {
+          providerInstanceId: fresh.source.providerInstanceId,
+          providerSessionId: fresh.source.providerSessionId,
+          status: "imported",
+          recoverability: "conversation",
+          reason: "imported",
+          nativeContinuationEligible: true,
+        },
+      ],
+    });
     expect(yield* events.read({ threadId: importId(recovered) }).pipe(Stream.runCollect)).toEqual(
       before,
     );
@@ -783,7 +858,20 @@ it.effect("does not certify new native history after a partial import retry", ()
     const threadId = importId(original);
     const importer = yield* makeImporter([original]);
     yield* sql`CREATE TEMP TRIGGER fail_runtime BEFORE INSERT ON provider_session_runtime BEGIN SELECT RAISE(ABORT, 'test runtime failure'); END`;
-    expect(yield* importer.run).toEqual({ importedCount: 0, skippedCount: 1 });
+    expect(yield* importer.run).toEqual({
+      importedCount: 0,
+      skippedCount: 1,
+      outcomes: [
+        {
+          providerInstanceId: original.source.providerInstanceId,
+          providerSessionId: original.source.providerSessionId,
+          status: "skipped",
+          recoverability: "conversation",
+          reason: "import-failed",
+          nativeContinuationEligible: false,
+        },
+      ],
+    });
     yield* sql`DROP TRIGGER fail_runtime`;
     expect(yield* runtimes.list()).toEqual([]);
     const continued = candidate(CODEX_MODEL_SELECTION, original.source.providerSessionId);
@@ -797,6 +885,16 @@ it.effect("does not certify new native history after a partial import retry", ()
     expect(yield* (yield* makeImporter([continued])).run).toEqual({
       importedCount: 0,
       skippedCount: 1,
+      outcomes: [
+        {
+          providerInstanceId: continued.source.providerInstanceId,
+          providerSessionId: continued.source.providerSessionId,
+          status: "skipped",
+          recoverability: "conversation",
+          reason: "import-failed",
+          nativeContinuationEligible: false,
+        },
+      ],
     });
     expect(yield* runtimes.list()).toEqual([]);
     expect(
@@ -820,6 +918,16 @@ it.effect("does not record a changed transcript as imported without its new mess
     expect(yield* (yield* makeImporter([first])).run).toEqual({
       importedCount: 1,
       skippedCount: 0,
+      outcomes: [
+        {
+          providerInstanceId: first.source.providerInstanceId,
+          providerSessionId: null,
+          status: "imported",
+          recoverability: "conversation",
+          reason: "imported",
+          nativeContinuationEligible: false,
+        },
+      ],
     });
 
     const continued = candidate(
@@ -1272,8 +1380,50 @@ it.effect("repeated imports reach linked-worktree sessions behind the scan budge
       scanner: Context.get(scannerContext, AgentSessionScanner.AgentSessionScanner),
     });
 
-    expect(yield* importer.run).toEqual({ importedCount: 100, skippedCount: 1 });
-    expect(yield* importer.run).toEqual({ importedCount: 1, skippedCount: 0 });
+    expect(yield* importer.run).toEqual({
+      importedCount: 100,
+      skippedCount: 1,
+      outcomes: [
+        ...Array.from({ length: 100 }, (_, index) => ({
+          providerInstanceId: CODEX_MODEL_SELECTION.instanceId,
+          providerSessionId: `session-${index}`,
+          status: "imported",
+          recoverability: "conversation",
+          reason: "imported",
+          nativeContinuationEligible: true,
+        })),
+        {
+          providerInstanceId: CODEX_MODEL_SELECTION.instanceId,
+          providerSessionId: null,
+          status: "skipped",
+          recoverability: "unrecoverable",
+          reason: "budget-exceeded",
+          nativeContinuationEligible: false,
+        },
+      ],
+    });
+    expect(yield* importer.run).toEqual({
+      importedCount: 1,
+      skippedCount: 0,
+      outcomes: [
+        ...Array.from({ length: 100 }, (_, index) => ({
+          providerInstanceId: CODEX_MODEL_SELECTION.instanceId,
+          providerSessionId: `session-${index}`,
+          status: "already-imported",
+          recoverability: "conversation",
+          reason: "already-imported",
+          nativeContinuationEligible: true,
+        })),
+        {
+          providerInstanceId: CODEX_MODEL_SELECTION.instanceId,
+          providerSessionId: "session-100",
+          status: "imported",
+          recoverability: "conversation",
+          reason: "imported",
+          nativeContinuationEligible: true,
+        },
+      ],
+    });
     const oldest = yield* ProjectionStore.ProjectionStoreV2.pipe(
       Effect.flatMap((projections) =>
         projections.getThread(ThreadId.make("import:codex:session-100")),

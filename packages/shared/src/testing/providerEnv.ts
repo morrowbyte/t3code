@@ -5,6 +5,7 @@
 const PROVIDER_ENV_PREFIXES = ["ANTHROPIC_", "CLAUDE_", "CODEX_", "OPENAI_", "T3CODE_"];
 
 const KEPT_ENV = new Set([
+  "T3CODE_TEST_CHROMIUM_EXECUTABLE_PATH",
   // CI sets these so the transfer budget integration test writes its report for the job summary.
   "T3CODE_TRANSFER_BUDGET_REPORT_PATH",
   "T3CODE_TRANSFER_BUDGET_RESULT_PATH",

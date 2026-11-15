@@ -265,6 +265,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
       }).pipe(
         Effect.provideService(CodexInstallation.CodexInstallation, {
           ...installation,
+          acquire: () => Effect.die("Disabled Codex must not acquire a runtime"),
           resolve: () =>
             Effect.succeed({
               executablePath: "old-local-codex",
@@ -1136,7 +1137,12 @@ it.layer(layerTest)("CodexDriver", (it) => {
         displayName: "Codex auth watch",
         enabled: true,
         environment: [],
-        config: { ...CodexDriver.defaultConfig(), homePath: codexHome },
+        config: {
+          ...CodexDriver.defaultConfig(),
+          setupMode: "existing",
+          binaryPath: "fixture-codex",
+          homePath: codexHome,
+        },
       }).pipe(
         // OS watchers can miss events written right after they start, so the test supplies them.
         Effect.provideService(FileSystem.FileSystem, {

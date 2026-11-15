@@ -64,7 +64,6 @@ import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterReg
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
-import type { DispatchRuntimeOptions } from "../orchestration-v2/DispatchRuntimeOptions.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -672,10 +671,10 @@ describe("OrchestratorMcpService", () => {
         assert.equal(running.status, "running");
         assert.equal(running.next, ORCHESTRATOR_MCP_RUNNING_TASK_NEXT);
         for (const [webOrigin, expectedLink] of [
-          [undefined, "<t3-thread://v2/environment:mcp-next/thread:mcp-next-child>"],
+          [undefined, "[Child task](t3-thread://v2/environment:mcp-next/thread:mcp-next-child)"],
           [
             "https://box.example.ts.net",
-            "<t3-thread://v2/environment:mcp-next/thread:mcp-next-child>",
+            "[Child task](t3-thread://v2/environment:mcp-next/thread:mcp-next-child)",
           ],
         ] as const) {
           const external = yield* service.externalTaskStatus(
@@ -1032,7 +1031,7 @@ describe("OrchestratorMcpService", () => {
         const childRunId = RunId.make("run:mcp-cancel-dispose-failed-child");
         const taskId = NodeId.make("node:mcp-cancel-dispose-failed-task");
         const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
-        const runtimeOptions: Array<DispatchRuntimeOptions | undefined> = [];
+        const cancellations: Array<{ parentThreadId: ThreadId; taskId: NodeId }> = [];
         const parentProjection = {
           thread: { id: parentThreadId },
           runs: [],
@@ -1057,6 +1056,7 @@ describe("OrchestratorMcpService", () => {
           messages: [],
           subagents: [],
           providerThreads: [],
+          providerTurns: [],
           runtimeRequests: [],
         } as unknown as OrchestrationV2ThreadProjection;
         const layerDependencies = Layer.mergeAll(
@@ -1067,11 +1067,17 @@ describe("OrchestratorMcpService", () => {
               Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
             getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
             listAppOwnedChildThreadIds: () => Effect.succeed([]),
-            dispatch: (command, options) =>
+            dispatch: (command) =>
               Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+                Effect.as({} as never),
+              ),
+            stopDelegatedTasks: () => Effect.void,
+            cancelDelegatedTask: ({ parentThreadId, taskId, command, stopDescendants }) =>
+              stopDescendants(() => Effect.die("No remote descendants in this test")).pipe(
+                Effect.andThen(Ref.update(dispatched, (commands) => [...commands, command])),
                 Effect.tap(() =>
                   Effect.sync(() => {
-                    runtimeOptions.push(options);
+                    cancellations.push({ parentThreadId, taskId });
                   }),
                 ),
                 Effect.andThen(
@@ -1082,10 +1088,9 @@ describe("OrchestratorMcpService", () => {
                           commandType: command.type,
                         }),
                       )
-                    : Effect.succeed({} as never),
+                    : Effect.void,
                 ),
               ),
-            stopDelegatedTasks: () => Effect.void,
           }),
           ServerSettings.layerTest(),
           Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
@@ -1128,11 +1133,11 @@ describe("OrchestratorMcpService", () => {
           }
           assert.deepEqual(
             (yield* Ref.get(dispatched)).map((command) => (command as { type: string }).type),
-            ["thread.stop"],
+            failStop
+              ? ["thread.stop"]
+              : ["thread.stop", "delegated_task.completion-delivery.dispose"],
           );
-          assert.deepEqual(runtimeOptions, [
-            { delegatedTaskCancellation: { parentThreadId, taskId } },
-          ]);
+          assert.deepEqual(cancellations, [{ parentThreadId, taskId }]);
         }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
       }),
   );
@@ -3333,7 +3338,9 @@ describe("OrchestratorMcpService provider resolution", () => {
             });
           }),
         ).pipe(Layer.provide(layerWatchedThreads));
-        const layerTest = layerOrchestratorService.pipe(
+        const layerTest = OrchestratorMcpService.layer.pipe(
+          Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+          Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
           Layer.provideMerge(layerWatchedThreads),
           Layer.provide(
             Layer.mergeAll(

@@ -7798,7 +7798,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           });
 
     let steerWhenReadyRunId: RunId | undefined;
-    if (dispatchMode.type === "steer_active") {
+    if (
+      dispatchMode.type === "steer_active" &&
+      !(
+        command.creationSource === "voice" &&
+        command.voiceIntakeSource !== undefined &&
+        dispatchMode.onInactive === "reject"
+      )
+    ) {
       const targetRunId = dispatchMode.targetRunId;
       const target = projection.runs.find((run) => run.id === targetRunId);
       if (
@@ -9843,10 +9850,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
       destinationProjectId?: ProjectId,
     ) {
-      const parentProjection = yield* getProjectionWithPendingEvents(
-        command.parentThreadId,
-        events,
+      const hasPendingParentEvents = (yield* Ref.get(events)).some(
+        (event) => event.threadId === command.parentThreadId,
       );
+      const parentProjection = yield* hasPendingParentEvents
+        ? getProjectionWithPendingEvents(command.parentThreadId, events)
+        : projectionStore
+            .getRunProviderRecords(
+              command.parentThreadId,
+              command.parentRunId,
+              command.parentNodeId,
+            )
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorProjectionError({ threadId: command.parentThreadId, cause }),
+              ),
+            );
       const crossProject =
         destinationProjectId !== undefined &&
         destinationProjectId !== parentProjection.thread.projectId;

@@ -2785,13 +2785,16 @@ describe("ThreadSettlementServiceV2 terminals", () => {
       yield* Effect.gen(function* () {
         const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
         yield* startHarness(service, fixture.activation, fixture.snapshotReads);
-        // Events run in order, so the first run belongs to the second event
-        // only if the shared-worktree child was skipped. Both still close.
+        // Settling the shared child also retries its settled parent as the worktree owner.
         yield* fixture.publishEvent(settledEvent(shared));
         yield* fixture.publishEvent(settledEvent(own));
         assert.deepStrictEqual(yield* Queue.take(fixture.closedIdle), { threadId: shared.id });
+        assert.deepStrictEqual(yield* Queue.take(fixture.closedIdle), { threadId: parent.id });
         assert.deepStrictEqual(yield* Queue.take(fixture.closedIdle), { threadId: own.id });
+        assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, parent.id);
         assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, own.id);
+        yield* service.drain;
+        assert.strictEqual(yield* Queue.size(fixture.scriptRuns), 0);
       }).pipe(Effect.provide(fixture.layer));
     }),
   );

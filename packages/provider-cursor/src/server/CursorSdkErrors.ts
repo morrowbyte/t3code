@@ -10,6 +10,7 @@ export interface CursorSdkWireError {
   readonly cause?: CursorSdkWireError;
 }
 
+// @effect-diagnostics-next-line extendsNativeError:off -- Preserves SDK error names and causes across native IPC.
 export class CursorSdkRemoteError extends Error {
   readonly kinds: ReadonlyArray<CursorSdkErrorKind>;
   readonly code: string | number | undefined;

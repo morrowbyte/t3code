@@ -1551,6 +1551,7 @@ it.effect.each(["enabled", "opt-out", "missing", "deleted", "foreign"] as const)
                 SqlitePersistence.layerMemory,
                 layerServerConfig,
                 ServerSettings.layerTest({
+                  enableDeviceSupport: true,
                   enableAgentDeviceAccess: true,
                   projectSettingsOverrides: {
                     [projectId]: { enableAgentDeviceAccess: scenario !== "opt-out" },

@@ -376,7 +376,7 @@ const make = Effect.gen(function* () {
             yield* runtimes.recordImportedTranscript({ threadId, source });
             alreadyPresent = true;
             importedThreadIds.add(threadId);
-            return null;
+            return true;
           }
 
           const model = thread.model ?? DEFAULT_MODEL_BY_PROVIDER[driver] ?? DEFAULT_MODEL;
@@ -514,7 +514,7 @@ const make = Effect.gen(function* () {
         );
         if (imported === true) {
           importedThreadIds.add(threadId);
-          importedCount += 1;
+          if (!alreadyPresent) importedCount += 1;
           report(
             alreadyPresent ? "already-imported" : "imported",
             alreadyPresent ? "already-imported" : "imported",

@@ -174,6 +174,8 @@ it.effect.skipIf(windowsHost)("keeps native Linux and SSH Zed launches unchanged
           layerTest({
             platform: "linux",
             env: { PATH: binDir, ...extraEnv },
+            spawnResult: (command) =>
+              command.args.includes("--version") ? { stdout: "Zed 0.180.0\n" } : undefined,
             onSpawn: (command) => {
               spawned = command;
             },

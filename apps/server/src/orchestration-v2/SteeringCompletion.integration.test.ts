@@ -45,6 +45,8 @@ import * as ServerSettings from "../serverSettings.ts";
 
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { providerMessageText } from "@t3tools/provider-core/server/messageProvenance";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 
 const driver = ProviderDriverKind.make("codex");
@@ -260,6 +262,7 @@ it.effect.each(
         yield* Fiber.join(running);
         const first = started[0]!;
         const messageId = MessageId.make("message:steering");
+        const inputItemId = IdAllocator.derive.userTurnItem({ messageId });
         const taskId = NodeId.make("task:mailbox");
         if (mailbox) {
           const sink = yield* EventSink.EventSinkV2;
@@ -379,9 +382,8 @@ it.effect.each(
         if (timing !== "before dispatch") yield* dispatchSteer;
         if (!mailbox && timing !== "before dispatch") {
           const pending = yield* orchestrator.getThreadProjection(threadId);
-          const item = pending.turnItems.find(
-            (item) => item.type === "user_message" && item.messageId === messageId,
-          );
+          const item = pending.turnItems.find((item) => item.id === inputItemId);
+          assert.equal(item?.type, question ? "notification" : "user_message");
           assert.equal(item?.status, "pending");
           assert.isNull(item?.startedAt);
           assert.isNull(item?.completedAt);
@@ -620,11 +622,10 @@ it.effect.each(
           yield* Deferred.succeed(rejectSteer, undefined);
           yield* Fiber.join(delivery);
         }
-        if (delivery !== null && !question) {
+        if (delivery !== null) {
           const requeued = yield* orchestrator.getThreadProjection(threadId);
-          const item = requeued.turnItems.find(
-            (item) => item.type === "user_message" && item.messageId === messageId,
-          );
+          const item = requeued.turnItems.find((item) => item.id === inputItemId);
+          assert.equal(item?.type, question ? "notification" : "user_message");
           assert.equal(item?.status, "pending");
           assert.isNull(item?.startedAt);
           assert.isNull(item?.completedAt);
@@ -697,7 +698,16 @@ it.effect.each(
         assert.equal(started.length, 2);
         assert.equal(started[1]?.message.messageId, messageId);
         if (mailbox) assert.include(started[1]?.message.text ?? "", String(taskId));
-        else assert.equal(started[1]?.message.text, "fix the popover");
+        else
+          assert.equal(
+            started[1]?.message.text,
+            question
+              ? providerMessageText(
+                  { createdBy: "agent", creationSource: "server" },
+                  "fix the popover",
+                )
+              : "fix the popover",
+          );
         assert.deepEqual(started[1]?.message.attachments, attachments);
         assert.equal(
           steerCalls,
@@ -708,11 +718,9 @@ it.effect.each(
           assert.deepEqual(final.thread.modelSelection, composerSelection);
           assert.deepEqual(started[1]?.modelSelection, composerSelection);
         }
-        if (!mailbox && !question) {
+        if (!mailbox) {
           assert.equal(
-            final.turnItems.find(
-              (item) => item.type === "user_message" && item.messageId === messageId,
-            )?.status,
+            final.turnItems.find((item) => item.id === inputItemId)?.status,
             "completed",
           );
         }
@@ -1392,7 +1400,16 @@ it.effect.each(
       assert.equal(started.length, 2);
       assert.equal(started[1]?.message.messageId, messageId);
       if (mailbox) assert.include(started[1]?.message.text ?? "", String(taskId));
-      else assert.equal(started[1]?.message.text, "fix the popover");
+      else
+        assert.equal(
+          started[1]?.message.text,
+          question
+            ? providerMessageText(
+                { createdBy: "agent", creationSource: "server" },
+                "fix the popover",
+              )
+            : "fix the popover",
+        );
       assert.deepEqual(started[1]?.message.attachments, [
         {
           type: "image",
@@ -1444,7 +1461,13 @@ it.effect.each(
         ProviderReplayHarness.layerWithRegistry(
           { name: `steering-completion-${timing}` },
           ProviderAdapterRegistry.layerSingle(adapter),
-          { runEffectWorker: false },
+          {
+            runEffectWorker: false,
+            projectServiceLayer: layerForProject(
+              ProjectId.make("project:steering-completion"),
+              cwd,
+            ),
+          },
         ),
       ),
     );
@@ -1527,7 +1550,14 @@ it.effect.each([
         const after = yield* orchestrator.getThreadProjection(threadId);
         assert.deepEqual(
           steered,
-          steers ? [`${notification.summary}\nexit 0: built 12 files`] : [],
+          steers
+            ? [
+                providerMessageText(
+                  { createdBy: "agent", creationSource: "server" },
+                  `${notification.summary}\nexit 0: built 12 files`,
+                ),
+              ]
+            : [],
         );
         assert.lengthOf(started, 1);
         assert.equal(
@@ -3717,7 +3747,10 @@ it.effect("restarts by stopping the running turn when the provider cannot interr
       assert.deepEqual(steered, []);
       assert.deepEqual(yield* read(threadId), {
         queue: ["queued"],
-        started: ["first", "do this instead"],
+        started: [
+          "first",
+          providerMessageText({ createdBy: "agent", creationSource: "server" }, "do this instead"),
+        ],
         stopRequested: true,
       });
     }).pipe(Effect.provide(layer));
@@ -3776,7 +3809,14 @@ it.effect("starts a restart that stops the running turn ahead of an older held q
       const { queue, started: startedTexts } = yield* read(threadId);
       assert.deepEqual(
         { queue, started: startedTexts },
-        { queue: ["queued"], started: ["first", "second", "do this instead"] },
+        {
+          queue: ["queued"],
+          started: [
+            "first",
+            providerMessageText({ createdBy: "agent", creationSource: "mcp" }, "second"),
+            providerMessageText({ createdBy: "agent", creationSource: "mcp" }, "do this instead"),
+          ],
+        },
       );
     }).pipe(Effect.provide(layer));
   }),

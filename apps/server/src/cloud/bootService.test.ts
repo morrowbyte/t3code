@@ -21,6 +21,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import { serviceLauncherLockPath } from "../serviceLauncher.ts";
 import * as BootService from "./bootService.ts";
 import { pinnedRuntimePaths } from "./pinnedRuntime.ts";
+import { SERVER_RESTORE_PROFILE_CONTRACT, serverRestoreFiles } from "./serverRestoreManifest.ts";
 import {
   disabledServiceTask,
   parseServiceState,
@@ -272,7 +273,7 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
       const unitOutsideManager =
         input.command === "systemctl" &&
         input.args[1] === "enable" &&
-        !(yield* fs.exists(path.join(managerUnitDir, "t3code.service")));
+        !(yield* fs.exists(path.join(managerUnitDir, input.args.at(-1) ?? "")));
 
       // A timed-out stop may still stop the service.
       if (input.command === "systemctl" && input.args[1] === "stop") control.active = false;
@@ -829,6 +830,8 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       expect((yield* service.status).current).toBe(false);
       yield* fs.remove(launcherPath);
       yield* fs.symlink(runtime.entryPath, launcherPath);
+      expect((yield* service.status).problems).toContain("restart-pending");
+      expect(yield* service.restart).toBe("restarted");
       expect((yield* service.status).current).toBe(true);
       const pendingState = JSON.stringify({
         protocol: SERVICE_LAUNCHER_PROTOCOL,
@@ -854,26 +857,76 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
   );
 
   it.effect.each(["linux", "darwin"] as const)(
-    "reports the installed version across launcher protocols on %s",
+    "reports the installed version but refuses unknown update state across launcher protocols on %s",
     (platform) =>
       Effect.gen(function* () {
-        const { service, fs, statePath } = yield* makeHarness(platform);
-        yield* service.install();
+        const { service, makeService, fs, baseDir, statePath, commands, runtime } =
+          yield* makeHarness(platform);
+        const path = yield* Path.Path;
+        const plan = yield* service.install();
+        yield* makeService(undefined, "1.2.4-nightly.1");
+        const unitBytes = new Uint8Array(yield* fs.readFile(plan.unitPath));
+        const versionsDir = path.join(baseDir, "runtime", "versions");
+        const versions = (yield* fs.readDirectory(versionsDir)).sort();
+        const runtimeFiles = yield* Effect.forEach(versions, (version) =>
+          Effect.gen(function* () {
+            const paths = pinnedRuntimePaths(path, baseDir, version, platform);
+            return {
+              ...paths,
+              entryBytes: new Uint8Array(yield* fs.readFile(paths.entryPath)),
+              sentinelBytes: new Uint8Array(yield* fs.readFile(paths.sentinelPath)),
+            };
+          }),
+        );
+        const launcherPath =
+          platform === "linux" ? path.join(baseDir, "runtime", "launcher") : runtime.entryPath;
+        const launcherReference = yield* fs.realPath(launcherPath);
+        const launcherLink = platform === "linux" ? yield* fs.readLink(launcherPath) : undefined;
 
         for (const protocol of [SERVICE_LAUNCHER_PROTOCOL - 1, SERVICE_LAUNCHER_PROTOCOL + 1]) {
           yield* fs.writeFileString(
             statePath,
             `{"protocol":${protocol},"activeVersion":"1.2.4-nightly.1","update":{"status":"unknown"}}`,
           );
+          const stateBytes = new Uint8Array(yield* fs.readFile(statePath));
           expect(yield* service.status).toMatchObject({
             current: false,
             installedVersion: "1.2.4-nightly.1",
           });
-          yield* service.install({ allowDowngrade: true });
-          expect(parseServiceState(yield* fs.readFileString(statePath))).toEqual({
-            protocol: SERVICE_LAUNCHER_PROTOCOL,
-            activeVersion: "1.2.3",
+          commands.length = 0;
+
+          const error = yield* service.install({ allowDowngrade: true }).pipe(Effect.flip);
+
+          expect(error).toBeInstanceOf(BootService.BootServiceCommandError);
+          expect(error).toMatchObject({
+            _tag: "BootServiceCommandError",
+            step: "admitting the cached runtime within retention limits without stopping the server",
+            cause: {
+              _tag: "PinnedRuntimeInstallError",
+              step: "admitting the cached runtime within retention limits without stopping the server",
+              cause: new Error("Managed runtime state is unsupported."),
+            },
           });
+          expect(new Uint8Array(yield* fs.readFile(statePath))).toEqual(stateBytes);
+          expect(new Uint8Array(yield* fs.readFile(plan.unitPath))).toEqual(unitBytes);
+          expect((yield* fs.readDirectory(versionsDir)).sort()).toEqual(versions);
+          for (const files of runtimeFiles) {
+            expect(new Uint8Array(yield* fs.readFile(files.entryPath))).toEqual(files.entryBytes);
+            expect(new Uint8Array(yield* fs.readFile(files.sentinelPath))).toEqual(
+              files.sentinelBytes,
+            );
+          }
+          expect(yield* fs.realPath(launcherPath)).toBe(launcherReference);
+          if (platform === "linux") expect(yield* fs.readLink(launcherPath)).toBe(launcherLink);
+          expect(commands).toEqual([
+            ...(platform === "linux"
+              ? [
+                  "systemctl --user show-environment",
+                  "loginctl show-user 501 --property=Linger --value",
+                ]
+              : []),
+            `${runtime.entryPath} --version`,
+          ]);
         }
       }),
   );
@@ -1027,7 +1080,14 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
           protocol: SERVICE_LAUNCHER_PROTOCOL,
           activeVersion: "1.2.5",
         });
-        expect(yield* fs.readFileString(plan.unitPath)).toContain("versions/1.2.5/t3");
+        expect(yield* fs.readFileString(plan.unitPath)).toContain(
+          platform === "linux" ? "/runtime/launcher" : "versions/1.2.5/t3",
+        );
+        if (platform === "linux") {
+          expect(yield* fs.realPath(path.join(baseDir, "runtime", "launcher"))).toBe(
+            pinnedRuntimePaths(path, baseDir, "1.2.5", platform).entryPath,
+          );
+        }
         expect((yield* latest.status).current).toBe(true);
         expect(
           yield* fs.exists(path.join(path.dirname(statePath), SERVICE_RESTART_PENDING_FILE)),
@@ -1061,8 +1121,24 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
           }),
         );
         const rejection = path.join(plan.baseDir, "rejected-update");
-        const databasePath = path.join(plan.baseDir, "state.sqlite");
-        yield* fs.writeFileString(databasePath, "database");
+        const databasePath = path.join(plan.baseDir, "userdata", "statev2.sqlite");
+        yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
+        yield* fs.writeFileString(
+          path.join(path.dirname(databasePath), "environment-id"),
+          "contention-fixture",
+        );
+        yield* Effect.sync(() => {
+          const database = new NodeSqlite.DatabaseSync(databasePath);
+          try {
+            database.exec(
+              "CREATE TABLE effect_sql_migrations (migration_id INTEGER, name TEXT); " +
+                "INSERT INTO effect_sql_migrations VALUES (1, 'Fixture'); " +
+                "CREATE TABLE orchestration_events (application_event_version INTEGER)",
+            );
+          } finally {
+            database.close();
+          }
+        });
         yield* fs.writeFileString(
           runtime.entryPath,
           `#!${process.execPath}
@@ -1077,6 +1153,19 @@ process.on("message", message => {
 `,
         );
         yield* fs.chmod(runtime.entryPath, 0o755);
+        yield* fs.writeFileString(
+          path.join(path.dirname(runtime.entryPath), "restore-manifest.json"),
+          JSON.stringify({
+            format: 1,
+            version: "1.2.3",
+            sourceSha: "a".repeat(40),
+            launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+            profileContract: `${SERVER_RESTORE_PROFILE_CONTRACT}:${"b".repeat(64)}`,
+            eventContract: "b".repeat(64),
+            migrations: [{ id: 1, name: "Fixture" }],
+            files: yield* Effect.promise(() => serverRestoreFiles(path.dirname(runtime.entryPath))),
+          }),
+        );
         const newer = yield* makeService(undefined, "1.2.4");
         yield* makeService(undefined, "1.2.5");
         const snapshot = Promise.withResolvers<void>();
@@ -1173,7 +1262,10 @@ process.disconnect();
           protocol: SERVICE_LAUNCHER_PROTOCOL,
           activeVersion: "1.2.4",
         });
-        expect(yield* fs.readFileString(plan.unitPath)).toContain("versions/1.2.4/t3");
+        expect(yield* fs.readFileString(plan.unitPath)).toContain("/runtime/launcher");
+        expect(yield* fs.realPath(path.join(plan.baseDir, "runtime", "launcher"))).toBe(
+          pinnedRuntimePaths(path, plan.baseDir, "1.2.4", "linux").entryPath,
+        );
         expect(
           yield* fs.readFileString(
             path.join(path.dirname(statePath), SERVICE_RESTART_PENDING_FILE),
@@ -1359,6 +1451,7 @@ process.disconnect();
         "systemctl --user is-enabled crew.service",
         "systemctl --user is-active crew.service",
         "systemctl --user stop crew.service",
+        "systemctl --user reset-failed crew.service",
         "systemctl --user restart crew.service",
       ]);
       const otherDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-custom-other-" });
@@ -1375,7 +1468,11 @@ process.disconnect();
       yield* other.withStopped(Effect.void);
       expect(yield* other.uninstall).toBe(false);
       const state = yield* fs.readFileString(statePath);
-      expect((yield* other.install().pipe(Effect.flip))._tag).toBe("BootServiceInstallError");
+      expect(yield* other.install().pipe(Effect.flip)).toMatchObject({
+        _tag: "BootServiceOtherBaseDirError",
+        installedBaseDir: baseDir,
+        baseDir: otherDir,
+      });
       expect((yield* other.status).current).toBe(false);
       expect(commands).toEqual([]);
       expect(yield* fs.readFileString(statePath)).toBe(state);

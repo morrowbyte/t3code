@@ -5,7 +5,9 @@ import { ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
 import {
+  CursorAgentSdkRunnerError,
   makeCursorAgentSdkRunner,
   type CursorAgentSdkRun,
   type CursorAgentSdkRunner,
@@ -108,7 +110,11 @@ export function makeCursorSdkWorkerSession(
               ...(request.input.options === undefined
                 ? {}
                 : { options: options.sendOptions(request.input.options) }),
-              onDelta: (update) => Effect.tryPromise(() => transport.delta(sendId, update)),
+              onDelta: (update) =>
+                Effect.tryPromise({
+                  try: () => transport.delta(sendId, update),
+                  catch: (cause) => new CursorAgentSdkRunnerError({ method: "onDelta", cause }),
+                }),
             }),
           );
           active.run = started;
@@ -147,7 +153,8 @@ export function makeCursorSdkWorkerSession(
 }
 
 export async function runCursorSdkWorker(): Promise<void> {
-  if (process.send === undefined || process.env.T3CODE_THREAD_ID === undefined)
+  const owner = process.env.T3CODE_THREAD_ID;
+  if (process.send === undefined || owner === undefined)
     throw new Error("Cursor SDK worker requires private IPC and a canonical owner.");
   await Effect.runPromise(
     Effect.scoped(
@@ -202,14 +209,14 @@ export async function runCursorSdkWorker(): Promise<void> {
           },
           encodeError,
         );
-        const worker = makeCursorSdkWorkerSession(runner, transport, process.env.T3CODE_THREAD_ID!);
+        const worker = makeCursorSdkWorkerSession(runner, transport, owner);
         try {
           yield* Effect.promise(() => finished);
         } finally {
           clearTimeout(shutdown);
           transport.fail(new Error("Cursor SDK worker stopped."));
         }
-      }).pipe(Effect.provide(CursorSdk.layer), Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(CursorSdk.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
     ),
   );
 }

@@ -284,7 +284,7 @@ describe("CursorAgentSdkRunner", () => {
 
   it.effect("delivers early deltas in order and fails wait on the final callback failure", () =>
     Effect.gen(function* () {
-      cursorSdkMock.setStaleRunActive(false);
+      cursorSdkMock.setStoredRuns([]);
       cursorSdkMock.send.mockImplementationOnce(async (_message, options) => {
         for (const text of ["first", "last"])
           await options.onDelta?.({ update: { type: "text-delta", text } });
@@ -293,6 +293,7 @@ describe("CursorAgentSdkRunner", () => {
           agentId: "ordered-agent",
           wait: cursorSdkMock.runWait,
           cancel: cursorSdkMock.runCancel,
+          steer: cursorSdkMock.runSteer,
         };
       });
       const runner = yield* CursorAgentSdk.CursorAgentSdkRunner;
@@ -327,7 +328,7 @@ describe("CursorAgentSdkRunner", () => {
 
   it.effect("bounds deltas emitted before the SDK returns a run handle", () =>
     Effect.gen(function* () {
-      cursorSdkMock.setStaleRunActive(false);
+      cursorSdkMock.setStoredRuns([]);
       cursorSdkMock.send.mockImplementationOnce(async (_message, options) => {
         for (let index = 0; index < 257; index++)
           await options.onDelta?.({ update: { type: "text-delta", text: "delta" } });
@@ -336,6 +337,7 @@ describe("CursorAgentSdkRunner", () => {
           agentId: "overflow-agent",
           wait: cursorSdkMock.runWait,
           cancel: cursorSdkMock.runCancel,
+          steer: cursorSdkMock.runSteer,
         };
       });
       const runner = yield* CursorAgentSdk.CursorAgentSdkRunner;

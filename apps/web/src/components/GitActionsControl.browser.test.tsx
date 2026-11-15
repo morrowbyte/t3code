@@ -46,6 +46,9 @@ vi.mock(import("~/state/session"), async (original) => {
 });
 vi.mock(import("~/state/entities"), async (original) => ({
   ...(await original()),
+  useProject: ((ref: unknown) => (ref === null ? null : { workspaceRoot: "/repo" })) as never,
+  useServerConfigs: (() =>
+    new Map([[EnvironmentId.make("environment"), { scratchWorkspaceRoot: "/scratch" }]])) as never,
   useQuietThreadShell: ((ref: { threadId: string } | null) =>
     ref === null || state.shell === null ? null : { ...state.shell, id: ref.threadId }) as never,
   useThreadProjection: ((ref: unknown) =>
@@ -63,6 +66,7 @@ vi.mock(import("~/state/query"), async (original) => ({
   useEnvironmentQuery: (() => ({
     data: {
       sourceControlProviders: [],
+      sources: [],
       isRepo: true,
       refName: state.branch,
       isDefaultRef: state.isDefaultRef,
@@ -115,7 +119,10 @@ vi.mock(import("~/state/use-atom-command"), async (original) => {
 vi.mock(import("~/state/server"), async (original) => {
   const actual = await original();
   const { Atom } = await import("effect/reactivity");
-  const config = Atom.make(() => ({ availableEditors: ["cursor"] }));
+  const config = Atom.make(() => ({
+    availableEditors: ["cursor"],
+    settings: { offeredSourceControlProviders: {} },
+  }));
   return {
     ...actual,
     serverEnvironment: { ...actual.serverEnvironment, configValueAtom: (() => config) as never },

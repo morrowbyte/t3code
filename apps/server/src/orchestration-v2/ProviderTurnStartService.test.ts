@@ -1594,6 +1594,14 @@ effectIt.effect("rejects native start when the source changes during context del
         },
       ],
     });
+    const providerStartResult =
+      yield* Deferred.make<Exit.Exit<void, RunExecutionService.RunExecutionServiceV2Error>>();
+    const startRootRun = harness.startRootRun.getMockImplementation()!;
+    harness.startRootRun.mockImplementation((input) =>
+      startRootRun(input).pipe(
+        Effect.onExit((exit) => Deferred.succeed(providerStartResult, exit)),
+      ),
+    );
     const persist = harness.writeEvents.getMockImplementation()!;
     harness.writeEvents.mockImplementation((input) =>
       persist(input).pipe(
@@ -1638,7 +1646,9 @@ effectIt.effect("rejects native start when the source changes during context del
       thread: { ...current.thread, worktreePath: "/tmp/replaced-compute-source" },
     });
     yield* Deferred.succeed(release, undefined);
-    const result = yield* Fiber.join(starting);
+    const completed = yield* Fiber.join(starting);
+    expect(Exit.isSuccess(completed)).toBe(true);
+    const result = yield* Deferred.await(providerStartResult);
     expect(harness.startTurn).not.toHaveBeenCalled();
     expect(Exit.isFailure(result)).toBe(true);
     if (Exit.isFailure(result)) expect(Cause.pretty(result.cause)).toContain("source_changed");
@@ -3073,7 +3083,7 @@ effectIt.effect.each([
       });
       const harness = makeLocalCommandHarness({
         text: "Continue",
-        ...(worktreePath === undefined ? {} : { worktreePath }),
+        ...(worktreePath === undefined ? { workspaceRoot: restorePath } : { worktreePath }),
         fileSystem,
         failReadsAfterRunning: true,
       });

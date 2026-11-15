@@ -1294,12 +1294,10 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     const installed = yield* fs
       .exists(unitPath)
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
-    const updatePending =
-      installed &&
-      (yield* fs.readFileString(statePath).pipe(
-        Effect.map(serviceStateHasPendingUpdate),
-        Effect.orElseSucceed(() => false),
-      ));
+    const updatePending = yield* fs.readFileString(statePath).pipe(
+      Effect.map(serviceStateHasPendingUpdate),
+      Effect.orElseSucceed(() => false),
+    );
     const installRuntime = ensurePinnedRuntimeInstalled({
       baseDir: input.baseDir,
       version: input.cliVersion,

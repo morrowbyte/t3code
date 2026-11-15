@@ -883,7 +883,9 @@ export const layer: Layer.Layer<
           const project = yield* projects.getById(projection.thread.projectId);
           if (Option.isNone(project))
             return yield* new WorkspaceSourceError({ reason: "project_not_found" });
-          const current = yield* projectionStore.getRuntimeRecoveryProjection(projection.thread.id);
+          const current = yield* projectionStore.getThreadRecords(projection.thread.id, ["runs"], {
+            runIds: [run.id],
+          });
           const currentRun = current.runs.find((candidate) => candidate.id === run.id);
           if (currentRun?.status !== expectedStatus || currentRun.activeAttemptId !== attempt.id)
             return undefined;
@@ -1452,18 +1454,19 @@ export const layer: Layer.Layer<
             );
           }
         }
-        resumedHandoffContext = undefined;
-        preparedRetryHandoff = [];
-        const { handoff, transferId, createdAt } = yield* recoveryHandoff;
-        if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
         // Another client is still writing to the native thread. A fresh
         // session here would silently split the conversation from it.
         if (
           resumed._tag === "Failure" &&
           resumed.failure._tag === "ProviderAdapterThreadInUseError"
         ) {
+          if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
           return yield* loadFromProvider(Effect.fail(resumed.failure));
         }
+        resumedHandoffContext = undefined;
+        preparedRetryHandoff = [];
+        const { handoff, transferId, createdAt } = yield* recoveryHandoff;
+        if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
 
         yield* Effect.logWarning("Recovering provider context in a fresh native session", {
           driver: session.driver,

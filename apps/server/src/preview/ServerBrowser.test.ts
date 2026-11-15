@@ -19,6 +19,7 @@ import {
   type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
 } from "@t3tools/contracts";
+import * as Config from "effect/Config";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -3958,7 +3959,7 @@ it.effect(
             .pipe(Effect.flip);
           expect(refusedClose).toMatchObject({
             _tag: "PreviewAutomationControlInterruptedError",
-            reason: "agentMismatch",
+            reason: "unclaimedTab",
           });
         }
         yield* broker.invoke({
@@ -5477,8 +5478,16 @@ it.effect("a popup opens in its opener's appearance", () =>
 
 it.live("a page's title change without navigation reaches its session", () =>
   Effect.gen(function* () {
+    const executablePath = yield* Config.option(
+      Config.String("T3CODE_TEST_CHROMIUM_EXECUTABLE_PATH"),
+    );
     const native = yield* Effect.acquireRelease(
-      Effect.promise(() => chromium.launch({ headless: true })),
+      Effect.promise(() =>
+        chromium.launch({
+          headless: true,
+          ...(Option.isSome(executablePath) ? { executablePath: executablePath.value } : {}),
+        }),
+      ),
       (browser) => Effect.promise(() => browser.close()),
     );
     const context = yield* Effect.promise(() => native.newContext());

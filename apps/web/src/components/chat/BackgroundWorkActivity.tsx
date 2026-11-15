@@ -5,7 +5,7 @@ import {
 } from "@t3tools/client-runtime/work-log/command-label";
 import type { ThreadId } from "@t3tools/contracts";
 import { ChevronRightIcon, SquareIcon, TerminalIcon } from "lucide-react";
-import { Suspense, useId, useState } from "react";
+import { Suspense, useId, useState, type ReactNode } from "react";
 
 import { embeddedScripts } from "@t3tools/client-runtime/work-log/embedded-scripts";
 import { useTheme } from "../../hooks/useTheme";
@@ -71,12 +71,14 @@ export function BackgroundWorkActivity({
   stopping,
   onStopThread,
   onOpenThread,
+  details,
 }: {
   readonly presentation: PendingBackgroundWorkPresentation;
   readonly canStop: boolean;
   readonly stopping: boolean;
   readonly onStopThread: () => void;
   readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly details?: ReactNode;
 }) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const detailsId = useId();
@@ -96,11 +98,14 @@ export function BackgroundWorkActivity({
   const single = presentation.items.length === 1;
   return (
     <section aria-label="Background activity" className="min-w-0 px-2 py-1">
-      {single ? null : (
+      {single && details === undefined ? null : (
         <div className="flex flex-wrap items-center justify-between gap-2 px-1 pb-1">
-          <span className="text-xs text-muted-foreground">
-            {presentation.items.length} activities
-          </span>
+          {single ? null : (
+            <span className="text-xs text-muted-foreground">
+              {presentation.items.length} activities
+            </span>
+          )}
+          {details}
           {stopButton}
         </div>
       )}
@@ -149,7 +154,7 @@ export function BackgroundWorkActivity({
                     className={`size-3.5 shrink-0 text-muted-foreground ${open ? "rotate-90" : ""}`}
                   />
                 </button>
-                {single ? stopButton : null}
+                {single && details === undefined ? stopButton : null}
               </div>
               {open ? (
                 <div id={panelId} className="space-y-2 px-1 pb-3 pt-2">

@@ -260,6 +260,15 @@ export function backgroundWorkNowItem(input: {
           stopping={input.stopping}
           onStopThread={() => void input.onStop()}
           onOpenThread={onOpenThread}
+          details={
+            <BackgroundWorkDetails
+              environmentId={input.environmentId}
+              threadId={input.threadId}
+              tasks={input.tasks}
+              turnItems={input.turnItems}
+              onOpenThread={onOpenThread}
+            />
+          }
         />
       ),
     };

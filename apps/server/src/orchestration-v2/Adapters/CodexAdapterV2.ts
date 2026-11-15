@@ -3777,9 +3777,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const currentParent = yield* findActiveTurnByNativeThreadId(parentNativeThreadId);
             if (currentParent !== undefined) subagent.parentContext = currentParent;
             const terminalizedNativeTurns = yield* Ref.get(terminalizedNonCompletedNativeTurns);
+            const interrupting = yield* Ref.get(interruptingNativeTurns);
+            const deferredTerminals = yield* Ref.get(deferredRootTerminals);
             let ancestor: ActiveCodexTurnContext | undefined = subagent.parentContext;
             while (ancestor !== undefined) {
-              if (terminalizedNativeTurns.has(ancestor.nativeTurnId)) {
+              if (
+                terminalizedNativeTurns.has(ancestor.nativeTurnId) &&
+                (!interrupting.has(ancestor.nativeTurnId) ||
+                  !deferredTerminals.has(ancestor.nativeTurnId))
+              ) {
                 const nativeThreadId = yield* getNativeThreadId(subagent.providerThread);
                 // Fork requests off the notification reader so it can read their responses.
                 yield* client

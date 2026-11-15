@@ -449,6 +449,8 @@ setInterval(() => {}, 1_000);
         }[scenario],
       );
       assert.equal(yield* fs.readFileString(databasePath), "before trial");
+      yield* Effect.promise(() => launcher.stop("SIGTERM"));
+      yield* Effect.promise(() => running);
       assert.isFalse(yield* fs.exists(backupPath));
     }),
   );
@@ -720,7 +722,7 @@ process.exit(0);
         path,
         versionDir,
         `
-
+import { writeFileSync } from "node:fs";
 writeFileSync(new URL("./started", import.meta.url), "");
 process.exit(0);
 `,
@@ -958,9 +960,16 @@ process.exit(0);
         });
         const run = (launcher: Launcher) =>
           Effect.gen(function* () {
+            const started = Promise.withResolvers<void>();
+            spawnHook.current = () => started.resolve();
             const running = launcher.run();
-            yield* Effect.promise(() => launcher.stop("SIGTERM"));
-            yield* Effect.promise(() => running);
+            try {
+              yield* Effect.promise(() => Promise.race([started.promise, running]));
+            } finally {
+              spawnHook.current = undefined;
+              yield* Effect.promise(() => launcher.stop("SIGTERM"));
+              yield* Effect.promise(() => running);
+            }
           });
 
         yield* run(yield* createLauncher);
@@ -1034,6 +1043,7 @@ process.exit(0);
         path,
         path.join(root, "runtime", "versions", "1.0.0"),
         `
+import { appendFileSync } from "node:fs";
 appendFileSync(${JSON.stringify(startsPath)}, "old runtime started\\n");
 process.exit(0);
 `,
@@ -1042,7 +1052,7 @@ process.exit(0);
         fs,
         path,
         path.join(root, "runtime", "versions", "1.1.0"),
-        `import { readFileSync } from "node:fs";
+        `import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 if (readFileSync(${JSON.stringify(path.join(backupDir, "database"))}, "utf8") !== "before trial backup") throw new Error("Missing original backup");
 appendFileSync(${JSON.stringify(startsPath)}, "trial started\\n");
 writeFileSync(${JSON.stringify(databasePath)}, "other owner current database");
@@ -1089,12 +1099,17 @@ process.exit(${SERVER_EXIT_CODE_STATE_DIR_OWNED});
       );
       yield* Effect.promise(() => refused.promise);
       const state = yield* Effect.promise(() => readServiceState(statePath));
-      assert.equal(state.activeVersion, "1.0.0");
-      assert.equal(state.update?.status, "failed");
-      assert.equal(
-        state.update?.status === "failed" ? state.update.reason : undefined,
-        "state-dir-owned",
-      );
+      assert.deepEqual(state, {
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        activeVersion: "1.0.0",
+        update: {
+          id: updateId,
+          fromVersion: "1.0.0",
+          targetVersion: "1.1.0",
+          dbPath: databasePath,
+          status: "pending",
+        },
+      });
       assert.equal(yield* fs.readFileString(databasePath), "other owner current database");
       assert.equal(yield* fs.readFileString(`${databasePath}-wal`), "other owner wal");
       assert.equal(yield* fs.readFileString(`${databasePath}-shm`), "other owner shm");
@@ -1408,7 +1423,7 @@ process.exit(${SERVER_EXIT_CODE_STATE_DIR_OWNED});
       if (missingUnit) yield* fs.remove(unit.path);
       const childSource = `
 import assert from "node:assert/strict";
-
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
 assert.equal(context.protocol, ${SERVICE_LAUNCHER_PROTOCOL});
 if (context.update?.status === "pending") {
@@ -1481,9 +1496,16 @@ if (context.update?.status === "pending") {
             yield* Effect.promise(() => readServiceState(statePath)),
             { serviceUnit: unit },
           );
+          const started = Promise.withResolvers<void>();
+          spawnHook.current = () => started.resolve();
           const running = fresh.run();
-          yield* Effect.promise(() => fresh.stop("SIGTERM"));
-          yield* Effect.promise(() => running);
+          try {
+            yield* Effect.promise(() => Promise.race([started.promise, running]));
+          } finally {
+            spawnHook.current = undefined;
+            yield* Effect.promise(() => fresh.stop("SIGTERM"));
+            yield* Effect.promise(() => running);
+          }
         });
       return { fs, root, unit, recover };
     });
@@ -1632,7 +1654,7 @@ if (context.update?.status === "pending") {
       yield* fs.writeFileString(databasePath, "before trial");
       const encodedDatabasePath = JSON.stringify(databasePath);
       const childSource = `
-
+import { appendFileSync, writeFileSync } from "node:fs";
 const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
 appendFileSync(${JSON.stringify(observationsPath)}, JSON.stringify({
   token: process.env.T3CODE_TEST_SERVICE_TOKEN,
@@ -1734,7 +1756,7 @@ if (context.update?.status === "pending") {
         if (kind !== "file") yield* fs.symlink(linkTarget, databasePath);
         const encodedDatabasePath = JSON.stringify(databasePath);
         const childSource = `
-import { realpathSync, unlinkSync } from "node:fs";
+import { realpathSync, unlinkSync, writeFileSync } from "node:fs";
 const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
 if (context.update?.status === "pending") {
   writeFileSync(context.update.dbPath, "database after migration");
@@ -1813,7 +1835,7 @@ if (context.update?.status === "pending") {
 
         const encoded = JSON.stringify({ root, databasePath, observationsPath, journalMode });
         const childSource = `
-import { readdirSync } from "node:fs";
+import { readdirSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 const paths = ${encoded};
 const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
@@ -1921,7 +1943,7 @@ if (context.update?.status === "pending") {
       yield* fs.writeFileString(databasePath, "database");
       const encoded = JSON.stringify({ databasePath, replyPath, trialMarker });
       const childSource = `
-
+import { writeFileSync } from "node:fs";
 const paths = ${encoded};
 const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
 if (context.update?.status === "pending") {
