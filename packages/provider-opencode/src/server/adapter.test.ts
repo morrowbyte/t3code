@@ -3679,7 +3679,6 @@ describe("OpenCodeAdapterV2", () => {
           },
         },
         {},
-        true,
         { options: [{ id: "variant", value: "high" }], interactionMode: "plan" },
       );
       yield* harness.startTurn();
