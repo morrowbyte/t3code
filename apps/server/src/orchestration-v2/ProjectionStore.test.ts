@@ -6056,7 +6056,6 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         assert.deepEqual(
           shell?.pendingRuntimeRequests?.map(({ id, label }) => ({ id, label })),
           [
-            { id: secondRequestId, label: "Use staging?" },
             {
               id: RuntimeRequestId.make("request:open-question-window:command"),
               label: "Deploy staging",
@@ -6065,10 +6064,11 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
               id: RuntimeRequestId.make("request:open-question-window:auth_refresh"),
               label: undefined,
             },
+            { id: secondRequestId, label: "Use staging?" },
             { id: requestId, label: Array.from(longQuestion).slice(0, 240).join("").trim() },
           ],
         );
-        assert.equal(shell?.pendingRuntimeRequest?.label, "Use staging?");
+        assert.equal(shell?.pendingRuntimeRequest?.label, "Deploy staging");
       }
       const shellStatement = statements.find((query) =>
         query.includes("AS pending_request_payload_json"),
@@ -9853,7 +9853,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         );
         assert.deepEqual(
           [thread?.pendingRuntimeRequest?.userOnly, memoryShell.pendingRuntimeRequest?.userOnly],
-          terminal ? [undefined, undefined] : [true, true],
+          [true, true],
         );
       }
       yield* projectionStore.apply({

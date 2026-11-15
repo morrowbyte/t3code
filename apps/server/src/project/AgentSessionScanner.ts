@@ -688,7 +688,13 @@ function parseAgentSessionRecords(
     });
   }
 
-  if (messages.length === 0 && droppedMessageCount === 0) return "empty";
+  const hasRecoveryContext =
+    input.source === "codex" &&
+    (hasCompactionContext ||
+      hasCompactionSummary ||
+      hasMalformedCompaction ||
+      records.some((record) => record.type === "turn_context"));
+  if (messages.length === 0 && droppedMessageCount === 0 && !hasRecoveryContext) return "empty";
   const visibleMessages = messages.map(
     ({ codexResponseUser: _codexResponseUser, ...message }) => message,
   );

@@ -2158,7 +2158,19 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
           workspaceRoot: workspace,
         });
 
-        expect(outcomes).toEqual([{ _tag: "Skipped" }]);
+        expect(outcomes).toEqual([
+          {
+            _tag: "Skipped",
+            outcome: {
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              providerSessionId: null,
+              status: "skipped",
+              recoverability: "unrecoverable",
+              reason: "read-failed",
+              nativeContinuationEligible: false,
+            },
+          },
+        ]);
       }),
     );
 
@@ -2744,10 +2756,13 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
         });
         yield* writeTranscript({
           filePath: transcriptPaths.parse,
-          contents: encodeTranscriptRecord({
-            type: "session_meta",
-            payload: { id: "parse-session", cwd: workspace },
-          }),
+          contents: [
+            encodeTranscriptRecord({
+              type: "session_meta",
+              payload: { id: "parse-session", cwd: workspace },
+            }),
+            encodeTranscriptRecord({ type: "turn_context", payload: { cwd: workspace } }),
+          ].join("\n"),
           mtimeMs: nowMs,
         });
 

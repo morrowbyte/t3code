@@ -649,7 +649,7 @@ export const layerWithOptions = (
                   capabilities,
                   subagent,
                 });
-                yield* mcpSessions.set({
+                const config = {
                   ...credential.config,
                   hasPendingWake: projectionStore
                     .getThreadRecords(threadId, ["runs", "subagents"])
@@ -657,11 +657,12 @@ export const layerWithOptions = (
                       Effect.map(delegatedTaskWillWake),
                       Effect.orElseSucceed(() => false),
                     ),
-                });
+                };
+                yield* mcpSessions.set(config);
                 reserveMcpCredential(threadId, credential.config.providerSessionId);
                 return {
                   mcpCredentialId: credential.config.providerSessionId,
-                  config: credential.config,
+                  config,
                   issued: true,
                 };
               }),

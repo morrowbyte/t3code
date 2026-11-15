@@ -2443,7 +2443,6 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       FROM orchestration_v2_projection_subagents AS candidate
         INDEXED BY orchestration_v2_projection_subagents_settled_idx
       WHERE candidate.thread_id = ${threadId}
-        AND json_extract(candidate.payload_json, '$.delegationAdmission') IS NULL
         AND NOT ${settledSubagent(sql`candidate`)}
     `;
 
@@ -3779,6 +3778,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     AND pending.status = 'pending'
                     AND question.thread_id = ${threadId}
                     AND question.type IN ('user_input_request', 'approval_request')
+                    AND json_extract(question.payload_json, '$.requestId') = pending.runtime_request_id
                     AND ${window.rowLimit} > 0
                     AND ${window.anchorItemId ?? null} IS NULL
                     AND ${window.requiredRunId ?? null} IS NULL
@@ -8197,6 +8197,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       SELECT candidate.run_id
       FROM orchestration_v2_projection_runs candidate
       WHERE candidate.thread_id = ${threadId}
+        AND json_extract(candidate.payload_json, '$.delegationAdmission') IS NULL
         AND NOT (
           candidate.status = 'queued'
           AND json_extract(candidate.payload_json, '$.queueHeld') IS 1
@@ -8210,6 +8211,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             WHERE earlier.thread_id = candidate.thread_id
               AND earlier.ordinal < candidate.ordinal
               AND earlier.status <> 'queued'
+              AND json_extract(earlier.payload_json, '$.delegationAdmission') IS NULL
               AND NOT ${isSilentShellRun("earlier")}
               AND (
                 earlier.completed_at IS NULL

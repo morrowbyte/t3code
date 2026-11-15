@@ -248,12 +248,14 @@ export function getProviderUpdateRunToastView(runs: ReadonlyArray<ProviderUpdate
   readonly title: string;
   readonly description: string;
 } | null {
-  const settled = runs.map(getProviderUpdateRunOutcome);
+  const settled = runs
+    .map(getProviderUpdateRunOutcome)
+    .filter((outcome) => outcome.status !== "interrupted");
   if (settled.length === 0) {
     return null;
   }
   const failureLines = settled.flatMap((outcome) =>
-    outcome.status === "failed" || outcome.status === "interrupted" ? [outcome.line] : [],
+    outcome.status === "failed" ? [outcome.line] : [],
   );
   const successMessages = [
     ...new Set(

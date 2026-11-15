@@ -2412,6 +2412,7 @@ describe("orchestrator MCP toolkit", () => {
 
             const childPromptReadCall = yield* invoke("t3_thread_read", {
               threadId: directChildThreadId,
+              afterPosition: -1,
               limit: 1,
             });
             const childPromptRead = yield* decodeThreadReadResult(
