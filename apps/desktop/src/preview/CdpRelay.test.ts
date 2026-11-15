@@ -179,7 +179,7 @@ describe("CDP relay extra sessions", () => {
     await settle();
     expect(send).toHaveBeenLastCalledWith("Page.startScreencast", {}, undefined, extra);
     written.length = 0;
-    relay.event("Page.screencastFrame", { data: "x" }, undefined);
+    relay.event("Page.screencastFrame", { data: "x", sessionId: 1 }, undefined);
     expect(written.map((m) => m["sessionId"])).toEqual(["t3-preview-page", extra]);
 
     relay = createCdpRelayConnection(target, write, () => {}, state);
@@ -195,7 +195,7 @@ describe("CDP relay extra sessions", () => {
       .sessionId;
     expect(resumed).not.toBe(extra);
     written.length = 0;
-    relay.event("Page.screencastFrame", { data: "resumed" }, undefined);
+    relay.event("Page.screencastFrame", { data: "resumed", sessionId: 2 }, undefined);
     expect(written.map((m) => m["sessionId"])).toEqual(["t3-preview-page", resumed]);
 
     const replacement = createCdpRelayConnection(target, write, () => {});

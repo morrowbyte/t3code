@@ -1,6 +1,10 @@
-import type { OrchestrationV2Run, OrchestrationV2RunStatus, RunId } from "@t3tools/contracts";
+import type {
+  OrchestrationV2ProjectedTurnItem,
+  OrchestrationV2Run,
+  OrchestrationV2RunStatus,
+  RunId,
+} from "@t3tools/contracts";
 import { latestExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
-import type { TimelineEntry } from "../../session-logic";
 
 export type ThreadActivityStatus = "working" | "approval" | "input" | "idle";
 
@@ -42,8 +46,14 @@ export interface ThreadAnnouncementMemory {
   readonly latestLocalItemOrdinal: number;
 }
 
+type DeliveryFailureEntry = {
+  readonly kind: string;
+  readonly projectedItem?: OrchestrationV2ProjectedTurnItem;
+  readonly entry?: { readonly projectedItem?: OrchestrationV2ProjectedTurnItem };
+};
+
 export function deliveryFailureSnapshot(
-  entries: ReadonlyArray<TimelineEntry>,
+  entries: ReadonlyArray<DeliveryFailureEntry>,
   _runId: RunId | null,
 ) {
   let latestLocalItemOrdinal = -1;
@@ -52,7 +62,7 @@ export function deliveryFailureSnapshot(
   for (const entry of entries) {
     const projected =
       entry.kind === "work"
-        ? entry.entry.projectedItem
+        ? entry.entry?.projectedItem
         : "projectedItem" in entry
           ? entry.projectedItem
           : undefined;

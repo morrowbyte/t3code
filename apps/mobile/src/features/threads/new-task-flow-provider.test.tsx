@@ -110,6 +110,9 @@ vi.mock("../../state/workspace", () => ({
 }));
 vi.mock("../../state/shell", () => ({ useEnvironmentShellReadiness: () => ({}) }));
 vi.mock("../../lib/clock", () => ({ useNowMinuteMs: () => 0 }));
+vi.mock("./use-legacy-plan-mode-enabled", () => ({
+  useLegacyPlanModeState: () => ({ enabled: false }),
+}));
 
 import { NewTaskFlowProvider, useNewTaskFlow } from "./new-task-flow-provider";
 

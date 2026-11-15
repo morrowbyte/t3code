@@ -1,7 +1,7 @@
 import * as NodeModule from "node:module";
 
 import { assert, describe, it } from "@effect/vitest";
-import { DESKTOP_UPDATE_RESTART_MARKER_FILE } from "@t3tools/contracts";
+import { DESKTOP_UPDATE_RESTART_MARKER_FILE, DesktopUpdateStateSchema } from "@t3tools/contracts";
 import { computeReleaseNotes } from "electron-updater/out/providers/GitHubProvider.js";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -12,6 +12,7 @@ import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -24,6 +25,8 @@ import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
 import { flushCallbacks, makeHarness } from "./updatesTestHarness.ts";
 import * as Duration from "effect/Duration";
+
+const encodeUpdateState = Schema.encodeEffect(DesktopUpdateStateSchema);
 
 type ReleaseFeed = Parameters<typeof computeReleaseNotes>[2];
 type RunningVersion = Parameters<typeof computeReleaseNotes>[0];
@@ -144,7 +147,7 @@ describe("DesktopUpdates", () => {
           harness.emit("error", new Error("installer failed after accepting the handoff"));
           assert.isTrue(Option.isSome(yield* Fiber.join(recovered)));
           assert.equal(harness.stopCount(), 0);
-          assert.deepEqual(harness.installSteps, ["quitAndInstall"]);
+          assert.deepEqual(harness.installSteps, ["closeSshTunnels", "quitAndInstall"]);
         }),
       ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
     },
@@ -173,7 +176,7 @@ describe("DesktopUpdates", () => {
         yield* flushCallbacks;
         assert.equal(harness.quitAndInstalls(), 1);
         assert.equal(harness.stopCount(), 0);
-        assert.deepEqual(harness.installSteps, ["quitAndInstall"]);
+        assert.deepEqual(harness.installSteps, ["closeSshTunnels", "quitAndInstall"]);
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
@@ -484,7 +487,7 @@ describe("DesktopUpdates", () => {
             );
             yield* TestClock.adjust(Duration.minutes(1));
             assert.equal(harness.quitAndInstalls(), 1);
-            assert.deepEqual(harness.installSteps, ["quitAndInstall"]);
+            assert.deepEqual(harness.installSteps, ["closeSshTunnels", "quitAndInstall"]);
           }),
         ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
       }
@@ -1891,6 +1894,7 @@ describe("DesktopUpdates under a managed policy", () => {
         assert.equal(held.status, "disabled");
         assert.include(held.message ?? "", message);
         assert.isTrue(held.channelBlockedByPolicy);
+        assert.isTrue((yield* encodeUpdateState(held)).channelBlockedByPolicy);
         assert.isFalse((yield* updates.check("menu")).checked);
         assert.equal(harness.checkCount(), 0);
 

@@ -1,6 +1,6 @@
 import { OrchestratorMcpEnvironmentTarget, OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import * as ComputerRouting from "../../../computer/ComputerRouting.ts";
 import * as DesktopApplications from "../../../computer/DesktopApplications.ts";
@@ -54,5 +54,6 @@ export const ComputerToolkit = Toolkit.make(
     dependencies: [ComputerRouting.ComputerRouting, McpInvocationContext.McpInvocationContext],
   })
     .annotate(Tool.Readonly, true)
-    .annotate(Tool.Destructive, false),
+    .annotate(Tool.Destructive, false)
+    .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients),
 );

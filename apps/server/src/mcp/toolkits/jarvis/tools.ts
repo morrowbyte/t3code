@@ -6,7 +6,7 @@ import {
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as JarvisService from "../../../integrations/jarvis/JarvisService.ts";
@@ -31,7 +31,9 @@ const catalog = Tool.make("jarvis_catalog", {
   failure,
   failureMode: "return",
   dependencies,
-}).annotate(Tool.Readonly, true);
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 const observe = Tool.make("jarvis_observe", {
   description:
     description +
@@ -41,7 +43,9 @@ const observe = Tool.make("jarvis_observe", {
   failure,
   failureMode: "return",
   dependencies,
-}).annotate(Tool.Readonly, true);
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 const prepare = Tool.make("jarvis_prepare", {
   description:
     description +
@@ -51,7 +55,9 @@ const prepare = Tool.make("jarvis_prepare", {
   failure,
   failureMode: "return",
   dependencies,
-}).annotate(Tool.Readonly, true);
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 const submit = Tool.make("jarvis_submit", {
   description:
     description +
@@ -64,7 +70,9 @@ const submit = Tool.make("jarvis_submit", {
   failure,
   failureMode: "return",
   dependencies,
-}).annotate(Tool.Destructive, true);
+})
+  .annotate(Tool.Destructive, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 const status = Tool.make("jarvis_status", {
   description:
     description +
@@ -74,7 +82,9 @@ const status = Tool.make("jarvis_status", {
   failure,
   failureMode: "return",
   dependencies,
-}).annotate(Tool.Readonly, true);
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 const cancel = Tool.make("jarvis_cancel", {
   description:
     description +
@@ -84,7 +94,9 @@ const cancel = Tool.make("jarvis_cancel", {
   failure,
   failureMode: "return",
   dependencies,
-}).annotate(Tool.Destructive, true);
+})
+  .annotate(Tool.Destructive, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 const events = Tool.make("jarvis_events", {
   description:
     description +
@@ -98,7 +110,9 @@ const events = Tool.make("jarvis_events", {
   failure,
   failureMode: "return",
   dependencies,
-}).annotate(Tool.Readonly, true);
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 export const JarvisToolkit = Toolkit.make(
   catalog,

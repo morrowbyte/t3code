@@ -154,7 +154,6 @@ describe("Android workspace navigation", () => {
         threadId: "thread-c",
       }),
     );
-    let listSelections = 0;
     const navigation = {
       dispatch: (action: RootStackResetAction) => {
         state = apply(state, action);
@@ -165,18 +164,16 @@ describe("Android workspace navigation", () => {
         state = apply(state, StackActions.pop());
       },
     };
-    const back = () =>
-      returnToAndroidWorkspaceList(navigation, () => {
-        listSelections++;
-      });
+    const back = () => returnToAndroidWorkspaceList(navigation);
     back();
     expect(state.routes).toEqual(linked.routes);
+    expect(state.index).toBe(linked.index);
     back();
     expect(state.routes).toEqual(origin.routes);
-    expect(listSelections).toBe(0);
+    expect(state.index).toBe(origin.index);
     back();
     expect(names(state)).toEqual(["Home"]);
-    expect(listSelections).toBe(1);
+    expect(state.index).toBe(0);
   });
 
   it("opens a linked thread above the current one so Back returns to it", () => {

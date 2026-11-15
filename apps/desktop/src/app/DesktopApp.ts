@@ -170,7 +170,7 @@ const stopAllPoolInstances = Effect.fn("desktop.app.stopAllPoolInstances")(
 );
 
 // Spawns the local backend as soon as the protocol, IPC, and legacy storage that every window needs exist.
-export const startLocalBackend = Effect.fn("desktop.startLocalBackend")(
+const startLocalBackend = Effect.fn("desktop.startLocalBackend")(
   <E, R>(installIpcHandlers: Effect.Effect<void, E, R>) =>
     Effect.gen(function* () {
       const state = yield* DesktopState.DesktopState;
@@ -324,11 +324,9 @@ const finishBootstrap = Effect.fn("desktop.finishBootstrap")(function* (backendS
   }
 
   const primaryBackend = yield* (yield* DesktopBackendPool.DesktopBackendPool).primary;
-  // WSL-only fallback can change the primary endpoint before readiness.
   const config = yield* primaryBackend.currentConfig;
   if (
     !environment.isDevelopment &&
-    !settings.wslOnly &&
     Option.isSome(config) &&
     Option.isNone(config.value.preflightFailure)
   ) {

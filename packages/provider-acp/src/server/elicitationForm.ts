@@ -38,7 +38,7 @@ export function elicitationFormQuestions(
     return undefined;
   const title = typeof form?.title === "string" ? form.title : message;
   const required = Array.isArray(form?.required) ? form.required : [];
-  const fields: Array<typeof UserFormField.Type> = [];
+  const fields: Array<UserFormField> = [];
   for (const [id, value] of Object.entries(properties)) {
     const property = record(value);
     if (
@@ -351,6 +351,7 @@ export function parseElicitationForm(
           ? {}
           : { allowCustomAnswer: false }),
         ...(kind === "multiChoice" ? { multiSelect: true } : {}),
+        ...(kind === "text" && !required.has(id) ? { required: false } : {}),
       },
     );
   }

@@ -936,9 +936,7 @@ const layerRoutesWithSharedServices = Layer.mergeAll(
     speechStreamRouteLayer,
   ),
   // MCP and V2 provider sessions share the global registry so capability reporting matches dispatch.
-  McpHttpServer.layerMcpTransport(
-    Layer.mergeAll(McpHttpServer.layerTools, McpHttpServer.layerJarvisToolkit),
-  ).pipe(
+  McpHttpServer.layer.pipe(
     Layer.provide(JarvisClient.layer),
     Layer.provide(ProviderEvalBoat.layer),
     Layer.provide(ProviderEvalSession.layer),

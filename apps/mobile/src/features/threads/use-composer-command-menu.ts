@@ -294,6 +294,7 @@ export function useComposerCommandMenu({
   onChangeDraftMessage,
   onUpdateInteractionMode,
   onUsageLimits,
+  onOpenModelPicker,
   modelOptions,
   modelProviders,
   onFreshSession,
@@ -319,6 +320,8 @@ export function useComposerCommandMenu({
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onUpdateInteractionMode?: (mode: ProviderInteractionMode) => void;
   readonly onUsageLimits?: () => void;
+  /** `/model` opens this picker instead of inserting text. */
+  readonly onOpenModelPicker: () => void;
   readonly modelOptions?: ReadonlyArray<ModelOption>;
   readonly modelProviders?: ReadonlyArray<ServerProvider>;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
@@ -679,11 +682,18 @@ export function useComposerCommandMenu({
       return;
     }
 
-    if (item.type === "slash-command" && item.command === "clear" && onFreshSession) {
+    const clearTriggerThen = (action: () => void) => {
       const cleared = replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, "");
       setSelection({ start: cleared.cursor, end: cleared.cursor });
       onChangeDraftMessage(cleared.text);
-      onFreshSession();
+      action();
+    };
+    if (item.type === "slash-command" && item.command === "model") {
+      clearTriggerThen(onOpenModelPicker);
+      return;
+    }
+    if (item.type === "slash-command" && item.command === "clear" && onFreshSession) {
+      clearTriggerThen(onFreshSession);
       return;
     }
     if (
@@ -691,10 +701,7 @@ export function useComposerCommandMenu({
       item.command.name === USAGE_LIMITS_COMMAND.name &&
       onUsageLimits
     ) {
-      const cleared = replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, "");
-      setSelection({ start: cleared.cursor, end: cleared.cursor });
-      onChangeDraftMessage(cleared.text);
-      onUsageLimits();
+      clearTriggerThen(onUsageLimits);
       return;
     }
 

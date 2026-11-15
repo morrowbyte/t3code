@@ -145,7 +145,10 @@ const makeDebuggee = (
 // oxlint-disable-next-line t3code/no-real-time-wait-in-tests -- a zero-delay macrotask boundary, not a wait for time
 const settle = Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
 
-const takeEvents = (host: DesktopBrowserHost.DesktopBrowserHost["Service"], count: number) =>
+const takeEvents = (
+  host: Pick<DesktopBrowserHost.DesktopBrowserHost["Service"], "events">,
+  count: number,
+) =>
   host.events.pipe(
     Stream.take(count),
     Stream.runCollect,
@@ -908,7 +911,7 @@ describe("DesktopBrowserHost", () => {
       const connection = host.createConnection();
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
-      const reader = yield* takeEvents(host, 2).pipe(Effect.forkScoped);
+      const reader = yield* takeEvents(connection, 2).pipe(Effect.forkScoped);
 
       yield* Effect.yieldNow;
       const command = (id: number, method: string) =>
@@ -1068,10 +1071,9 @@ describe("DesktopBrowserHost", () => {
   it.effect("emulates focus while the server drives a guest, then lets a hidden one throttle", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
-      const connection = host.createConnection();
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
-      yield* connect(host);
+      const { connection } = yield* connect(host);
 
       yield* command(connection, 1, "DOM.enable");
       yield* settle;
@@ -1122,10 +1124,9 @@ describe("DesktopBrowserHost", () => {
   it.effect("lets a guest throttle once Chromium can no longer answer its pending command", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
-      const connection = host.createConnection();
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
-      yield* connect(host);
+      const { connection } = yield* connect(host);
 
       yield* command(connection, 1, "Runtime.evaluate");
       yield* settle;
@@ -1146,10 +1147,9 @@ describe("DesktopBrowserHost", () => {
   it.effect("keeps a guest focused for the screenshot a navigation lets start", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
-      const connection = host.createConnection();
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
-      yield* connect(host);
+      const { connection } = yield* connect(host);
 
       yield* command(connection, 1, "Page.captureScreenshot");
       yield* command(connection, 2, "Page.captureScreenshot");
@@ -1164,10 +1164,9 @@ describe("DesktopBrowserHost", () => {
   it.effect("never sends a screenshot a navigation superseded while focus was changing", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
-      const connection = host.createConnection();
       const debuggee = makeDebuggee({ deferFocus: true });
       host.attach(key, debuggee.tab);
-      yield* connect(host);
+      const { connection } = yield* connect(host);
 
       yield* command(connection, 1, "Page.captureScreenshot");
       yield* command(connection, 2, "Page.captureScreenshot");
@@ -1183,10 +1182,9 @@ describe("DesktopBrowserHost", () => {
   it.effect("keeps a guest focused when its turn starts after the agent's first command", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
-      const connection = host.createConnection();
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
-      yield* connect(host);
+      const { connection } = yield* connect(host);
       const turn = (active: boolean) =>
         connection.handleCommandLine(encodeJson({ type: "turn", threadId: key.threadId, active }));
 
@@ -1207,10 +1205,9 @@ describe("DesktopBrowserHost", () => {
   it.effect("lets a guest throttle through a turn that only sent it housekeeping", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
-      const connection = host.createConnection();
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
-      yield* connect(host);
+      const { connection } = yield* connect(host);
       yield* connection.handleCommandLine(
         encodeJson({ type: "turn", threadId: key.threadId, active: true }),
       );
@@ -1238,10 +1235,9 @@ describe("DesktopBrowserHost", () => {
   it.effect("keeps a guest the agent used focused through its turn's pauses", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
-      const connection = host.createConnection();
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
-      yield* connect(host);
+      const { connection } = yield* connect(host);
       const turn = (active: boolean) =>
         connection.handleCommandLine(encodeJson({ type: "turn", threadId: key.threadId, active }));
 
@@ -1268,10 +1264,9 @@ describe("DesktopBrowserHost", () => {
     () =>
       Effect.gen(function* () {
         const host = yield* makeDrawnHost;
-        const connection = host.createConnection();
         const debuggee = makeDebuggee();
         host.attach(key, debuggee.tab);
-        yield* connect(host);
+        const { connection } = yield* connect(host);
         yield* connection.handleCommandLine(
           encodeJson({ type: "turn", threadId: key.threadId, active: true }),
         );
@@ -1433,10 +1428,9 @@ describe("DesktopBrowserHost", () => {
   it.effect("holds no focus for a screenshot still queued when the agent's turn ends", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
-      const connection = host.createConnection();
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
-      yield* connect(host);
+      const { connection } = yield* connect(host);
       const painting = yield* watchPainting(host);
       const turn = (active: boolean) =>
         connection.handleCommandLine(encodeJson({ type: "turn", threadId: key.threadId, active }));
@@ -1633,10 +1627,9 @@ describe("DesktopBrowserHost", () => {
   it.effect("keeps a streamed guest focused until its screencast ends", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
-      const connection = host.createConnection();
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
-      yield* connect(host);
+      const { connection } = yield* connect(host);
 
       yield* command(connection, 1, "Page.startScreencast");
       yield* TestClock.adjust("1 minute");
@@ -1698,10 +1691,9 @@ describe("DesktopBrowserHost", () => {
   it.effect("paints a hidden guest only while the screenshot it is taking is pending", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
-      const connection = host.createConnection();
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
-      yield* connect(host);
+      const { connection } = yield* connect(host);
       const painting = yield* watchPainting(host);
 
       yield* command(connection, 1, "DOM.enable");
@@ -1726,10 +1718,9 @@ describe("DesktopBrowserHost", () => {
   it.effect("stops painting for a screenshot Chromium never answers once its document goes", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
-      const connection = host.createConnection();
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
-      yield* connect(host);
+      const { connection } = yield* connect(host);
       const painting = yield* watchPainting(host);
       const turn = (active: boolean) =>
         connection.handleCommandLine(encodeJson({ type: "turn", threadId: key.threadId, active }));
@@ -2025,10 +2016,9 @@ describe("DesktopBrowserHost", () => {
   it.effect("tells a download the person clicked from one the agent's input started", () =>
     Effect.gen(function* () {
       const host = yield* makeDrawnHost;
-      const connection = host.createConnection();
       const debuggee = makeDebuggee();
       host.attach(key, debuggee.tab);
-      yield* connect(host);
+      const { connection } = yield* connect(host);
 
       yield* connection.handleCommandLine(
         encodeJson({

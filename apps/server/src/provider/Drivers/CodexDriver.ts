@@ -31,7 +31,7 @@ import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import {
   checkCodexProviderStatus,
   makePendingCodexProvider,
-  probeCodexSkillsForCwd,
+  makeCodexSkillsProbe,
   withCodexAppServerClient,
 } from "../CodexProvider.ts";
 import { resolveCodexLaunchArgs } from "../codexLaunchArgs.ts";
@@ -483,6 +483,9 @@ export const CodexDriver: ProviderDriver<
       Stream.runForEach(() => snapshot.refresh.pipe(Effect.ignoreCause({ log: true }))),
       Effect.forkScoped,
     );
+    const probeSkills = yield* makeCodexSkillsProbe(
+      usesDefaultExecutable ? installation.acquire() : Effect.void,
+    ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
     const snapshotForCwd = (cwd: string) =>
       !effectiveConfig.enabled
         ? snapshot.getSnapshot
@@ -490,7 +493,7 @@ export const CodexDriver: ProviderDriver<
             snapshot.getSnapshot,
             resolveRuntime.pipe(
               Effect.flatMap((runtime) =>
-                probeCodexSkillsForCwd({
+                probeSkills({
                   binaryPath: runtime.config.binaryPath,
                   homePath: runtime.config.homePath,
                   launchArgs: resolveCodexLaunchArgs(
@@ -503,7 +506,6 @@ export const CodexDriver: ProviderDriver<
               ),
               Effect.scoped,
               Effect.timeout(resolveProviderProbeTimeoutMs("codex", 20_000, processEnv)),
-              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             ),
           ]).pipe(
             Effect.map(([machineSnapshot, skills]) => ({ ...machineSnapshot, skills })),

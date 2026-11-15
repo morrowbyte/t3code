@@ -296,7 +296,7 @@ describe("file embeds in native thread and file Markdown", () => {
           !name.endsWith(".mp3") &&
           !name.endsWith(".mp4")
         ) {
-          expect(preview?.kind).toBe("file");
+          expect(preview?.kind).toBe(/\.(?:docx|xlsx|pptx)$/.test(name) ? "document" : "file");
           expect(resolveMarkdownLinkPresentation(href)).toMatchObject({ kind: "file" });
         }
       }

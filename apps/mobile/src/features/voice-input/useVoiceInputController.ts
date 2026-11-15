@@ -19,6 +19,7 @@ export function useVoiceInputController(input: {
   readonly environmentId: EnvironmentId | null;
   readonly label: string;
   readonly readDraftMessage: () => string | null;
+  readonly subscribeToDraftChanges: (onChange: () => void) => () => void;
   readonly selection: ComposerEditorSelection;
   readonly disabled?: boolean;
   readonly onChangeDraftMessage: (value: string) => void;
@@ -87,6 +88,7 @@ export function useVoiceInputController(input: {
           }
         },
         captured.selection,
+        captured.subscribeToDraftChanges,
       ),
       label: captured.label,
       ...(Platform.OS === "android"

@@ -7,7 +7,7 @@ import {
   RuntimeRequestId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as PrivilegedCommandService from "../../../orchestration-v2/PrivilegedCommandService.ts";
@@ -45,7 +45,7 @@ export const PrivilegedCommandToolkit = Toolkit.make(
     failure,
     failureMode: "return",
     dependencies,
-  }),
+  }).annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients),
   Tool.make("privileged_command_wait", {
     description:
       "Wait for an existing privileged command from this same authenticated thread, provider session and active run. Reuse the returned requestId; this neither approves nor submits nor reruns a script.",
@@ -54,5 +54,7 @@ export const PrivilegedCommandToolkit = Toolkit.make(
     failure,
     failureMode: "return",
     dependencies,
-  }).annotate(Tool.Readonly, true),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients),
 );

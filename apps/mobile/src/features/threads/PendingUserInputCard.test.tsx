@@ -55,6 +55,21 @@ vi.mock("../../native/SelectableMarkdownText", () => ({
 }));
 vi.mock("../../state/entities", () => ({
   useLiveThreadLinkLabels: (markdown: string) => markdown,
+  useThreadShell: () => undefined,
+}));
+vi.mock("../../state/use-thread-selection", () => ({
+  useThreadSelection: () => ({ selectedThread: null }),
+}));
+vi.mock("../voice-input/VoiceInputProvider", () => ({
+  useGlobalVoiceInput: () => ({
+    ownerKey: null,
+    state: { phase: "idle", error: null, errorAction: null },
+    session: {
+      ownerKey: null,
+      cancel: vi.fn(),
+      controller: { currentState: { phase: "idle", error: null, errorAction: null } },
+    },
+  }),
 }));
 vi.mock("../../native/useOpenPullRequest", () => ({
   useOpenPullRequest: () => async (url: string) => {

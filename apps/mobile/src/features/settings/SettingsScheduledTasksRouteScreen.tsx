@@ -7,6 +7,7 @@ import {
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { readEnvironmentScope } from "../../state/session";
+import { appAtomRegistry } from "../../state/atom-registry";
 import type {
   EnvironmentId,
   ProjectId,
@@ -91,6 +92,7 @@ import {
 import {
   discardScheduledTaskEditor,
   markScheduledTaskEditorSaved,
+  scheduledTaskEditorSessionAtom,
 } from "./scheduled-task-editor-state";
 import {
   formatNextScheduledTaskRun,
@@ -532,6 +534,8 @@ function SettingsScheduledTaskEditorScreen({ title }: { readonly title: string }
     ownerKey,
     environmentId: editor?.environmentId ?? null,
     label: editor?.draft.title.trim() || title,
+    subscribeToDraftChanges: (onChange) =>
+      appAtomRegistry.subscribe(scheduledTaskEditorSessionAtom, onChange),
     selection,
     readDraftMessage: () => {
       const current = readEditor();

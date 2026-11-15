@@ -1078,7 +1078,7 @@ export const make = Effect.gen(function* () {
               return "refused" as const;
             }
             if (Option.isSome(activeAction)) {
-              return !clientOnly && activeAction.value === "check" && expectedVersion !== undefined
+              return !clientOnly && activeAction.value === "check"
                 ? ("wait-for-check" as const)
                 : ("refused" as const);
             }

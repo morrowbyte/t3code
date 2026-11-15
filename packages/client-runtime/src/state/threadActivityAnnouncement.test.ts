@@ -10,7 +10,7 @@ import {
 import { mergeOlderHistoryIntoProjection } from "@t3tools/client-runtime/state/thread-history-merge";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
-import { makeThreadProjectionFixture } from "../../test-fixtures";
+import { v2Projection } from "./orchestrationV2TestFixtures.ts";
 
 import {
   announcedRun,
@@ -169,7 +169,7 @@ describe("nextThreadAnnouncement", () => {
   it("stays silent when a thread opens mid-turn or after one", () => {
     expect(speak([idle(firstRun, "completed"), idle(firstRun, "completed")])).toEqual([]);
     expect(speak([busy(), busy()])).toEqual([]);
-    const initialProjection = makeThreadProjectionFixture();
+    const initialProjection = v2Projection;
     const row = (
       ordinal: number,
       position: number,

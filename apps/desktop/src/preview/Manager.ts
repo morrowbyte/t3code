@@ -1119,7 +1119,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         const frame = host.presentedFrame();
         if (!frame || host.owner !== currentMainWindow || !host.owner.isFocused())
           return yield* unavailable();
-        const requestId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+        const requestId = yield* random.uuidV4();
         yield* Effect.callback<void, PreviewOperationError>((resume) => {
           try {
             host.requestPreparation({ ...frame, requestId }, (prepared) => {
@@ -1133,7 +1133,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           Effect.catchTags({ TimeoutError: () => Effect.fail(unavailable()) }),
         );
       }
-      const requestId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const requestId = yield* random.uuidV4();
       const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
       const frame = host.presentedFrame();
       if (

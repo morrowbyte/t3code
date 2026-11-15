@@ -197,6 +197,7 @@ import {
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
   filterSidebarConnectedThreads,
+  belongsInSidebarWorkingShelf,
   firstValidTimestampMs,
   isSidebarEnvironmentOffline,
   isSidebarNestedLinkClick,
@@ -391,6 +392,7 @@ interface SidebarThreadPartitionInput {
   readonly delegatedUnderParent: ReadonlySet<string>;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
   readonly connectedEnvironmentIds: readonly EnvironmentId[];
+  readonly offlineEnvironmentIds: ReadonlySet<EnvironmentId>;
   readonly optimisticDrop: SidebarOptimisticDrop | null;
   readonly workingShelfEnabled: boolean;
   /** Boring mode: folders list active threads by the user's latest message. */
@@ -456,6 +458,7 @@ function useSidebarThreads(input: {
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
   readonly connectedEnvironmentIds: readonly EnvironmentId[];
+  readonly offlineEnvironmentIds: ReadonlySet<EnvironmentId>;
   readonly optimisticDrop: SidebarOptimisticDrop | null;
   readonly threads: readonly EnvironmentThreadShell[];
   readonly hiddenEnvironmentIds: ReadonlySet<EnvironmentId>;
@@ -472,6 +475,7 @@ function useSidebarThreads(input: {
     scopedProjectKeys,
     serverConfigs,
     connectedEnvironmentIds,
+    offlineEnvironmentIds,
     optimisticDrop,
     threads,
     hiddenEnvironmentIds,
@@ -530,6 +534,7 @@ function useSidebarThreads(input: {
     delegatedUnderParent,
     serverConfigs,
     connectedEnvironmentIds,
+    offlineEnvironmentIds,
     optimisticDrop,
     workingShelfEnabled,
     sortActiveBySend: folderGroups !== null,
@@ -759,8 +764,11 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   const active: EnvironmentThreadShell[] = [];
   const working: EnvironmentThreadShell[] = [];
   const inbox = (thread: EnvironmentThreadShell, manuallyMoved = false) =>
-    workingShelfEnabled &&
-    (manuallyMoved ? isThreadWorking(thread) : inboxObservation.isWorking(thread))
+    belongsInSidebarWorkingShelf(thread, {
+      enabled: workingShelfEnabled,
+      disconnectedEnvironmentIds: input.offlineEnvironmentIds,
+      isWorking: manuallyMoved ? isThreadWorking : inboxObservation.isWorking,
+    })
       ? working
       : active;
   const snoozed: EnvironmentThreadShell[] = [];
@@ -1474,6 +1482,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     scopedProjectKeys,
     serverConfigs,
     connectedEnvironmentIds,
+    offlineEnvironmentIds,
     optimisticDrop,
     threads: filterSidebarConnectedThreads(listedThreads, hiddenEnvironmentIds),
     hiddenEnvironmentIds,

@@ -1810,6 +1810,7 @@ describe("PreviewManager", () => {
                 humanStartedDownload: () => true,
                 agentLedPage: () => false,
                 placeDownload: () => true,
+                configureTargetSession: async () => {},
               }),
               Layer.mock(PreviewPasskeys.PreviewPasskeys)({
                 bridgeEnabled: false,
@@ -3145,13 +3146,15 @@ describe("PreviewManager", () => {
           });
           let releaseCapture: (() => void) | undefined;
           const image = { toPNG: () => Buffer.from("synthetic-image") };
-          const capturePage = vi.fn(
-            () =>
-              new Promise<typeof image>((resolve) => {
-                releaseCapture = () => resolve(image);
-                signalStarted?.();
-              }),
-          );
+          const capturePage = vi
+            .fn(async () => image)
+            .mockImplementationOnce(
+              () =>
+                new Promise<typeof image>((resolve) => {
+                  releaseCapture = () => resolve(image);
+                  signalStarted?.();
+                }),
+            );
           const preview = makeFaviconWebContents({ url: "https://example.com/login" });
           const frame = {
             origin: "https://example.com",
@@ -3164,7 +3167,9 @@ describe("PreviewManager", () => {
             isFocused: () => true,
             session: { fetch: vi.fn(), getStoragePath: () => "/synthetic/profile-a" },
             capturePage,
+            setBackgroundThrottling: vi.fn(),
           });
+          holdStillImagePaint(wc, Promise.resolve());
           fromId.mockReturnValue(wc);
           yield* manager.createTab("private_tab");
           yield* manager.registerWebview("private_tab", 42);
@@ -3184,6 +3189,7 @@ describe("PreviewManager", () => {
           expect(frame.executeJavaScript).not.toHaveBeenCalled();
           releaseCapture?.();
           yield* Fiber.join(capture);
+          expect(capturePage).toHaveBeenCalledTimes(2);
 
           yield* Effect.promise(() => target.enterPrivate());
           const before = capturePage.mock.calls.length;
@@ -3202,7 +3208,7 @@ describe("PreviewManager", () => {
           yield* Effect.promise(() => target.clearAndResume());
           capturePage.mockImplementation(async () => image);
           yield* manager.captureScreenshot("private_tab");
-          expect(capturePage).toHaveBeenCalledTimes(before + 1);
+          expect(capturePage).toHaveBeenCalledTimes(before + 2);
           expect(writeFile).toHaveBeenCalledTimes(2);
         }),
       ),
@@ -3839,7 +3845,7 @@ describe("PreviewManager", () => {
         const png = Buffer.from("preview-png");
         const capturePage = vi.fn(async () => ({ toPNG: () => png }));
         const listeners = new Map<string, (...args: never[]) => void>();
-        fromId.mockReturnValue({
+        const wc = {
           id: 42,
           isDestroyed: () => false,
           getType: () => "webview",
@@ -3849,6 +3855,7 @@ describe("PreviewManager", () => {
           getZoomFactor: () => 1,
           setZoomFactor: vi.fn(),
           setAudioMuted: vi.fn(),
+          setBackgroundThrottling: vi.fn(),
           isCurrentlyAudible: () => false,
           on: vi.fn((event: string, listener: (...args: never[]) => void) => {
             listeners.set(event, listener);
@@ -3867,7 +3874,9 @@ describe("PreviewManager", () => {
             off: vi.fn(),
           },
           capturePage,
-        } as never);
+        } as unknown as TestPreviewWebContents;
+        holdStillImagePaint(wc, Promise.resolve());
+        fromId.mockReturnValue(wc);
 
         yield* manager.createTab("tab_1");
         yield* manager.registerWebview("tab_1", 42);
@@ -3882,7 +3891,7 @@ describe("PreviewManager", () => {
 
         const artifact = yield* manager.captureScreenshot("tab_1");
 
-        expect(capturePage).toHaveBeenCalledOnce();
+        expect(capturePage).toHaveBeenCalledTimes(2);
         expect(mkdir).toHaveBeenCalledWith("/tmp/t3/dev/browser-artifacts");
         expect(writeFile).toHaveBeenCalledWith(artifact.path, png);
         expect(artifact).toMatchObject({
@@ -3905,7 +3914,7 @@ describe("PreviewManager", () => {
         yield* TestClock.adjust(1_000);
         const retriedExit = yield* Fiber.join(retriedFiber);
         expect(Exit.isSuccess(retriedExit)).toBe(true);
-        expect(capturePage).toHaveBeenCalledTimes(3);
+        expect(capturePage).toHaveBeenCalledTimes(4);
 
         capturePage.mockClear();
         const captureCause = new Error("capture failed");
@@ -3916,7 +3925,7 @@ describe("PreviewManager", () => {
         yield* TestClock.adjust(1_000);
         const exit = yield* Fiber.join(failingFiber);
         expect(Exit.isFailure(exit)).toBe(true);
-        expect(capturePage).toHaveBeenCalledTimes(3);
+        expect(capturePage).toHaveBeenCalledTimes(6);
         if (Exit.isSuccess(exit)) return;
         const error = Option.getOrThrow(Cause.findErrorOption(exit.cause));
         expect(error).toMatchObject({
@@ -4636,13 +4645,41 @@ describe("PreviewManager", () => {
 
       fromId.mockReturnValue(initial.wc);
       yield* manager.registerWebview("tab_1", 42);
-      expect(JSON.parse(yield* Queue.take(lines))).toEqual({ type: "attached", ...serverTab });
+      const initialAttachment = JSON.parse(yield* Queue.take(lines));
+      expect(initialAttachment).toEqual({
+        type: "attached",
+        ...serverTab,
+        privateEntry: { channelEpoch: expect.any(String), attachmentId: expect.any(String) },
+        restoration: {
+          desktopHostId: "tab_1",
+          url: "https://example.com",
+          title: "Example",
+          canGoBack: false,
+          canGoForward: false,
+        },
+      });
       expect(JSON.parse(yield* Queue.take(lines))).toEqual(failure("https://first.local/"));
 
       fromId.mockReturnValue(replacement.wc);
       yield* manager.registerWebview("tab_1", 43);
-      expect(JSON.parse(yield* Queue.take(lines))).toEqual({ type: "detached", ...serverTab });
-      expect(JSON.parse(yield* Queue.take(lines))).toEqual({ type: "attached", ...serverTab });
+      expect(JSON.parse(yield* Queue.take(lines))).toEqual({
+        type: "detached",
+        ...serverTab,
+        privateEntry: initialAttachment.privateEntry,
+      });
+      const replacementAttachment = JSON.parse(yield* Queue.take(lines));
+      expect(replacementAttachment).toEqual({
+        type: "attached",
+        ...serverTab,
+        privateEntry: { channelEpoch: expect.any(String), attachmentId: expect.any(String) },
+        restoration: {
+          desktopHostId: "tab_1",
+          url: "https://example.com",
+          title: "Example",
+          canGoBack: false,
+          canGoForward: false,
+        },
+      });
       expect(JSON.parse(yield* Queue.take(lines))).toEqual(failure("https://second.local/"));
 
       // A callback queued by the old guest must not report a failure for its replacement.
@@ -4657,8 +4694,23 @@ describe("PreviewManager", () => {
       retried.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
       fromId.mockReturnValue(retried.wc);
       yield* manager.registerWebview("tab_1", 44);
-      expect(JSON.parse(yield* Queue.take(lines))).toEqual({ type: "detached", ...serverTab });
-      expect(JSON.parse(yield* Queue.take(lines))).toEqual({ type: "attached", ...serverTab });
+      expect(JSON.parse(yield* Queue.take(lines))).toEqual({
+        type: "detached",
+        ...serverTab,
+        privateEntry: replacementAttachment.privateEntry,
+      });
+      expect(JSON.parse(yield* Queue.take(lines))).toEqual({
+        type: "attached",
+        ...serverTab,
+        privateEntry: { channelEpoch: expect.any(String), attachmentId: expect.any(String) },
+        restoration: {
+          desktopHostId: "tab_1",
+          url: "https://example.com",
+          title: "Example",
+          canGoBack: false,
+          canGoForward: false,
+        },
+      });
       expect(statuses.at(-1)?.kind).toBe("Success");
     }).pipe(Effect.provide(managerLayer())),
   );

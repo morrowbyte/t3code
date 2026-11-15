@@ -4,12 +4,35 @@ import type {
   ThreadContextRecord,
 } from "@t3tools/contracts";
 import { collectInlineContextIds } from "../../lib/composerContextReferences";
-
 import {
   useComposerDraftStore,
   type ComposerImageAttachment,
+  type ComposerThreadDraftState,
   type ComposerThreadTarget,
 } from "../../composerDraftStore";
+
+/** Compare immutable user content without copying image bytes or upload metadata. */
+export function composerDraftContentChanged(
+  before: ComposerThreadDraftState | null,
+  after: ComposerThreadDraftState | null,
+): boolean {
+  if (before === after) return false;
+  if (!before || !after) return true;
+  const sameIds = (left: ReadonlyArray<{ id: string }>, right: ReadonlyArray<{ id: string }>) =>
+    left.length === right.length && left.every((item, index) => item.id === right[index]?.id);
+  return (
+    before.prompt !== after.prompt ||
+    before.speechTranscription !== after.speechTranscription ||
+    !sameIds(before.images, after.images) ||
+    !sameIds(before.files, after.files) ||
+    before.terminalContexts !== after.terminalContexts ||
+    before.previewAnnotations !== after.previewAnnotations ||
+    before.reviewComments !== after.reviewComments ||
+    before.threadContexts !== after.threadContexts ||
+    before.environmentContexts !== after.environmentContexts ||
+    before.replyTo !== after.replyTo
+  );
+}
 
 /** Keep a direct annotation when the composer cannot send it yet. */
 export function retainUnavailablePreviewAnnotation(

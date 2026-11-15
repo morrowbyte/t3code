@@ -5,7 +5,7 @@ import {
   ApprovalReviewError,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
@@ -28,7 +28,9 @@ export const toolkit = Toolkit.make(
     failure,
     failureMode: "return",
     dependencies,
-  }).annotate(Tool.Readonly, true),
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients),
   Tool.make("approval_review_propose", {
     description:
       "Submit a separate frozen proposal for the Host order assigned to this authenticated VM thread's active run. Use a distinct submissionId for each separate package; retry that ID only for identical inputs. Supply an exact UTF-16 excerpt and separate agentRationale. Host supplies all origin, VM, thread and run fields. Submission neither approves nor executes anything.",
@@ -37,7 +39,7 @@ export const toolkit = Toolkit.make(
     failure,
     failureMode: "return",
     dependencies,
-  }),
+  }).annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients),
 );
 export const handlers = McpToolAccess.toLayer(toolkit, {
   approval_review_order: McpToolAccess.readsAsCaller(() =>

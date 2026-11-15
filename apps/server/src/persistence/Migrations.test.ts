@@ -208,6 +208,7 @@ describe("runMigrations", () => {
         [100, "QueuedTurnInputIndexJsonValid"],
         [101, "ProviderTurnAttemptIndex"],
         [102, "TurnItemMessageOrdinalIndex"],
+        [103, "TurnItemInlineWorkOutput"],
       ]);
       assert.deepStrictEqual(yield* retained, before);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -477,6 +478,7 @@ it.effect("registers every migration file", () =>
     const dir = path.join(import.meta.dirname, "Migrations");
     const shippedForkIds: Record<string, number> = {
       TurnItemMessageOrdinalIndex: 102,
+      TurnItemInlineWorkOutput: 103,
       ProviderTurnAttemptIndex: 101,
       QueuedTurnInputIndexJsonValid: 100,
       AuthConnectDeniedRequests: 99,

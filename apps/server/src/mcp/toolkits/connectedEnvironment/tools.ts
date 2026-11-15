@@ -9,7 +9,7 @@ import {
   OrchestratorMcpThreadReadResult,
   OrchestratorMcpThreadSendResult,
 } from "@t3tools/contracts";
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as Schema from "effect/Schema";
 import { ConnectedEnvironmentSendRelayRequest } from "@t3tools/contracts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -31,7 +31,9 @@ const environments = Tool.make("t3_connected_environments", {
       Schema.Struct({ environmentId: EnvironmentId, label: Schema.String }),
     ),
   }),
-}).annotate(Tool.Readonly, true);
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 const list = Tool.make("t3_connected_thread_list", {
   ...common,
   description: "List threads in an already connected environment and project.",
@@ -40,7 +42,9 @@ const list = Tool.make("t3_connected_thread_list", {
     environmentId: EnvironmentId,
   }),
   success: OrchestratorMcpThreadListResult,
-}).annotate(Tool.Readonly, true);
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 const projects = Tool.make("t3_connected_project_list", {
   ...common,
   description: "List project IDs in an already connected environment, for selecting threads.",
@@ -52,7 +56,9 @@ const projects = Tool.make("t3_connected_project_list", {
     projects: Schema.Array(Schema.Struct({ id: ProjectId, title: Schema.String })),
     nextCursor: Schema.NullOr(NonNegativeInt),
   }),
-}).annotate(Tool.Readonly, true);
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 const read = Tool.make("t3_connected_thread_read", {
   ...common,
   description: "Read an existing thread in an already connected environment.",
@@ -61,7 +67,9 @@ const read = Tool.make("t3_connected_thread_read", {
     environmentId: EnvironmentId,
   }),
   success: OrchestratorMcpThreadReadResult,
-}).annotate(Tool.Readonly, true);
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 const send = Tool.make("t3_connected_thread_send", {
   ...common,
   description:
@@ -73,5 +81,6 @@ const send = Tool.make("t3_connected_thread_send", {
   success: OrchestratorMcpThreadSendResult,
 })
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.OpenWorld, true);
+  .annotate(Tool.OpenWorld, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 export const ConnectedEnvironmentToolkit = Toolkit.make(environments, projects, list, read, send);

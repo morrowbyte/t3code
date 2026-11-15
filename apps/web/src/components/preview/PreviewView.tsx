@@ -41,6 +41,7 @@ import {
 } from "~/browserHistoryStore";
 import { type ComposerImageAttachment, useComposerDraftStore } from "~/composerDraftStore";
 import { capturePreviewAnnotationScreenshot } from "~/lib/previewAnnotation";
+import { readComposerImageBytes } from "../chat/composerAttachmentFiles";
 import { ensureLocalApi } from "~/localApi";
 import { getClientSettings } from "~/hooks/useSettings";
 import {
@@ -863,7 +864,7 @@ export function PreviewView({
     );
   };
 
-  const handleAnnotation = (
+  const handleAnnotation = async (
     picked: PreviewAnnotationPayload,
     submission: "attach" | "send",
     screenshotFailed = false,
@@ -873,6 +874,7 @@ export function PreviewView({
     const cropDropped = screenshotFailed || capture.status === "failed";
     const annotation = capture.status === "failed" ? { ...picked, screenshot: null } : picked;
     replaceSelection(threadRef, annotation);
+    if (capture.status === "captured") await readComposerImageBytes(capture.file);
     if (cropDropped) {
       toastManager.add(
         stackedThreadToast({
@@ -979,7 +981,7 @@ export function PreviewView({
         submitted = true;
       }
       const { annotation: picked, submission, screenshotFailed = false } = result;
-      handleAnnotation(picked, submission, screenshotFailed);
+      await handleAnnotation(picked, submission, screenshotFailed);
     }).then(finishPick);
   };
 
@@ -1189,8 +1191,8 @@ export function PreviewView({
           annotation={selection}
           canSend={canSendAnnotation}
           onSend={(annotation) => handleAnnotation(annotation, "send")}
-          onAttach={(annotation) => {
-            handleAnnotation(annotation, "attach");
+          onAttach={async (annotation) => {
+            await handleAnnotation(annotation, "attach");
             clearSelection(threadRef, annotation.id);
             if (pickActiveRef.current) {
               pickActiveRef.current.cancelled = true;

@@ -8,6 +8,7 @@ export interface PendingUserInputQuestion {
   readonly allowCustomAnswer?: boolean | undefined;
   readonly initialAnswer?: string | undefined;
   readonly field?: UserFormField | undefined;
+  readonly required?: boolean | undefined;
 }
 
 export interface PendingUserInputDraftAnswer {
@@ -83,6 +84,9 @@ export function resolvePendingUserInputAnswer(
         : normalizeDraftAnswer(draft?.customAnswer);
   if (customAnswer !== null && customAnswer.length > 0) {
     return customAnswer;
+  }
+  if (question.required === false && question.options.length === 0) {
+    return "";
   }
 
   const selectedOptionValues = normalizeSelectedOptionValues(question, draft?.selectedOptionValues);
