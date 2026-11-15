@@ -25,6 +25,11 @@ const harness = vi.hoisted(() => ({
 vi.mock("./markdownCodeHighlightState", () => ({
   useMarkdownCodeHighlight: () => undefined,
 }));
+vi.mock("react-native-nitro-modules", async () => {
+  const { createWasmHighlightsModule } = await import("../../lib/highlights.testing");
+  const highlights = createWasmHighlightsModule();
+  return { NitroModules: { hasHybridObject: () => true, createHybridObject: () => highlights } };
+});
 vi.mock("../settings/appearance/AppearancePreferencesProvider", () => ({
   useAppearancePreferences: () => ({ themeAppearance: "dark" }),
 }));
@@ -42,6 +47,7 @@ vi.mock("../../lib/copyTextWithHaptic", () => ({ tryCopyTextWithHaptic: harness.
 vi.mock("react-native", async () => {
   const React = await import("react");
   return {
+    Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
     View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
     Modal: ({ children }: { children?: ReactNode }) => <div role="dialog">{children}</div>,
     ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
