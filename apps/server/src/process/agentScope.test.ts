@@ -70,15 +70,23 @@ const withFakeSystemd = <A, E>(
     stopFails = false,
     leftovers = false,
     liveOwner = false,
+    beforeStartup,
   }: {
     readonly oomPolicy?: boolean;
     readonly stopFails?: boolean;
     readonly leftovers?: boolean;
     readonly liveOwner?: boolean;
+    readonly beforeStartup?: (input: {
+      readonly calls: ReadonlyArray<ReadonlyArray<string>>;
+      readonly stateDir: string;
+    }) => void;
   } = {},
 ) =>
   Effect.gen(function* () {
     const bin = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-agent-scope-"));
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => NodeFS.rmSync(bin, { recursive: true, force: true })),
+    );
     for (const name of ["systemd-run", "systemctl", "agent"]) {
       NodeFS.writeFileSync(NodePath.join(bin, name), "", { mode: 0o755 });
     }
@@ -126,8 +134,12 @@ const withFakeSystemd = <A, E>(
     const fileSystem = yield* FileSystem.FileSystem;
     const { stateDir } = yield* ServerConfig.ServerConfig;
     if (leftovers) {
-      units.set(ownedAgentSlice(stateDir), { activeState: "active", result: "success" });
+      exitedAgent(units, cgroupRoot, ownedAgentSlice(stateDir), {
+        populated: true,
+        oomKills: 0,
+      });
     }
+    beforeStartup?.({ calls, stateDir });
     const scope = yield* make.pipe(
       Effect.provideService(ProviderProcesses.ProviderProcesses, { hasOtherLiveOwner: liveOwner }),
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
@@ -148,9 +160,7 @@ const withFakeSystemd = <A, E>(
           ),
       }),
     );
-    return yield* body({ scope, units, calls, failingVerbs, stateDir, cgroupRoot }).pipe(
-      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(bin, { recursive: true, force: true }))),
-    );
+    return yield* body({ scope, units, calls, failingVerbs, stateDir, cgroupRoot });
   }).pipe(
     Effect.scoped,
     Effect.provide(
@@ -404,29 +414,27 @@ describe("AgentScope service", () => {
   );
 
   it.effect("stops agents a killed server left before the first launch", () =>
-    withFakeSystemd(({ scope, units, calls, stateDir, cgroupRoot }) =>
-      Effect.gen(function* () {
-        exitedAgent(units, cgroupRoot, ownedAgentSlice(stateDir), {
-          populated: true,
-          oomKills: 0,
-        });
-        const agent = yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" });
-        const stops = calls.filter(([, verb]) => verb === "stop");
-        expect(stops).toEqual([["--user", "stop", ownedAgentSlice(stateDir)]]);
-        // Agents run in this server's own slice; terminals stay outside it.
-        expect(sliceOf(agent)).toBe(ownedAgentSlice(stateDir));
-        // An agent that ignores SIGTERM is killed well inside the stop's wait.
-        expect(agent.args).toContain("--property=TimeoutStopSec=10s");
-        const terminal = yield* scope.wrap({
-          command: "agent",
-          args: [],
-          name: "terminal",
-          survivesRestart: true,
-        });
-        expect(sliceOf(terminal)).toBe("app-t3code-agents.slice");
-        // Only the first launch looks for leftovers.
-        expect(calls.filter(([, verb]) => verb === "stop")).toHaveLength(1);
-      }),
+    withFakeSystemd(
+      ({ scope, calls, stateDir }) =>
+        Effect.gen(function* () {
+          const agent = yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" });
+          const stops = calls.filter(([, verb]) => verb === "stop");
+          expect(stops).toEqual([["--user", "stop", ownedAgentSlice(stateDir)]]);
+          // Agents run in this server's own slice; terminals stay outside it.
+          expect(sliceOf(agent)).toBe(ownedAgentSlice(stateDir));
+          // An agent that ignores SIGTERM is killed well inside the stop's wait.
+          expect(agent.args).toContain("--property=TimeoutStopSec=10s");
+          const terminal = yield* scope.wrap({
+            command: "agent",
+            args: [],
+            name: "terminal",
+            survivesRestart: true,
+          });
+          expect(sliceOf(terminal)).toBe("app-t3code-agents.slice");
+          // Only the first launch looks for leftovers.
+          expect(calls.filter(([, verb]) => verb === "stop")).toHaveLength(1);
+        }),
+      { leftovers: true },
     ),
   );
 
@@ -515,26 +523,25 @@ describe("AgentScope service", () => {
       }),
     ),
   );
-  it.effect("refuses a new launch when stopping the previous server's exact slice fails", () =>
-    withFakeSystemd(
-      ({ scope, units, calls, stateDir, cgroupRoot }) =>
-        Effect.gen(function* () {
-          exitedAgent(units, cgroupRoot, ownedAgentSlice(stateDir), {
-            populated: true,
-            oomKills: 0,
-          });
-          const launch = yield* scope
-            .wrap({ command: "agent", args: [], name: "t", threadId: "a" })
-            .pipe(Effect.exit);
-          expect(launch._tag).toBe("Failure");
-          expect(calls.filter(([, verb]) => verb === "stop")).toEqual([
-            ["--user", "stop", ownedAgentSlice(stateDir)],
-          ]);
-          expect(calls.some((args) => args.includes("--scope"))).toBe(false);
-        }),
-      { stopFails: true },
-    ),
-  );
+  it.effect("refuses a new launch when stopping the previous server's exact slice fails", () => {
+    let startupCalls: ReadonlyArray<ReadonlyArray<string>> = [];
+    let previousSlice = "";
+    return withFakeSystemd(() => Effect.succeed("started"), {
+      leftovers: true,
+      stopFails: true,
+      beforeStartup: ({ calls, stateDir }) => {
+        startupCalls = calls;
+        previousSlice = ownedAgentSlice(stateDir);
+      },
+    }).pipe(
+      Effect.exit,
+      Effect.map((startup) => {
+        expect(startup._tag).toBe("Failure");
+        expect(stopsOf(startupCalls)).toEqual([["--user", "stop", previousSlice]]);
+        expect(startupCalls.some((args) => args.includes("--scope"))).toBe(false);
+      }),
+    );
+  });
 
   it("isolates process ownership by the exact server state directory", () => {
     expect(ownedAgentSlice("/home/task/state-a")).toBe(ownedAgentSlice("/home/task/state-a"));
