@@ -12,6 +12,7 @@ export type YaziPickerSessionInput = typeof YaziPickerSessionInput.Type;
 export const YaziPickerWriteInput = Schema.Struct({
   sessionId: PickerId,
   data: Schema.String.check(Schema.isMaxLength(65536)),
+  binary: Schema.optionalKey(Schema.Boolean),
 });
 export type YaziPickerWriteInput = typeof YaziPickerWriteInput.Type;
 export const YaziPickerResizeInput = Schema.Struct({ sessionId: PickerId, cols: Cols, rows: Rows });

@@ -21,7 +21,7 @@ import {
 import {
   COMPACT_THREAD_CACHE_SCHEMA_VERSION,
   decodeStoredThreadSnapshot,
-  encodeStoredThreadSnapshot,
+  makeStoredThreadSnapshotEncoder,
 } from "./threadCacheEncoding.ts";
 
 import { applyOrchestrationV2ProjectionEvent } from "../state/orchestrationV2Projection.ts";
@@ -113,7 +113,9 @@ describe("orchestration cache envelopes", () => {
         ...stored,
         schemaVersion: ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
       });
-      const compact = yield* encodeStoredThreadSnapshot(stored);
+      const compact = Option.getOrThrow(
+        yield* makeStoredThreadSnapshotEncoder({ format: "compact" })(stored),
+      );
       expect((yield* decodeStoredThreadSnapshot(full)).snapshot).toEqual(stored.snapshot);
       expect((yield* decodeStoredThreadSnapshot(compact)).snapshot).toEqual(stored.snapshot);
       expect(JSON.parse(compact).schemaVersion).toBe(COMPACT_THREAD_CACHE_SCHEMA_VERSION);

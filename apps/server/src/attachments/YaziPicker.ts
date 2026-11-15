@@ -274,7 +274,7 @@ const make = Effect.gen(function* () {
       const session = yield* getSession(owner, input.sessionId);
       if (session.state !== "running" || session.exitCode !== undefined) return;
       yield* Effect.try({
-        try: () => session.process.write(input.data),
+        try: () => session.process.write(PtyAdapter.ptyInput(input.data, input.binary)),
         catch: (cause) => new YaziPickerError({ reason: "terminal", cause }),
       });
     }),

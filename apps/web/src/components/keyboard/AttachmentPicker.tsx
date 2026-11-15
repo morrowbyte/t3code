@@ -121,6 +121,9 @@ function YaziTerminal(props: {
         onData: (data) => {
           if (!disposed && sessionId) void api.write(sessionId, data).catch(fail);
         },
+        onBinary: (data) => {
+          if (!disposed && sessionId) void api.write(sessionId, data, true).catch(fail);
+        },
         onResize: (cols, rows) => {
           if (!disposed && sessionId) void api.resize(sessionId, cols, rows).catch(fail);
         },

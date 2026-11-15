@@ -46,8 +46,8 @@ export function yaziPickerApi(environmentId: EnvironmentId) {
   return {
     open: () => execute(openYaziPicker, { environmentId, input: { cols: 100, rows: 30 } }),
     poll: (sessionId: string) => execute(poll, { environmentId, input: { sessionId } }),
-    write: (sessionId: string, data: string) =>
-      execute(write, { environmentId, input: { sessionId, data } }),
+    write: (sessionId: string, data: string, binary = false) =>
+      execute(write, { environmentId, input: { sessionId, data, binary } }),
     resize: (sessionId: string, cols: number, rows: number) =>
       execute(resize, { environmentId, input: { sessionId, cols, rows } }),
     read: (sessionId: string, fileId: string, offset: number) =>
