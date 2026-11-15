@@ -297,7 +297,10 @@ const stopOrphanedChild = Effect.fn("devRunnerControl.stopOrphanedChild")(
       return false;
     const ownedMembers = members;
     const signal = (pid: number, value: NodeJS.Signals) =>
-      Effect.try(() => NodeProcess.kill(pid, value)).pipe(Effect.isSuccess);
+      Effect.try({
+        try: () => NodeProcess.kill(pid, value),
+        catch: (cause) => new DevRunnerControlError({ operation: "stop", cause }),
+      }).pipe(Effect.isSuccess);
     const signalMembers = Effect.fn("devRunnerControl.signalMembers")(function* (
       value: NodeJS.Signals,
     ) {
@@ -586,11 +589,14 @@ const recoverStoppedReceipt = Effect.fn("devRunnerControl.recoverStoppedReceipt"
           const next = { ...receipt, recoveryMembers: members };
           const nextContents = encodeJson(next);
           if (new TextEncoder().encode(nextContents).byteLength > 4096) return false;
-          return yield* Effect.try(() => {
-            NodeFS.writeFileSync(receiptPath, nextContents, { mode: 0o600 });
-            receipt = next;
-            contents = nextContents;
-            return true;
+          return yield* Effect.try({
+            try: () => {
+              NodeFS.writeFileSync(receiptPath, nextContents, { mode: 0o600 });
+              receipt = next;
+              contents = nextContents;
+              return true;
+            },
+            catch: (cause) => new DevRunnerControlError({ operation: "stop", cause }),
           }).pipe(Effect.orElseSucceed(() => false));
         });
         if (!(yield* canOwn)) return undefined;
