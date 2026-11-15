@@ -322,6 +322,11 @@ export class DesktopBuildManifestRestoreError extends Schema.TaggedError<Desktop
   }
 }
 
+class DesktopRestoreCompatibilityError extends Schema.TaggedError<
+  DesktopRestoreCompatibilityError,
+  { readonly brand: unique symbol }
+>()("DesktopRestoreCompatibilityError", { cause: Schema.Defect() }) {}
+
 export class CuaRuntimeStageError extends Schema.TaggedError<
   CuaRuntimeStageError,
   { readonly brand: unique symbol }
@@ -4143,28 +4148,31 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     for (const entry of entries) await visit(entry);
     return hash.digest("hex");
   };
-  const restoreCompatibility = yield* Effect.tryPromise(async () => ({
-    database: await restoreFingerprint([
-      "apps/server/src/persistence/Migrations.ts",
-      "apps/server/src/persistence/Migrations",
-    ]),
-    events: await restoreFingerprint([
-      "packages/contracts/src/orchestrationV2.ts",
-      "apps/server/src/persistence/OrchestrationEventStore.ts",
-    ]),
-    profile: NodeCrypto.createHash("sha256")
-      .update(electronVersion)
-      .update("\0")
-      .update(
-        await restoreFingerprint([
-          "apps/desktop/src/app/DesktopUserData.ts",
-          "apps/desktop/src/app/ClerkTokenStore.ts",
-          "apps/desktop/src/app/DesktopWindowsProfileBinding.ts",
-          "apps/desktop/src/settings",
-        ]),
-      )
-      .digest("hex"),
-  }));
+  const restoreCompatibility = yield* Effect.tryPromise({
+    try: async () => ({
+      database: await restoreFingerprint([
+        "apps/server/src/persistence/Migrations.ts",
+        "apps/server/src/persistence/Migrations",
+      ]),
+      events: await restoreFingerprint([
+        "packages/contracts/src/orchestrationV2.ts",
+        "apps/server/src/persistence/OrchestrationEventStore.ts",
+      ]),
+      profile: NodeCrypto.createHash("sha256")
+        .update(electronVersion)
+        .update("\0")
+        .update(
+          await restoreFingerprint([
+            "apps/desktop/src/app/DesktopUserData.ts",
+            "apps/desktop/src/app/ClerkTokenStore.ts",
+            "apps/desktop/src/app/DesktopWindowsProfileBinding.ts",
+            "apps/desktop/src/settings",
+          ]),
+        )
+        .digest("hex"),
+    }),
+    catch: (cause) => new DesktopRestoreCompatibilityError({ cause }),
+  });
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
     version: appVersion,

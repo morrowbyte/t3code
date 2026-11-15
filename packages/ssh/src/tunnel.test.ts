@@ -185,7 +185,7 @@ describe("ssh tunnel scripts", () => {
       "T3_RELEASE_BASE_URL='https://github.com/morrowbyte/t3code/releases/download'",
     );
     assert.include(script, 'T3_RUNTIME_DIR="$HOME/.t3/runtime/versions/$T3_ARCHIVE_VERSION"');
-    assert.include(script, 'T3_ARCHIVE="t3-$T3_ARCHIVE_VERSION-$T3_PLATFORM-$T3_ARCH.tar.gz"');
+    assert.include(script, 'T3_ARCHIVE="t3-$T3_ARCHIVE_VERSION-$T3_PLATFORM_KEY.tar.gz"');
     assert.include(script, "SHA256SUMS");
     assert.include(script, 'exec "$T3_RUNTIME_DIR/t3" "$@"');
     assert.notInclude(script, "npx");
@@ -392,7 +392,7 @@ describe("ssh tunnel scripts", () => {
           assert.include(result.stderr, "download attempt");
           // A bare curl error does not tell the user that t3 itself could not be downloaded.
           assert.include(result.stderr, ARCHIVE.archiveVersion);
-          assert.include(result.stderr, "https://github.com/pingdotgg/t3code/releases/download");
+          assert.include(result.stderr, "https://github.com/morrowbyte/t3code/releases/download");
         } else {
           assert.notInclude(result.stderr, "download attempt");
           assert.include(result.stderr, "has no t3 release archive.");
@@ -1070,7 +1070,7 @@ describe("ssh tunnel scripts", () => {
             if (args.some((arg) => arg.includes("__ssh-helper desktop-browser"))) {
               helperSpawns += 1;
             }
-            if (args.includes("-s")) launches += 1;
+            if (launchStateKey(command) !== undefined) launches += 1;
             return makeSuccessfulProcess('{"remotePort":3773}\n');
           }),
         );

@@ -100,6 +100,18 @@ export class CliArchiveInputMissingError extends Schema.TaggedError<CliArchiveIn
   }
 }
 
+class CliArchiveRestoreManifestError extends Schema.TaggedError<
+  CliArchiveRestoreManifestError,
+  { readonly brand: unique symbol }
+>()("CliArchiveRestoreManifestError", { directory: Schema.String, cause: Schema.Defect() }) {}
+
+const readRestoreFiles = Effect.fn("cliArchive.readRestoreFiles")((directory: string) =>
+  Effect.tryPromise({
+    try: () => serverRestoreFiles(directory),
+    catch: (cause) => new CliArchiveRestoreManifestError({ directory, cause }),
+  }),
+);
+
 export function cliArchivePlatformKey(platform: BuildPlatform, arch: BuildArch): string {
   const nodePlatform = platform === "mac" ? "darwin" : platform === "win" ? "win32" : "linux";
   return `${nodePlatform}-${arch}`;
@@ -702,7 +714,7 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
     });
   }
   const contractsDir = path.join(repoRoot, "packages/contracts/src");
-  const contractSources = (yield* Effect.tryPromise(() => serverRestoreFiles(contractsDir))).filter(
+  const contractSources = (yield* readRestoreFiles(contractsDir)).filter(
     ({ path: sourcePath }) => sourcePath.endsWith(".ts") && !sourcePath.endsWith(".test.ts"),
   );
   const profileSources: Array<readonly [string, string]> = [];
@@ -713,9 +725,7 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
     ]);
   }
   for (const relative of ["auth", "secrets"]) {
-    for (const file of yield* Effect.tryPromise(() =>
-      serverRestoreFiles(path.join(serverDir, "src", relative)),
-    )) {
+    for (const file of yield* readRestoreFiles(path.join(serverDir, "src", relative))) {
       if (file.path.endsWith(".ts") && !file.path.endsWith(".test.ts"))
         profileSources.push([`${relative}/${file.path}`, file.sha256]);
     }
@@ -730,7 +740,7 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
       profileContract: `${SERVER_RESTORE_PROFILE_CONTRACT}:${serverRestoreHash(yield* encodeJsonString(profileSources))}`,
       eventContract: serverRestoreHash(yield* encodeJsonString(contractSources)),
       migrations: migrationManifest.map(([id, name]) => ({ id, name })),
-      files: yield* Effect.tryPromise(() => serverRestoreFiles(contentDir)),
+      files: yield* readRestoreFiles(contentDir),
     })}\n`,
   );
 

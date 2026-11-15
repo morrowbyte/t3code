@@ -3,6 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@t3tools/shared/Net";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   createDevRunnerOutput,
   DevRunnerControlError,
@@ -43,12 +44,13 @@ const program = Effect.gen(function* () {
   });
   const input = yield* decodeInput(raw);
   const workspace = yield* resolveTaskWorkspace(process.cwd());
-  if (!workspace || !process.env.T3CODE_THREAD_ID)
+  const threadId = (yield* HostProcess.Environment).T3CODE_THREAD_ID;
+  if (!workspace || !threadId)
     return yield* new DevRunnerControlError({ operation: "register", cause: "Missing task owner" });
   const fs = yield* FileSystem.FileSystem;
   let retained = false;
   const log = yield* Effect.acquireRelease(
-    createDevRunnerOutput({ workspacePath: workspace, threadId: process.env.T3CODE_THREAD_ID }),
+    createDevRunnerOutput({ workspacePath: workspace, threadId }),
     (log) => (retained ? Effect.void : log.remove.pipe(Effect.orDie)),
   );
   const logPath = log.path;

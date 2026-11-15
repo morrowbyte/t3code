@@ -467,6 +467,7 @@ it.layer(devRunnerLayer, { excludeTestServices: true })("dev-runner", (it) => {
       Effect.scoped(
         Effect.gen(function* () {
           const { detached, crashed, descendant } = fixture;
+          const hostEnvironment = yield* HostProcess.Environment;
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const platform = yield* HostProcess.Platform;
@@ -551,8 +552,8 @@ if (process.env.RUNNER_FIXTURE_DESCENDANT) {
                 execArgv: [],
                 stdio: ["ignore", "ignore", "ignore", "ipc"],
                 env: {
-                  ...process.env,
-                  PATH: `${root}${NodePath.delimiter}${process.env.PATH ?? ""}`,
+                  ...hostEnvironment,
+                  PATH: `${root}${NodePath.delimiter}${hostEnvironment.PATH ?? ""}`,
                   T3CODE_THREAD_ID: "failed-worker-owner",
                   ...(crashed ? { RUNNER_FIXTURE_CRASH: "1" } : {}),
                   ...(descendant ? { RUNNER_FIXTURE_DESCENDANT: "1" } : {}),
@@ -780,6 +781,7 @@ process.on("SIGTERM", () => socket.end());
                 `@"${process.execPath}" "%~dp0runner-fixture.cjs" %*\r\n`,
               );
             const launch = Effect.fn("test.launchTaskRunner")(function* (selection = "a") {
+              const hostEnvironment = yield* HostProcess.Environment;
               const child = yield* Effect.acquireRelease(
                 Effect.sync(() =>
                   NodeChildProcess.fork(
@@ -795,8 +797,8 @@ process.on("SIGTERM", () => socket.end());
                       cwd,
                       execArgv: [],
                       env: {
-                        ...process.env,
-                        PATH: `${root}${NodePath.delimiter}${process.env.PATH ?? ""}`,
+                        ...hostEnvironment,
+                        PATH: `${root}${NodePath.delimiter}${hostEnvironment.PATH ?? ""}`,
                         T3CODE_THREAD_ID: "real-runner-owner",
                         T3CODE_DEV_HOME: path.join(root, `dev-home-${selection}`),
                         T3CODE_HOME: path.join(
