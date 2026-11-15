@@ -2762,7 +2762,9 @@ describe("orchestrator MCP toolkit", () => {
               threadId: parentThreadId,
               cursor: 90,
             }).pipe(Effect.flip);
-            expect(unknownPagingParamError.message).toContain("Expected no excess property");
+            expect(unknownPagingParamError.message).toBe(
+              "Invalid parameters for tool 't3_thread_read': Unknown argument \"cursor\". Accepted arguments: environmentId, threadId, itemId, textOffset, view, afterPosition, beforePosition, limit, runLimit, maxCharsPerItem.",
+            );
             const threadUpdateTool = server.tools.find(
               ({ tool }) => tool.name === "t3_thread_update",
             );
