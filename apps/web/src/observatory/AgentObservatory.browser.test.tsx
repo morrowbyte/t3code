@@ -1,4 +1,5 @@
 import { RegistryContext } from "@effect/atom-react";
+import type { EnvironmentCatalogState } from "@t3tools/client-runtime/state/connections";
 import {
   createObservatoryViewAtoms,
   type ObservatoryAuthoredSource,
@@ -38,7 +39,21 @@ vi.mock("@t3tools/client-runtime/observatory", async (importOriginal) => {
     }),
   };
 });
-vi.mock("../connection/catalog", () => ({ environmentCatalog: { catalogValueAtom: null } }));
+vi.mock("../connection/catalog", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../connection/catalog")>();
+  const { AsyncResult, Atom } = await import("effect/reactivity");
+  const catalog: EnvironmentCatalogState = { isReady: true, entries: new Map() };
+  return {
+    ...actual,
+    environmentCatalog: {
+      ...actual.environmentCatalog,
+      catalogAtom: Atom.make(AsyncResult.success(catalog)),
+      catalogValueAtom: Atom.make(catalog),
+      networkStatusAtom: Atom.make(AsyncResult.success("unknown" as const)),
+      networkStatusValueAtom: Atom.make("unknown" as const),
+    },
+  };
+});
 vi.mock("../connection/runtime", async () => {
   const { Atom } = await import("effect/reactivity");
   const Layer = await import("effect/Layer");
