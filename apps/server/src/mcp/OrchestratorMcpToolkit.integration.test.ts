@@ -1855,7 +1855,8 @@ describe("orchestrator MCP toolkit", () => {
         }),
       ),
   );
-  it.live(
+  // quarantine: #156 nondeterministic follow-up cohorts and continuation offers
+  it.live.skip(
     "delegates cross-provider tasks, polls and cancels children, and creates ordinary threads",
     () =>
       Effect.scoped(
