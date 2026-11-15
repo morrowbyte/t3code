@@ -43,6 +43,7 @@ export function composerCommandKeyHandler(input: {
   readonly toggleInteractionMode: () => void;
 
   readonly keybindings: ChatComposerProps["keybindings"];
+  readonly getShortcutContext: ChatComposerProps["getShortcutContext"];
   readonly sendShortcut: ChatComposerProps["settings"]["sendShortcut"];
   readonly routeKind: ChatComposerProps["routeKind"];
   readonly phase: ChatComposerProps["phase"];
@@ -107,6 +108,7 @@ export function composerCommandKeyHandler(input: {
     toggleInteractionMode,
 
     keybindings,
+    getShortcutContext,
     sendShortcut,
     routeKind,
     phase,
@@ -229,6 +231,7 @@ export function composerCommandKeyHandler(input: {
     const submissionIntent = composerSubmissionIntentForKey({
       event,
       keybindings,
+      context: getShortcutContext(event.target),
       isSoftwareKeyboardOpen,
       isDraftThread: routeKind === "draft",
       isRunning: phase === "running" || phase === "connecting",

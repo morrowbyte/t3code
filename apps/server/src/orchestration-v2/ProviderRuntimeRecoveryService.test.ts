@@ -2119,6 +2119,7 @@ it.effect(
       assert.deepEqual(committedInput?.cancelUnsettledEffects?.effectTypes, [
         "privileged-command.execute",
         "provider-session.apply-model-selection",
+        "provider-session.apply-thread-title",
         "provider-turn.start",
         "provider-turn.interrupt",
         "provider-turn.steer",

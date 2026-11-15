@@ -11,10 +11,11 @@ import {
   type AtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
+import { parseFileUrlHref, splitFilePathPosition } from "@t3tools/shared/fileLinks";
+import { safeDecodeURIComponent } from "@t3tools/shared/markdownLinks";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
-import { splitFilePathPosition } from "@t3tools/shared/fileLinks";
 import { getLocalStorageItem, setLocalStorageItem, useLocalStorage } from "./hooks/useLocalStorage";
 import { shellEnvironment } from "./state/shell";
 import { useAtomCommand } from "./state/use-atom-command";
@@ -159,8 +160,12 @@ export function useOpenInPreferredEditor(
         ),
       );
     }
+    const uri = /^file:\/\//iu.test(targetPath) ? parseFileUrlHref(targetPath) : null;
+    const { line, column } = uri ? splitFilePathPosition("", uri.hash) : {};
     if (remote.state.mode === "remote-links") {
-      const position = splitFilePathPosition(targetPath);
+      const position = uri
+        ? { path: safeDecodeURIComponent(uri.path), line, column }
+        : splitFilePathPosition(targetPath);
       const url = buildRemoteOpenUrl({
         editor,
         ...remote.state.host,
@@ -179,7 +184,8 @@ export function useOpenInPreferredEditor(
     const result = await openInEditor({
       environmentId,
       input: {
-        cwd: targetPath,
+        cwd: uri ? safeDecodeURIComponent(uri.path) : targetPath,
+        ...(uri ? { position: { line, column } } : {}),
         editor,
         ...(projectRoot ? { projectRoot } : {}),
       },
