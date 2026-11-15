@@ -1,5 +1,6 @@
 import { describe, it, assert } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeEvents from "node:events";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -94,10 +95,11 @@ const fixture = Effect.gen(function* () {
     Effect.provide(
       Layer.mergeAll(
         NodeServices.layer,
-        Layer.mock(ElectronWindow.ElectronWindow)({
+        NodeCrypto.layer,
+        Layer.mock(ElectronWindow.ElectronWindow, {
           main: Effect.suspend(() => beforeMain).pipe(Effect.andThen(Ref.get(current))),
         }),
-        Layer.mock(ElectronApp.ElectronApp)({
+        Layer.mock(ElectronApp.ElectronApp, {
           metadata: Effect.suspend(() => beforeMetadata).pipe(
             Effect.as({
               appVersion: "0.0.47-nightly.20261015.28",

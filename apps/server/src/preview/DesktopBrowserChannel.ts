@@ -16,6 +16,7 @@ import {
   type DesktopBrowserPrivateEntryAttachment,
   type DesktopBrowserPrivateEntryRequest,
   type DesktopBrowserPrivateEntryResponse,
+  type PreviewAutomationLoadError,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -202,6 +203,10 @@ export class DesktopBrowserChannel extends Context.Service<
     readonly detached: Stream.Stream<DesktopTabKey>;
     readonly attached: Stream.Stream<DesktopTabAttachment>;
     readonly isAttached: (key: DesktopTabKey) => Effect.Effect<boolean>;
+    /** Whether a desktop window draws the tab on screen, which no streamed viewer counts. */
+    readonly isShown: (key: DesktopTabKey) => boolean;
+    /** A load failure the desktop saw, possibly before the server connected to the tab. */
+    readonly loadFailure: (key: DesktopTabKey) => PreviewAutomationLoadError | undefined;
     readonly endpoint: (key: DesktopTabKey) => Effect.Effect<string, never, Scope.Scope>;
     readonly pointer: (
       key: DesktopTabKey,
@@ -253,6 +258,9 @@ const make = Effect.gen(function* () {
   const matches = (attachment: DesktopAttachment, target: DesktopBrowserPrivateEntryAttachment) =>
     attachment.privateEntry?.channelEpoch === target.channelEpoch &&
     attachment.privateEntry?.attachmentId === target.attachmentId;
+  // Missing reports protect desktop tabs until the renderer explicitly marks them hidden.
+  const shownTabs = new Map<string, boolean>();
+  const loadFailures = new Map<string, PreviewAutomationLoadError>();
 
   const privateEntries = yield* makePrivateEntryRouter((response) =>
     Effect.suspend(() => {
@@ -271,6 +279,8 @@ const make = Effect.gen(function* () {
   ) {
     if (attachedTabs.get(keyOf(attachment.key)) !== attachment) return;
     attachedTabs.delete(keyOf(attachment.key));
+    shownTabs.delete(keyOf(attachment.key));
+    loadFailures.delete(keyOf(attachment.key));
     const waiting = [...attachment.waiting];
     attachment.waiting.clear();
     if (attachment.relay) {
@@ -349,6 +359,17 @@ const make = Effect.gen(function* () {
         if (attachment?.relay) yield* Queue.offer(attachment.relay.queue, event.message);
         return;
       }
+      case "loadFailed":
+        if (attachment)
+          loadFailures.set(id, {
+            url: event.url.slice(0, 2048),
+            code: event.code,
+            description: event.description,
+          });
+        return;
+      case "shown":
+        if (attachment) shownTabs.set(id, event.shown);
+        return;
       case "attached": {
         if (
           attachment &&
@@ -576,12 +597,12 @@ const make = Effect.gen(function* () {
           if (connected || !current(attachment) || attachment.relay !== relay) return;
           connected = true;
           const writer = yield* socket.writer;
-          yield* Stream.fromQueue(relay.queue).pipe(
+          const toPlaywright = Stream.fromQueue(relay.queue).pipe(
             Stream.runForEach((message) => writer.write(message)),
-            Effect.forkScoped,
+            Effect.exit,
           );
           const decoder = new TextDecoder();
-          yield* reader.pull.pipe(
+          const toDesktop = reader.pull.pipe(
             Effect.flatMap((frames) =>
               Effect.forEach(
                 frames,
@@ -597,6 +618,7 @@ const make = Effect.gen(function* () {
             Effect.forever,
             Effect.raceFirst(Deferred.await(relay.closed)),
           );
+          return yield* Effect.raceFirst(toPlaywright, toDesktop);
         }).pipe(Effect.scoped, Effect.ignore),
       )
       .pipe(Effect.forkScoped);
@@ -644,6 +666,8 @@ const make = Effect.gen(function* () {
         return attachment === undefined ? attachedTabs.has(keyOf(key)) : current(attachment);
       });
     }),
+    isShown: (key) => shownTabs.get(keyOf(key)) ?? true,
+    loadFailure: (key) => loadFailures.get(keyOf(key)),
     endpoint,
     turn: Effect.fn("DesktopBrowserChannel.turn")(function* (threadId, active) {
       const owners = activeTurns.get(threadId) ?? new Set<DesktopConnection>();

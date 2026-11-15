@@ -3,7 +3,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import { CodexSettings } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import type { Done } from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -157,7 +157,7 @@ const makeHarness = Effect.fn("CodexEvaluationTest.makeHarness")(function* (
           );
         }),
     },
-    crypto: yield* Crypto.Crypto,
+    digest: yield* Digest.Digest,
     fileSystem: yield* FileSystem.FileSystem,
     idAllocator: yield* IdAllocator.IdAllocatorV2,
     serverConfig: yield* ProviderReplayHarness.makeReplayServerConfig("evaluation").pipe(

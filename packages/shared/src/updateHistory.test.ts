@@ -1,3 +1,5 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as Layer from "effect/Layer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -5,7 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { makeUpdateHistory, updateHistoryUuid } from "./updateHistory.ts";
 
-it.layer(NodeServices.layer)("durable update receipts", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("durable update receipts", (it) => {
   it.effect("uses injected UUID methods and Effect values lazily and preserves failures", () =>
     Effect.gen(function* () {
       let calls = 0;

@@ -4,7 +4,7 @@ import {
   isHostUpdateTerminal,
   type HostUpdateStatus,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -34,7 +34,7 @@ export const updateHistoryUuid = <E>(crypto: {
 export const makeUpdateHistory = Effect.fn("updates.history.make")(function* (file: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Crypto.SecureRandom;
   const mutex = yield* Semaphore.make(1);
   const failure = (reason: string) => new HostUpdateHistoryError({ reason });
   const read = Effect.suspend(() => fs.readFileString(file)).pipe(
@@ -100,7 +100,7 @@ export const makeUpdateHistory = Effect.fn("updates.history.make")(function* (fi
         targetVersion: string | null,
       ) =>
         Effect.gen(function* () {
-          const id = yield* updateHistoryUuid(crypto).pipe(
+          const id = yield* updateHistoryUuid({ randomUUIDv4: () => crypto.uuidV4() }).pipe(
             Effect.mapError(() => failure("Could not create an update receipt.")),
           );
           const now = DateTime.formatIso(yield* DateTime.now);

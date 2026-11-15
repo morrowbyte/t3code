@@ -5,6 +5,7 @@ import type {
   OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import {
+  isJsonToolText,
   toolCallLines,
   turnItemDetailRevision,
   turnItemNeedsDetailFetch,
@@ -35,9 +36,10 @@ import type { ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ShellCommandBlock } from "./ShellCommandBlock";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { handleObjectActionKey } from "./objectKeyboardActions";
-import type { TurnItemSource } from "./timelineRowContext";
+import { useInitialOutputReady, type TurnItemSource } from "./timelineRowContext";
 
 interface V2ItemInspectorProps {
+  readonly onInitialOutputReady?: (() => void) | undefined;
   readonly projectedItem: OrchestrationV2ProjectedTurnItem;
   readonly environmentId: EnvironmentId;
   readonly cwd?: string | undefined;
@@ -94,7 +96,7 @@ function SyntaxTokens({
   language,
 }: {
   readonly text: string;
-  readonly language: "json" | "typescript";
+  readonly language: "json" | "typescript" | "html";
 }) {
   const resolvedTheme = useRenderedAppearance();
   const highlighter = use(getSyntaxHighlighterPromise(language));
@@ -115,16 +117,6 @@ function SyntaxTokens({
 const monoClassName =
   "font-mono text-(length:--font-size-code,var(--text-2xs)) leading-relaxed whitespace-pre-wrap break-words select-text";
 
-function isJsonText(text: string): boolean {
-  if (!text) return false;
-  try {
-    JSON.parse(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function StructuredValue({
   value,
   highlightJson = false,
@@ -132,10 +124,10 @@ function StructuredValue({
 }: {
   readonly value: unknown;
   readonly highlightJson?: boolean;
-  readonly language?: "typescript";
+  readonly language?: "typescript" | "html" | "json";
 }) {
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-  const isJson = highlightJson && isJsonText(text);
+  const isJson = highlightJson && isJsonToolText(text);
   if (!text) return null;
   return (
     <div
@@ -216,8 +208,8 @@ interface ToolOutputState {
   readonly onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
 }
 
-function ToolOutput(props: ToolOutputState) {
-  const images = props.images.map((resource) => (
+function ToolOutputImages(props: ToolOutputState) {
+  return props.images.map((resource) => (
     <ChatMarkdownAssetImage
       key={resource.index}
       environmentId={props.environmentId}
@@ -227,7 +219,10 @@ function ToolOutput(props: ToolOutputState) {
       onImageExpand={props.onImageExpand}
     />
   ));
-  const text = props.output ? (
+}
+
+function ToolOutput(props: ToolOutputState) {
+  return props.output ? (
     <div
       data-keyboard-object="Tool output"
       tabIndex={-1}
@@ -242,32 +237,29 @@ function ToolOutput(props: ToolOutputState) {
           variant="ghost"
         />
       </div>
-      <div className="max-h-80 overflow-auto text-muted-foreground">{props.output}</div>
+      <StructuredValue value={props.output} highlightJson />
     </div>
   ) : props.pending ? (
     <div className="text-muted-foreground italic">Loading output…</div>
   ) : props.error ? (
     <div className="text-destructive">Couldn&apos;t load output: {props.error}</div>
-  ) : props.empty && images.length === 0 ? (
+  ) : props.empty && props.images.length === 0 ? (
     <div className="text-muted-foreground italic">No output.</div>
   ) : null;
-  return (
-    <>
-      {images}
-      {text}
-    </>
-  );
 }
 
 export function FetchedToolOutput(props: {
+  readonly onInitialOutputReady?: (() => void) | undefined;
   readonly projectedItem: OrchestrationV2ProjectedTurnItem;
   readonly environmentId: EnvironmentId;
   readonly onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
   readonly source?: TurnItemSource | undefined;
 }) {
   const { output } = useFetchedTurnItem(props.projectedItem, props.environmentId, props.source);
+  useInitialOutputReady(output.pending, props.onInitialOutputReady);
   return (
     <div className={cn("mt-1.5 space-y-1.5", monoClassName)}>
+      <ToolOutputImages {...output} onImageExpand={props.onImageExpand} />
       <ToolOutput {...output} onImageExpand={props.onImageExpand} />
     </div>
   );
@@ -286,13 +278,16 @@ function ToolCallBody(
   const call = toolCallLines({ command: props.command, args: props.args });
   return (
     <div className={cn("space-y-1.5", monoClassName)}>
+      <ToolOutputImages {...props} />
       {call.command ? <ShellCommandBlock command={call.command} /> : null}
       {call.args ? (
         <div className="text-foreground/85">
           {call.args.map(([key, value]) => (
             <div key={key}>
               <span className="text-muted-foreground">{key} </span>
-              {key === "code" || key === "script" || key === "command" || key === "cmd" ? (
+              {key === "html" ? (
+                <StructuredValue value={value} language="html" />
+              ) : key === "code" || key === "script" || key === "command" || key === "cmd" ? (
                 <ShellCommandBlock
                   command={value}
                   language={
@@ -308,6 +303,8 @@ function ToolCallBody(
                           : "text"
                   }
                 />
+              ) : isJsonToolText(value) ? (
+                <StructuredValue value={value} language="json" />
               ) : (
                 value
               )}
@@ -321,7 +318,7 @@ function ToolCallBody(
           language={
             isJavaScriptReplTool(props.toolName)
               ? "typescript"
-              : isJsonText(call.argsText)
+              : isJsonToolText(call.argsText)
                 ? "json"
                 : "text"
           }
@@ -349,6 +346,7 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
   );
   const item = fetched.item;
   const outputState = fetched.output;
+  useInitialOutputReady(streamsOutput || outputState.pending, props.onInitialOutputReady);
   return (
     <div className="space-y-2 text-xs" data-v2-item-inspector={item.type}>
       {item.type === "reasoning" && item.text ? (
@@ -374,6 +372,7 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
           outputSlot={
             streamsOutput ? (
               <CommandOutputPanel
+                onInitialOutputReady={props.onInitialOutputReady}
                 environmentId={props.environmentId}
                 threadId={props.projectedItem.sourceThreadId}
                 itemId={props.projectedItem.sourceItemId}

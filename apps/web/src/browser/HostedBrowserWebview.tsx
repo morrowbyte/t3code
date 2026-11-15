@@ -10,6 +10,10 @@ import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { previewBridge } from "~/components/preview/previewBridge";
 import { toastManager } from "~/components/ui/toast";
+import {
+  preventThumbButtonFocus,
+  takeThumbButtonNavigation,
+} from "~/components/preview/thumbButtons";
 import { usePreviewBridge } from "~/components/preview/usePreviewBridge";
 import { useClientSettingsHydrated } from "~/hooks/useSettings";
 import { useStableCallback } from "~/hooks/useStableCallback";
@@ -21,6 +25,7 @@ import { useActiveBrowserRecordingTabIds } from "./browserRecording";
 import {
   browserViewportSettingKey,
   resolveBrowserViewportLayout,
+  resolveBrowserViewportTransform,
   resolveFittedBrowserViewport,
 } from "./browserViewportLayout";
 import { BrowserDeviceToolbar } from "./BrowserDeviceToolbar";
@@ -291,6 +296,9 @@ export function HostedBrowserWebview(props: {
 
   const [webviewGeneration, setWebviewGeneration] = useState(0);
   const [recoverySrc, setRecoverySrc] = useState(initialSrc);
+  const active = presentation.visible && presentation.rect !== null;
+  const shown = active || pictureInPicture;
+  const reportedShown = useEffectEvent(() => serverDriven && shown);
   const remountCrashedWebview = useEffectEvent(() => {
     setRecoverySrc(initialUrl ?? initialSrc);
     setWebviewGeneration((generation) => generation + 1);
@@ -313,6 +321,7 @@ export function HostedBrowserWebview(props: {
           const webContentsId = webview.getWebContentsId();
           if (Number.isInteger(webContentsId) && webContentsId > 0) {
             await bridge.registerWebview(runtimeTabId, webContentsId);
+            withDesktopTab(runtimeTabId, () => bridge.setShown(runtimeTabId, reportedShown()));
           }
         } catch {}
       })();
@@ -327,16 +336,24 @@ export function HostedBrowserWebview(props: {
         if (!disposed) remountCrashedWebview();
       }, recovery.delayMs);
     };
-    // Guest clicks only emit focus here; replay pointerdown to dismiss host popups.
+    // Guest clicks never reach this document, so replay a pointerdown to dismiss host popups.
+    // The guest preload reports each press, since the guest does not always take focus.
     const dismissHostPopups = () => {
       webview.dispatchEvent(
         new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }),
       );
     };
+    const guestPointerDown = (event: Event) => {
+      // Mirrors POINTER_DOWN_HOST_CHANNEL in apps/desktop/src/preview/GuestProtocol.ts.
+      if ((event as Event & { channel?: string }).channel === "preview:pointer-down") {
+        dismissHostPopups();
+      }
+    };
     webview.addEventListener("did-attach", register);
     webview.addEventListener("dom-ready", register);
     webview.addEventListener("render-process-gone", recoverGuest);
     webview.addEventListener("focus", dismissHostPopups);
+    webview.addEventListener("ipc-message", guestPointerDown);
     register();
     return () => {
       disposed = true;
@@ -345,10 +362,10 @@ export function HostedBrowserWebview(props: {
       webview.removeEventListener("dom-ready", register);
       webview.removeEventListener("render-process-gone", recoverGuest);
       webview.removeEventListener("focus", dismissHostPopups);
+      webview.removeEventListener("ipc-message", guestPointerDown);
     };
   }, [runtimeTabId, tabReady, webviewElement]);
 
-  const active = presentation.visible && presentation.rect !== null;
   const lastRect = presentation.rect;
   const layoutZoomFactor = useBrowserLayoutZoomFactor(zoomFactor);
   const viewportAspectRatio =
@@ -432,7 +449,38 @@ export function HostedBrowserWebview(props: {
     viewportWidth,
   ]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Report the mounted webview's visibility to the desktop host.
+  useEffect(() => {
+    const bridge = window.desktopBridge?.preview;
+    if (!clientSettingsHydrated || !bridge || !serverDriven) return;
+    withDesktopTab(runtimeTabId, () => bridge.setShown(runtimeTabId, shown));
+    return () => withDesktopTab(runtimeTabId, () => bridge.setShown(runtimeTabId, false));
+  }, [clientSettingsHydrated, runtimeTabId, serverDriven, shown]);
+
+  // Captures copy the guest's raster, which a scaled guest only keeps at full detail on request.
+  const fullDetail = backgroundActivity || pictureInPicture || recordingActive;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the desktop host once the guest is drawn at full detail, so its screenshot waits for that frame
+  useEffect(() => {
+    const bridge = window.desktopBridge?.preview;
+    if (!clientSettingsHydrated || !bridge || !serverDriven || nativeSurface || !fullDetail) return;
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() =>
+        withDesktopTab(runtimeTabId, () => bridge.setCaptureDrawn(runtimeTabId, true)),
+      );
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      withDesktopTab(runtimeTabId, () => bridge.setCaptureDrawn(runtimeTabId, false));
+    };
+  }, [clientSettingsHydrated, fullDetail, runtimeTabId, serverDriven, nativeSurface]);
+
   if (!clientSettingsHydrated || !config || nativeSurface) return hostConnection;
+
+  // This fixed wrapper sits outside the right panel shell, so it takes thumb presses itself.
+  const navigateThumb = (direction: "back" | "forward") => {
+    if (direction === "back") void previewBridge?.goBack(runtimeTabId);
+    else void previewBridge?.goForward(runtimeTabId);
+  };
 
   // Offscreen/visibility:hidden guests stop producing animation frames and
   // accepting compositor input. Keep the agent's page paintable behind the app;
@@ -443,6 +491,7 @@ export function HostedBrowserWebview(props: {
     pictureInPicture ||
     recordingActive ||
     (serverDriven && automationOwned);
+  const viewportTransform = resolveBrowserViewportTransform(layout.viewportScale, fullDetail);
   const wrapperStyle = resolveHostedBrowserWebviewWrapperStyle({
     active,
     renderingActive,
@@ -467,6 +516,8 @@ export function HostedBrowserWebview(props: {
         }}
         inert={!presentation.interactive}
         onScroll={syncContentPresentation}
+        onMouseDown={preventThumbButtonFocus}
+        onMouseUp={(event) => takeThumbButtonNavigation(event, navigateThumb)}
         data-preview-rendering={renderingActive ? "active" : "suspended"}
         data-preview-viewport={runtimeTabId}
       >
@@ -483,51 +534,60 @@ export function HostedBrowserWebview(props: {
               onChange={commitViewportChange}
             />
           ) : null}
-          <webview
-            key={webviewGeneration}
-            ref={setWebviewElement}
-            // Electron needs allowpopups at attachment. React drops boolean values for unknown attributes.
-            {...({ allowpopups: "true" } as unknown as { readonly allowpopups?: boolean })}
-            src={webviewGeneration === 0 ? initialSrc : recoverySrc}
-            partition={config.partition}
-            webpreferences={
-              serverDriven && automationOwned
-                ? `${config.webPreferences},backgroundThrottling=false`
-                : config.webPreferences
-            }
-            {...(config.preloadUrl ? { preload: config.preloadUrl } : {})}
-            data-preview-tab={runtimeTabId}
-            data-preview-server-tab={tabId}
-            data-preview-viewport-mode={effectiveViewport._tag}
-            data-preview-viewport-key={browserViewportSettingKey(effectiveViewport)}
-            data-preview-css-width={
-              fittedSourceViewport
-                ? fittedSourceViewport.width
-                : effectiveViewport._tag === "fill"
-                  ? Math.max(1, Math.round(layout.viewportWidth / layoutZoomFactor))
-                  : effectiveViewport.width
-            }
-            data-preview-css-height={
-              fittedSourceViewport
-                ? fittedSourceViewport.height
-                : effectiveViewport._tag === "fill"
-                  ? Math.max(1, Math.round(layout.viewportHeight / layoutZoomFactor))
-                  : effectiveViewport.height
-            }
-            aria-hidden={active ? undefined : true}
-            className={cn(
-              "absolute flex overflow-hidden bg-white",
-              active && !layout.fillsPanel && "ring-1 ring-border/70 shadow-sm",
-            )}
+          <div
+            className="absolute"
             style={{
               left: layout.viewportX,
               top: layout.viewportY,
-              width: layout.viewportWidth / layout.viewportScale,
-              height: layout.viewportHeight / layout.viewportScale,
-              transform: layout.viewportScale < 1 ? `scale(${layout.viewportScale})` : undefined,
-              transformOrigin: "top left",
+              width: layout.viewportWidth,
+              height: layout.viewportHeight,
+              transformStyle: viewportTransform && fullDetail ? "preserve-3d" : undefined,
             }}
-          />
+          >
+            <webview
+              key={webviewGeneration}
+              ref={setWebviewElement}
+              // Electron needs allowpopups at attachment. React drops boolean values for unknown attributes.
+              {...({ allowpopups: "true" } as unknown as { readonly allowpopups?: boolean })}
+              src={webviewGeneration === 0 ? initialSrc : recoverySrc}
+              partition={config.partition}
+              webpreferences={
+                serverDriven && automationOwned
+                  ? `${config.webPreferences},backgroundThrottling=false`
+                  : config.webPreferences
+              }
+              {...(config.preloadUrl ? { preload: config.preloadUrl } : {})}
+              data-preview-tab={runtimeTabId}
+              data-preview-server-tab={tabId}
+              data-preview-viewport-mode={effectiveViewport._tag}
+              data-preview-viewport-key={browserViewportSettingKey(effectiveViewport)}
+              data-preview-css-width={
+                fittedSourceViewport
+                  ? fittedSourceViewport.width
+                  : effectiveViewport._tag === "fill"
+                    ? Math.max(1, Math.round(layout.viewportWidth / layoutZoomFactor))
+                    : effectiveViewport.width
+              }
+              data-preview-css-height={
+                fittedSourceViewport
+                  ? fittedSourceViewport.height
+                  : effectiveViewport._tag === "fill"
+                    ? Math.max(1, Math.round(layout.viewportHeight / layoutZoomFactor))
+                    : effectiveViewport.height
+              }
+              aria-hidden={active ? undefined : true}
+              className={cn(
+                "absolute top-0 left-0 flex overflow-hidden bg-white",
+                active && !layout.fillsPanel && "ring-1 ring-border/70 shadow-sm",
+              )}
+              style={{
+                width: layout.viewportWidth / layout.viewportScale,
+                height: layout.viewportHeight / layout.viewportScale,
+                transform: viewportTransform,
+                transformOrigin: "top left",
+              }}
+            />
+          </div>
           {active && effectiveViewport._tag !== "fill" && !fittedSourceViewport ? (
             <>
               <BrowserViewportResizeHandles

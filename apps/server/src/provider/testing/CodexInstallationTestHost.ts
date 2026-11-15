@@ -12,6 +12,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Redacted from "effect/Redacted";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
@@ -118,7 +119,14 @@ const overrides = Layer.effectContext(
                 exitCode: child.exitCode.pipe(
                   Effect.tap((code) =>
                     code === 0
-                      ? Effect.sync(() => recordArchiveModes(command.args[1]!, command.args[3]!))
+                      ? Effect.sync(() => {
+                          const archive = command.args[1]!;
+                          const directory = command.args[3]!;
+                          recordArchiveModes(
+                            typeof archive === "string" ? archive : Redacted.value(archive),
+                            typeof directory === "string" ? directory : Redacted.value(directory),
+                          );
+                        })
                       : Effect.void,
                   ),
                 ),

@@ -56,12 +56,13 @@ const { logWarning } = makeComponentLogger("desktop-app-activation");
 /** @public */
 export const make = Effect.gen(function* () {
   const desktopEnvironment = yield* DesktopEnvironment.DesktopEnvironment;
+  const processEnvironment = yield* HostProcess.Environment;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   const resultPresentation = {
     reuseMainWindow:
       desktopEnvironment.isDevelopment &&
       !desktopEnvironment.isPackaged &&
-      process.env.T3CODE_SINGLE_ORIGIN_DEV === "1",
+      processEnvironment.T3CODE_SINGLE_ORIGIN_DEV === "1",
   };
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const path = yield* Path.Path;

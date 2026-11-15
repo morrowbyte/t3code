@@ -89,6 +89,7 @@ describe("GhosttyTerminalSurface visibility", () => {
       width = 300;
       height = 150;
       value = "";
+      children: TerminalTestElement[] = [];
       private readonly captures = new Set<number>();
 
       setAttribute() {}
@@ -96,6 +97,7 @@ describe("GhosttyTerminalSurface visibility", () => {
         for (const child of children) child.parentElement = this;
       }
       replaceChildren(...children: TerminalTestElement[]) {
+        this.children = children;
         this.append(...children);
       }
       remove() {
@@ -105,6 +107,7 @@ describe("GhosttyTerminalSurface visibility", () => {
         return context;
       }
       focus() {
+        fakeDocument.activeElement = this;
         this.dispatchEvent(new Event("focus"));
       }
       setPointerCapture(pointerId: number) {
@@ -127,6 +130,7 @@ describe("GhosttyTerminalSurface visibility", () => {
       canvas,
       beginPath() {},
       clip() {},
+      getTransform: () => ({ a: 1, d: 1 }),
       rect() {},
       resetTransform() {},
       restore() {},
@@ -141,10 +145,12 @@ describe("GhosttyTerminalSurface visibility", () => {
         actualBoundingBoxDescent: 3,
       }),
     };
-    vi.stubGlobal("document", {
+    const fakeDocument = {
+      activeElement: null as TerminalTestElement | null,
       createElement: (tag: string) => (tag === "canvas" ? canvas : new TerminalTestElement()),
       fonts: Object.assign(new EventTarget(), { load: async () => [], add() {} }),
-    });
+    };
+    vi.stubGlobal("document", fakeDocument);
     vi.stubGlobal(
       "window",
       Object.assign(new EventTarget(), {
@@ -285,6 +291,39 @@ describe("GhosttyTerminalSurface visibility", () => {
     expect(surface.hasSelection()).toBe(false);
   });
 
+  it("copies on Ctrl+Shift+C when a non-Latin layout reports another letter on KeyC", async () => {
+    vi.stubGlobal("navigator", { platform: "Linux x86_64" });
+    const harness = createHarness();
+    const surface = await harness.create({ beforeKey: () => true });
+    Object.assign(surface.input, { select() {} });
+    const execCommand = vi.fn(() => true);
+    Object.assign(document, { execCommand });
+    surface.write("SELECTED_OUTPUT");
+    surface.selectAll();
+    // Russian layout: Cyrillic Es (U+0421) on the physical C key.
+    key(surface, "С", "KeyC", { ctrlKey: true, shiftKey: true });
+    expect(execCommand).toHaveBeenCalledWith("copy");
+    expect(harness.onData).not.toHaveBeenCalled();
+  });
+
+  it("skips middle-click selection paste when the desktop turned primary paste off", async () => {
+    vi.stubGlobal("navigator", { platform: "Linux x86_64" });
+    const harness = createHarness();
+    const surface = await harness.create();
+    surface.write("echo hi");
+    surface.selectAll();
+    const pasteFromClipboard = vi.spyOn(surface, "pasteFromClipboard");
+
+    let primaryPasteEnabled = false;
+    Object.assign(window, { desktopBridge: { getPrimaryPasteEnabled: () => primaryPasteEnabled } });
+    harness.pointer("pointerdown", 5, 4, {}, 1);
+    expect(pasteFromClipboard).not.toHaveBeenCalled();
+
+    primaryPasteEnabled = true;
+    harness.pointer("pointerdown", 5, 4, {}, 1);
+    expect(pasteFromClipboard).toHaveBeenCalledOnce();
+  });
+
   it("leaves modified history keys with alternate-screen applications", async () => {
     vi.stubGlobal("navigator", { platform: "Linux x86_64" });
     const harness = createHarness();
@@ -364,6 +403,39 @@ describe("GhosttyTerminalSurface visibility", () => {
       "\x1b[97;1:2u",
       "\x1b[97;1:3u",
     ]);
+  });
+
+  it("reports focus transitions only while DEC 1004 is enabled", async () => {
+    vi.stubGlobal("navigator", { platform: "Linux x86_64" });
+    const harness = createHarness();
+    const surface = await harness.create();
+    const blur = () => surface.input.dispatchEvent(new Event("blur"));
+    const reports = () => harness.onData.mock.calls.map(([data]) => data);
+
+    surface.write("\x1b[?1004h");
+    surface.focus();
+    surface.focus();
+    blur();
+    blur();
+    expect(reports()).toEqual(["\x1b[I", "\x1b[O"]);
+
+    harness.onData.mockClear();
+    surface.write("\x1b[?1004l");
+    surface.focus();
+    blur();
+    expect(reports()).toEqual([]);
+  });
+
+  it("reports the blur of an input focused while the surface was still loading", async () => {
+    vi.stubGlobal("navigator", { platform: "Linux x86_64" });
+    const harness = createHarness();
+    const pending = harness.create();
+    harness.mount.children[1]?.focus();
+    const surface = await pending;
+
+    surface.write("\x1b[?1004h");
+    surface.input.dispatchEvent(new Event("blur"));
+    expect(harness.onData.mock.calls.map(([data]) => data)).toEqual(["\x1b[O"]);
   });
 
   it("honors host interception, IME candidates, and AltGr before local shortcuts", async () => {
@@ -535,6 +607,150 @@ describe("GhosttyTerminalSurface visibility", () => {
     harness.pointer("pointerup", 5, 0);
 
     expect(onLinkActivate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { scenario: "missing", exists: false },
+    { scenario: "file", exists: true },
+    { scenario: "replaced", exists: true },
+    { scenario: "superseded", exists: false },
+    { scenario: "hidden", exists: false },
+    { scenario: "dragged", exists: true },
+    { scenario: "keyboard-selected", exists: false },
+    { scenario: "selection-cleared", exists: true },
+    { scenario: "output-cleaned", exists: true },
+  ])(
+    "validates a quick click without waiting for hover: $scenario",
+    async ({ scenario, exists }) => {
+      vi.stubGlobal("navigator", { platform: "Linux x86_64" });
+      const harness = createHarness();
+      let resolveValidation!: (exists: boolean) => void;
+      const validation = new Promise<boolean>((resolve) => {
+        resolveValidation = resolve;
+      });
+      const validateLink = vi.fn(() => validation);
+      const onLinkActivate = vi.fn();
+      const surface = await harness.create({
+        beforeKey: () => true,
+        canActivateLink: () => false,
+        validateLink,
+        onLinkActivate,
+      });
+      surface.write("src/main.ts");
+      harness.flushFrame();
+      surface.selectAll();
+      expect(surface.getSelection()).toBe("src/main.ts");
+      harness.pointer("pointerdown", 5, 1);
+      expect(validateLink).toHaveBeenCalledWith("src/main.ts");
+      if (scenario === "dragged") harness.pointer("pointermove", 45, 1);
+      harness.pointer("pointerup", 5, 0);
+      expect(onLinkActivate).not.toHaveBeenCalled();
+      if (scenario === "replaced") {
+        surface.write("\r\x1b[2Ksrc/other.ts");
+        harness.flushFrame();
+      }
+      if (scenario === "superseded") harness.pointer("pointerdown", 5, 1);
+      if (scenario === "hidden") {
+        surface.setVisible(false);
+        surface.setVisible(true);
+      }
+      if (scenario === "keyboard-selected")
+        key(surface, "a", "KeyA", { ctrlKey: true, shiftKey: true });
+      if (scenario === "selection-cleared") surface.clearSelection();
+      if (scenario === "output-cleaned") surface.clearSelection({ source: "output" });
+      resolveValidation(exists);
+      await validation;
+      expect(onLinkActivate).toHaveBeenCalledTimes(
+        scenario === "file" || scenario === "output-cleaned" ? 1 : 0,
+      );
+      if (scenario === "missing" || scenario === "selection-cleared")
+        expect(surface.getSelection()).toBe("");
+      if (
+        scenario === "file" ||
+        scenario === "hidden" ||
+        scenario === "superseded" ||
+        scenario === "keyboard-selected"
+      ) {
+        expect(surface.getSelection()).not.toBe("");
+      }
+    },
+  );
+
+  it("only requests validation for a stable visible link under the pointer", async () => {
+    const harness = createHarness();
+    const onLinkHover = vi.fn();
+    const surface = await harness.create({ onLinkHover, canActivateLink: () => false });
+    surface.write("\x1b[?1049h\x1b[Hsrc/first.ts");
+    harness.flushFrame();
+    vi.advanceTimersByTime(250);
+    expect(onLinkHover).not.toHaveBeenCalled();
+
+    harness.pointer("pointermove", 5, 0);
+    expect(onLinkHover).toHaveBeenLastCalledWith("src/first.ts");
+    onLinkHover.mockClear();
+    for (let index = 0; index < 100; index++) {
+      surface.write(`\r\x1b[2Ksrc/file-${index}.ts`);
+      harness.flushFrame();
+      vi.advanceTimersByTime(10);
+    }
+    vi.advanceTimersByTime(239);
+    expect(onLinkHover.mock.calls.filter(([text]) => text !== null)).toEqual([]);
+    vi.advanceTimersByTime(1);
+    harness.flushFrame();
+    vi.advanceTimersByTime(1_000);
+    expect(onLinkHover.mock.calls.filter(([text]) => text !== null)).toEqual([["src/file-99.ts"]]);
+    onLinkHover.mockClear();
+
+    harness.pointer("pointerleave", 5, 0);
+    surface.write("\r\x1b[2Ksrc/recent.ts");
+    harness.flushFrame();
+    vi.advanceTimersByTime(150);
+    harness.pointer("pointermove", 5, 0);
+    vi.advanceTimersByTime(99);
+    expect(onLinkHover.mock.calls.filter(([text]) => text !== null)).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(onLinkHover).toHaveBeenLastCalledWith("src/recent.ts");
+    onLinkHover.mockClear();
+
+    harness.pointer("pointerleave", 5, 0);
+    surface.write("\r\x1b[2Ksrc/still.ts");
+    harness.flushFrame();
+    vi.advanceTimersByTime(250);
+    surface.write("\x1b[2;1Hother output");
+    harness.flushFrame();
+    harness.pointer("pointermove", 5, 0);
+    expect(onLinkHover).toHaveBeenLastCalledWith("src/still.ts");
+    onLinkHover.mockClear();
+
+    surface.write("\x1b[H\x1b[2Ksrc/move.ts");
+    harness.flushFrame();
+    harness.pointer("pointermove", 45, 0);
+    vi.advanceTimersByTime(150);
+    surface.write("\r\x1b[2K src/move.ts");
+    harness.flushFrame();
+    vi.advanceTimersByTime(249);
+    expect(onLinkHover.mock.calls.filter(([text]) => text !== null)).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(onLinkHover).toHaveBeenLastCalledWith("src/move.ts");
+    onLinkHover.mockClear();
+
+    for (const [index, cancel] of [
+      () => {
+        surface.write("\r\x1b[2Kplain text");
+        harness.flushFrame();
+      },
+      () => harness.pointer("pointerleave", 5, 0),
+      () => surface.setVisible(false),
+      () => surface.dispose(),
+    ].entries()) {
+      surface.setVisible(true);
+      surface.write(`\x1b[H\x1b[2Ksrc/next-${index}.ts`);
+      harness.flushFrame();
+      harness.pointer("pointermove", 5, 0);
+      cancel();
+      vi.advanceTimersByTime(250);
+      expect(onLinkHover.mock.calls.filter(([text]) => text !== null)).toEqual([]);
+    }
   });
 
   it.each([false, true])(
@@ -756,6 +972,8 @@ describe("terminalLinkAtPositionWithRange", () => {
 
 describe("isTerminalCopyShortcut", () => {
   const event = (overrides: Partial<Parameters<typeof isTerminalCopyShortcut>[0]> = {}) => ({
+    altKey: false,
+    code: "KeyC",
     ctrlKey: false,
     key: "c",
     metaKey: false,

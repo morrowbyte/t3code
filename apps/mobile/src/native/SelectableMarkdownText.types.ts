@@ -27,6 +27,14 @@ export interface SelectableMarkdownSkill {
   readonly path?: string;
 }
 
+export interface SelectableMarkdownModel {
+  readonly source: string;
+  readonly label: string;
+  readonly providerLabel: string;
+  readonly driver: string;
+  readonly iconUrl?: string | undefined;
+}
+
 export interface MarkdownImageRequest {
   readonly href: string;
   readonly alt: string | null;
@@ -67,6 +75,7 @@ export interface SelectableMarkdownTextProps {
   readonly isStreaming?: boolean;
   readonly textStyle: NativeMarkdownTextStyle;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
+  readonly models?: ReadonlyArray<SelectableMarkdownModel>;
   readonly preserveSoftBreaks?: boolean;
   readonly onLinkPress?: (href: string) => void;
   readonly fileContextMenu?: (href: string) => MarkdownFileContextMenu | undefined;
@@ -77,6 +86,15 @@ export interface SelectableMarkdownTextProps {
   readonly fileEmbedLabel?: (href: string, standalone: boolean) => string | null;
   readonly resolveImageSource?: MarkdownImageSourceResolver;
   readonly onImagePress?: (href: string) => void;
+  /**
+   * Makes task checkboxes tappable. The renderer ticks the box itself; `index` counts checkboxes
+   * in document order and `checked` is the new state.
+   */
+  readonly onTaskListItemPress?: (event: {
+    readonly index: number;
+    readonly checked: boolean;
+    readonly text: string;
+  }) => void;
   readonly marginTop?: number;
   readonly marginBottom?: number;
   readonly writingDirection?: "ltr" | "rtl";

@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Orchestrator from "../Orchestrator.ts";
+import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 import { userFacingDispatchErrorMessage } from "../UserFacingErrors.ts";
 import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import { subagentInput } from "./fixtures/subagent/input.ts";
@@ -95,13 +96,31 @@ describe("Claude Agent SDK replay fixtures", () => {
           userFacingDispatchErrorMessage(refused),
           "This subagent is run by its provider and cannot take messages. Message the parent thread instead.",
         );
+        const refusedContinuation = yield* orchestrator
+          .dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make("command:subagent:continue-native-child"),
+            threadId: child.thread.id,
+            title: "Renamed",
+            continuation: {
+              messageId: MessageId.make("message:subagent:continue-native-child"),
+              text: "Also check the tests.",
+            },
+          })
+          .pipe(Effect.flip);
+        assert.equal(refusedContinuation._tag, "OrchestratorSubagentThreadReadOnlyError");
         assert.equal(yield* orchestrator.getThreadEventSequence(child.thread.id), before);
         const after = yield* orchestrator.getThreadProjection(child.thread.id);
         assert.lengthOf(after.runs, 0);
         assert.deepEqual(after.messages, child.messages);
       }).pipe(
         Effect.provide(
-          ProviderReplayHarness.layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness),
+          ProviderReplayHarness.layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness, {
+            projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+              materialized.projectId,
+              process.cwd(),
+            ),
+          }),
         ),
         provideDeterministicTestRuntime,
         Effect.scoped,

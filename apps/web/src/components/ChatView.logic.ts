@@ -1,11 +1,17 @@
+import { waitForAtomValue } from "../state/waitForAtomValue";
+import { environmentThreadShells } from "../state/threads";
+import { collapseExpandedComposerCursor } from "../composer-logic";
+import { type ProviderInteractionMode, type ScopedThreadRef } from "@t3tools/contracts";
 import { trimComposerPrompt } from "../composerDraftStore";
 import { editSpeechTranscriptionRanges } from "@t3tools/shared/speechTranscription";
+import { toServerClock } from "@t3tools/client-runtime/clock";
 import { type OrchestrationV2ProviderTurn, type RunAttemptId } from "@t3tools/contracts";
 import {
   deriveLatestThreadRun,
   deriveThreadRuntime,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { checkpointFileTotals } from "@t3tools/client-runtime/state/thread-checkpoints";
+import { COMPACT_COMMAND_PATTERN } from "@t3tools/client-runtime/state/context-window";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   latestUnheldRun,
@@ -16,11 +22,7 @@ import type { SetStateAction } from "react";
 import { applyClaudePromptEffortPrefix, resolvePromptInjectedEffort } from "@t3tools/shared/model";
 import { getProviderModelCapabilities } from "../providerModels";
 import { sanitizeThreadErrorMessage } from "@t3tools/client-runtime/errors";
-import type {
-  EnvironmentThread,
-  ThreadStructure,
-  EnvironmentThreadShell,
-} from "@t3tools/client-runtime/state/shell";
+import type { EnvironmentThread, ThreadStructure } from "@t3tools/client-runtime/state/shell";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -35,14 +37,14 @@ import {
   type ModelSelection,
   type OrchestrationMessageContext,
   type PreviewAnnotationPayload,
-  type ProviderInteractionMode,
   ProviderDriverKind,
   type ProviderInstanceId,
+  type ProviderThreadId,
   type ServerProvider,
   type ScopedProjectRef,
-  type ScopedThreadRef,
   type ThreadContextRecord,
   type EnvironmentContextRecord,
+  type ResponseContextRecord,
   type ThreadId,
   type ThreadLinkedPullRequest,
   type RunId,
@@ -76,9 +78,9 @@ import {
   type DraftThreadState,
 } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
+import { threadHasStarted } from "../lib/chatThreadActions";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { environmentThreadShells, environmentThreadDetails } from "../state/threads";
-import { waitForAtomValue } from "../state/waitForAtomValue";
+import { environmentThreadDetails } from "../state/threads";
 import {
   filterTerminalContextsWithText,
   formatTerminalContextLabel,
@@ -95,7 +97,7 @@ import {
 } from "../lib/composerContextRecords";
 import type { ComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
-import { collapseExpandedComposerCursor, type ComposerSubmissionIntent } from "../composer-logic";
+import { type ComposerSubmissionIntent } from "../composer-logic";
 import type { ReviewCommentContext } from "../reviewCommentContext";
 import { derivePhase, type TimelineEntry } from "../session-logic";
 import type { PreviewMiniPlayerSource } from "../previewMiniPlayerStore";
@@ -235,16 +237,6 @@ export function resolveProactiveTurnDiffAction(input: {
   }
   const totals = checkpointFileTotals(input.checkpoint);
   return totals.count >= 3 || totals.additions + totals.deletions >= 50 ? "open" : "ignore";
-}
-
-/** Mark reactivated Diff tabs to preserve review scope. Already-active tabs must not leave a marker for
- * the next open. */
-export function resolveExplicitDiffOpenOnActivate(input: {
-  readonly surfaceKind: RightPanelSurface["kind"];
-  readonly diffOpen: boolean;
-  readonly activeThreadRef: ScopedThreadRef;
-}): ScopedThreadRef | null {
-  return input.surfaceKind === "diff" && !input.diffOpen ? input.activeThreadRef : null;
 }
 
 export function codexArtifactTemplatePromptToAppend(
@@ -540,21 +532,6 @@ export function resolveComposerProviderSelection(input: {
   };
 }
 
-export function resolveComposerInteractionMode(input: {
-  planModeEnabled: boolean;
-  provider: Pick<ServerProvider, "showInteractionModeToggle"> | null | undefined;
-  interactionMode: ProviderInteractionMode;
-}): { enabled: boolean; interactionMode: ProviderInteractionMode } {
-  const enabled =
-    input.planModeEnabled &&
-    input.provider != null &&
-    input.provider.showInteractionModeToggle !== false;
-  return {
-    enabled,
-    interactionMode: enabled ? input.interactionMode : "default",
-  };
-}
-
 export function getAntigravitySendBlockReason(
   provider:
     | Pick<ServerProvider, "driver" | "installed" | "auth" | "models" | "status">
@@ -820,26 +797,6 @@ export function shouldShowBranchMismatchBanner(input: {
   return input.composerHasContent || input.wasShownForCurrentMismatch;
 }
 
-export function shouldShowPlanFollowUpPrompt(input: {
-  pendingUserInputCount: number;
-  interactionMode: ProviderInteractionMode;
-  latestTurnSettled: boolean;
-  hasActionableProposedPlan: boolean;
-  hasComposerAttachments: boolean;
-}): boolean {
-  return (
-    input.pendingUserInputCount === 0 &&
-    input.interactionMode === "plan" &&
-    input.latestTurnSettled &&
-    input.hasActionableProposedPlan &&
-    !input.hasComposerAttachments
-  );
-}
-
-// A typed `/compact`, with or without instructions, is already the compaction. Queueing a
-// bare one ahead of it would run an uninstructed compaction first and charge for two.
-const COMPACT_COMMAND_PATTERN = /^\/compact(?:\s|$)/i;
-
 const sessionDismissedBranchMismatchKeys = new Set<string>();
 
 export function dismissBranchMismatchForSession(key: string): void {
@@ -872,22 +829,6 @@ export function recallCheckoutIsRepo(
   return cwd === null
     ? undefined
     : sessionCheckoutIsRepo.get(checkoutIsRepoKey(environmentId, cwd));
-}
-
-function threadHasStarted(thread: Thread | null | undefined): boolean {
-  return Boolean(thread && (thread.latestRun !== null || thread.itemCount > 0 || thread.runtime));
-}
-
-export function threadShellHasStarted(
-  shell:
-    | Pick<EnvironmentThreadShell, "latestRun" | "latestUserMessageAt" | "runtime">
-    | null
-    | undefined,
-): boolean {
-  return Boolean(
-    shell &&
-    (shell.latestRun !== null || shell.latestUserMessageAt !== null || shell.runtime !== null),
-  );
 }
 
 // Imported history lacks a session until its first prompt; resolve its instance before locking the driver.
@@ -942,19 +883,6 @@ export function getStartedThreadModelChangeBlockReason(input: {
     title: "Start a new chat to switch providers",
     description: "This thread does not support switching providers after it has started.",
   };
-}
-
-export async function waitForStartedServerThread(
-  threadRef: ScopedThreadRef,
-  timeoutMs = 1_000,
-): Promise<boolean> {
-  const threadAtom = environmentThreadShells.threadShellAtom(threadRef);
-  return waitForAtomValue({
-    registry: appAtomRegistry,
-    atom: threadAtom,
-    predicate: threadHasStarted,
-    timeoutMs,
-  });
 }
 
 export async function waitForRevertedMessage(
@@ -1054,15 +982,19 @@ export interface LocalDispatchSnapshot {
 export function createLocalDispatchSnapshot(
   activeThread: Thread | undefined,
   options?: {
+    environmentId?: EnvironmentId;
     preparingWorktree?: boolean;
     latestUserMessageId?: ChatMessage["id"] | null;
     submissionIntent?: ComposerSubmissionIntent;
   },
 ): LocalDispatchSnapshot {
+  const environmentId = options?.environmentId ?? activeThread?.environmentId;
   const latestRun = activeThread?.latestRun ?? null;
   const runtime = activeThread?.runtime ?? null;
   return {
-    startedAt: new Date().toISOString(),
+    startedAt: new Date(
+      environmentId === undefined ? Date.now() : toServerClock(environmentId, Date.now()),
+    ).toISOString(),
     preparingWorktree: Boolean(options?.preparingWorktree),
     submissionIntent: options?.submissionIntent ?? "foreground",
     latestUserMessageId: options?.latestUserMessageId ?? null,
@@ -1084,6 +1016,25 @@ export function deriveCommittedServerUserMessageIds(
     visibleTurnItems.flatMap((row) =>
       row.item.type === "user_message" ? [row.item.messageId] : [],
     ),
+  );
+}
+
+/**
+ * The server checks the full history, but the first page of an
+ * agent-started thread or a long turn can hold no user message.
+ */
+export function hasCompactableConversation(input: {
+  readonly visibleTurnItems: ReadonlyArray<ThreadStructureRow>;
+  readonly hasMoreHistory: boolean;
+  readonly latestUserMessageAt: string | null;
+}): boolean {
+  return (
+    input.visibleTurnItems.some(
+      ({ item }) =>
+        item.type === "user_message" &&
+        (item.text.trim().toLowerCase() !== "/compact" || item.attachments.length > 0),
+    ) ||
+    (input.hasMoreHistory && input.latestUserMessageAt !== null)
   );
 }
 
@@ -1145,10 +1096,10 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   );
 }
 
-// Returning to the window should land the caret in the composer, so the reader can type right
-// away. The exceptions are places where focus is deliberate: another text field, a terminal in
-// the drawer or the right panel, an open dialog, menu, or popup, or a region or sidebar row
-// reached from the keyboard. A plain focused button or a clicked row yields to the composer.
+// Window return puts the caret in the composer unless focus is deliberate: another text field,
+// a terminal, an open dialog, menu, or popup, a region, timeline, or sidebar row reached from the
+// keyboard, or a region with its own keys (aria-keyshortcuts). A plain focused button or a clicked
+// row yields to the composer.
 export function shouldRefocusComposerOnWindowFocus(
   activeElement:
     | (Pick<Element, "tagName" | "closest" | "getAttribute"> & { isContentEditable?: boolean })
@@ -1168,53 +1119,9 @@ export function shouldRefocusComposerOnWindowFocus(
   }
   return (
     activeElement.closest(
-      '[data-workspace-area]:focus-visible, [role="treeitem"]:focus-visible, [role="dialog"], [role="alertdialog"], [role="application"], [role="menu"], [role="listbox"], [data-slot$="-popup"], [data-terminal-owner]',
+      '[data-workspace-keyboard-focus], [data-sidebar-row]:focus-visible, [role="dialog"], [role="alertdialog"], [role="application"], [role="menu"], [role="listbox"], [data-slot$="-popup"], [data-terminal-owner], [aria-keyshortcuts]',
     ) === null
   );
-}
-
-export interface PlanFollowUpComposerSnapshot {
-  readonly prompt: string;
-  readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
-  readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
-  readonly previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
-  readonly threadContexts: ReadonlyArray<ThreadContextRecord>;
-  readonly environmentContexts: ReadonlyArray<EnvironmentContextRecord>;
-}
-
-// A draft typed while the send was in flight is newer and stays. Composer refs and the cursor
-// belong to the thread on screen, so they follow only while the follow-up's route is current.
-export function restorePlanFollowUpComposer(input: {
-  readonly snapshot: PlanFollowUpComposerSnapshot;
-  readonly draftHasUserContent: boolean;
-  readonly routeIsCurrent: boolean;
-  readonly writeComposerRefs: (snapshot: PlanFollowUpComposerSnapshot) => void;
-  readonly writePrompt: (prompt: string) => void;
-  readonly writeTerminalContexts: (contexts: ReadonlyArray<TerminalContextDraft>) => void;
-  readonly writeReviewComments: (comments: ReadonlyArray<ReviewCommentContext>) => void;
-  readonly writePreviewAnnotations: (annotations: ReadonlyArray<PreviewAnnotationPayload>) => void;
-  readonly writeThreadContexts: (records: ReadonlyArray<ThreadContextRecord>) => void;
-  readonly writeEnvironmentContexts: (records: ReadonlyArray<EnvironmentContextRecord>) => void;
-  readonly resetCursor: (options: {
-    cursor: number;
-    prompt: string;
-    detectTrigger: boolean;
-  }) => void;
-}): void {
-  if (input.draftHasUserContent) return;
-  if (input.routeIsCurrent) input.writeComposerRefs(input.snapshot);
-  input.writePrompt(input.snapshot.prompt);
-  input.writeTerminalContexts(input.snapshot.terminalContexts);
-  input.writeReviewComments(input.snapshot.reviewComments);
-  input.writePreviewAnnotations(input.snapshot.previewAnnotations);
-  input.writeThreadContexts(input.snapshot.threadContexts);
-  input.writeEnvironmentContexts(input.snapshot.environmentContexts);
-  if (!input.routeIsCurrent) return;
-  input.resetCursor({
-    cursor: collapseExpandedComposerCursor(input.snapshot.prompt, input.snapshot.prompt.length),
-    prompt: input.snapshot.prompt,
-    detectTrigger: true,
-  });
 }
 
 /** Includes the annotation screenshot only within the attachment cap; exceeding it rejects the whole turn. */
@@ -1375,6 +1282,8 @@ export interface ComposerSendContents {
   readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
   readonly threadContexts: ReadonlyArray<ThreadContextRecord>;
   readonly environmentContexts: ReadonlyArray<EnvironmentContextRecord>;
+  /** The response the message replies to. `prompt` already leads with its reference. */
+  readonly replyTo: ResponseContextRecord | null;
 }
 
 /**
@@ -1400,6 +1309,22 @@ export function snapshotComposerSend(contents: ComposerSendContents) {
       contents.speechTranscription?.ranges,
     ),
   });
+  const messageText = trimmed.prompt;
+  const replyFreePrompt = contents.replyTo
+    ? removeInlineContextReference(messageText, contents.replyTo.contextId).prompt
+    : messageText;
+  const draft = contents.replyTo
+    ? trimComposerPrompt(replyFreePrompt, {
+        ranges: editSpeechTranscriptionRanges(
+          messageText,
+          replyFreePrompt,
+          trimmed.speechTranscription?.ranges,
+          messageText.endsWith(replyFreePrompt)
+            ? { start: 0, end: messageText.length - replyFreePrompt.length }
+            : undefined,
+        ),
+      })
+    : trimmed;
   return {
     images,
     files,
@@ -1409,12 +1334,31 @@ export function snapshotComposerSend(contents: ComposerSendContents) {
     reviewComments: [...contents.reviewComments],
     threadContexts: [...contents.threadContexts],
     environmentContexts: [...contents.environmentContexts],
-    messageText: trimmed.prompt,
+    replyTo: contents.replyTo,
+    messageText,
     ...(trimmed.speechTranscription ? { speechTranscription: trimmed.speechTranscription } : {}),
+    draftText: draft.prompt,
+    ...(draft.speechTranscription ? { draftSpeechTranscription: draft.speechTranscription } : {}),
   };
 }
 
 export type ComposerSendSnapshot = ReturnType<typeof snapshotComposerSend>;
+
+/** Derived from the persisted run phase, so a starting run still reads as work after a reload. */
+export function deriveTimelineWorking(input: {
+  readonly phase: SessionPhase;
+  readonly isSendBusy: boolean;
+  readonly isCompacting: boolean;
+  readonly runlessWorkStartedAt: string | null;
+}): boolean {
+  return (
+    input.phase === "connecting" ||
+    input.phase === "running" ||
+    input.isSendBusy ||
+    input.isCompacting ||
+    input.runlessWorkStartedAt !== null
+  );
+}
 
 /** How a composer send dispatches: where it runs and whether it waits behind other work. */
 export function planComposerTurn(input: {
@@ -1429,6 +1373,8 @@ export function planComposerTurn(input: {
   readonly keepFullHistory: boolean;
   readonly phase: SessionPhase;
   readonly dispatchMode: ComposerDispatchMode;
+  /** The turn starts a new provider session, so it neither compacts first nor steers. */
+  readonly freshContext: boolean;
 }) {
   const isFirstMessage =
     !input.sendQueuesBehindSetup && (!input.isServerThread || input.activeMessageCount === 0);
@@ -1438,9 +1384,14 @@ export function planComposerTurn(input: {
   // old history. The message queues behind the /compact run, since steering into it is
   // rejected.
   const compactBeforeSend =
+    !input.freshContext &&
     input.resumeCompactionTokens !== null &&
     !input.keepFullHistory &&
     !COMPACT_COMMAND_PATTERN.test(input.messageText);
+  const dispatchMode =
+    input.freshContext && (input.dispatchMode === "steer" || input.dispatchMode === "restart")
+      ? "queue"
+      : input.dispatchMode;
   return {
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
@@ -1448,11 +1399,13 @@ export function planComposerTurn(input: {
     baseBranchForWorktree: shouldCreateWorktree ? input.activeThreadBranch : null,
     compactBeforeSend,
     turnDispatchMode:
-      compactBeforeSend || input.sendQueuesBehindSetup ? ("queue" as const) : input.dispatchMode,
+      compactBeforeSend || (input.sendQueuesBehindSetup && dispatchMode !== "steer")
+        ? ("queue" as const)
+        : dispatchMode,
     shouldQueueBehindActiveRun:
       compactBeforeSend ||
       input.sendQueuesBehindSetup ||
-      (input.phase === "running" && input.dispatchMode === "queue"),
+      (input.phase === "running" && dispatchMode === "queue"),
   };
 }
 
@@ -1570,22 +1523,46 @@ export function presentThreadShellFromProjection(
   };
 }
 
-/** Background work the provider still runs after the latest run ended. */
+// Excludes `waiting`: that is post-terminal checkpoint drain, so its agent turn is over.
+const LIVE_RUN_STATUSES = new Set(["queued", "preparing", "starting", "running"]);
+
+/**
+ * Background work the provider still runs after an earlier run ended. It
+ * stays listed while a later run is live; that live run's own items are its
+ * foreground work, so they never count as background. The provider roster is
+ * not run-tied, so it drops entries naming a live run's item by native id.
+ */
 export function deriveThreadPendingBackgroundTasks(projection: ThreadStructure | null) {
   if (projection === null) return [];
   const sessionError =
     projection.providerSessions.findLast(
       (session) => session.providerInstanceId === projection.thread.providerInstanceId,
     )?.lastError ?? null;
+  const liveRunIds = new Set(
+    projection.runs.filter((run) => LIVE_RUN_STATUSES.has(run.status)).map((run) => run.id),
+  );
+  const foregroundTaskIds = new Set<string>();
+  for (const item of projection.turnItems) {
+    if (item.runId === null || !liveRunIds.has(item.runId)) continue;
+    if (item.nativeItemRef?.nativeId) foregroundTaskIds.add(item.nativeItemRef.nativeId);
+  }
   const latestRun =
     usageLimitRunPresentedAsLatest(projection.runs, projection.turnItems, sessionError) ??
-    latestUnheldRun(projection.runs);
+    latestUnheldRun(projection.runs.filter((run) => !liveRunIds.has(run.id)));
   return [
     ...derivePendingBackgroundWork({
       latestRun,
-      providerThreads: projection.providerThreads,
-      turnItems: projection.turnItems,
+      providerThreads: projection.providerThreads.map((thread) => ({
+        ...thread,
+        pendingBackgroundTasks: thread.pendingBackgroundTasks?.filter(
+          (task) => !foregroundTaskIds.has(task.taskId),
+        ),
+      })),
+      turnItems: projection.turnItems.filter(
+        (item) => item.runId === null || !liveRunIds.has(item.runId),
+      ),
       activeProviderThreadId: projection.thread.activeProviderThreadId,
+      hasActiveRun: false,
       runs: projection.runs,
       pullRequests: projection.thread.pullRequests,
     }),
@@ -1634,27 +1611,100 @@ export function deriveAvailableRevertTurnCounts(projection: ThreadStructure | nu
   return available;
 }
 
-/**
- * Changes when the agent may have changed the workspace, so file views refresh. File tools are
- * explicit; completed commands are included because a shell command can mutate the workspace
- * without reporting the paths it touched.
- */
-export function deriveWorkspaceMutationId(
-  visibleTurnItems: ReadonlyArray<ThreadStructureRow>,
-  latestCheckpointCompletedAt: string | null,
-) {
-  let itemId: string | null = null;
-  for (let index = visibleTurnItems.length - 1; index >= 0; index -= 1) {
-    const item = visibleTurnItems[index]?.item;
-    if (!item) continue;
-    if (item.type !== "command_execution" && item.type !== "file_change") continue;
-    if (item.status === "pending" || item.status === "running" || item.status === "waiting") {
-      continue;
-    }
-    itemId = item.id;
-    break;
-  }
-  return itemId === null && latestCheckpointCompletedAt === null
-    ? null
-    : JSON.stringify([itemId, latestCheckpointCompletedAt]);
+/** An imported native session is bound before it has messages or runs, and its cwd is fixed. */
+export function isThreadEnvironmentLocked(input: {
+  readonly messageCount: number;
+  readonly hasRuntime: boolean;
+  readonly activeProviderThreadId: ProviderThreadId | null;
+}): boolean {
+  return input.messageCount > 0 || input.hasRuntime || input.activeProviderThreadId !== null;
+}
+
+export function resolveComposerInteractionMode(input: {
+  planModeEnabled: boolean;
+  provider: Pick<ServerProvider, "showInteractionModeToggle"> | null | undefined;
+  interactionMode: ProviderInteractionMode;
+}): { enabled: boolean; interactionMode: ProviderInteractionMode } {
+  const enabled =
+    input.planModeEnabled &&
+    input.provider != null &&
+    input.provider.showInteractionModeToggle !== false;
+  return {
+    enabled,
+    interactionMode: enabled ? input.interactionMode : "default",
+  };
+}
+
+export function shouldShowPlanFollowUpPrompt(input: {
+  pendingUserInputCount: number;
+  interactionMode: ProviderInteractionMode;
+  latestTurnSettled: boolean;
+  hasActionableProposedPlan: boolean;
+  hasComposerAttachments: boolean;
+}): boolean {
+  return (
+    input.pendingUserInputCount === 0 &&
+    input.interactionMode === "plan" &&
+    input.latestTurnSettled &&
+    input.hasActionableProposedPlan &&
+    !input.hasComposerAttachments
+  );
+}
+
+export interface PlanFollowUpComposerSnapshot {
+  readonly replyTo?: ResponseContextRecord | null;
+  readonly prompt: string;
+  readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
+  readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
+  readonly previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
+  readonly threadContexts: ReadonlyArray<ThreadContextRecord>;
+  readonly environmentContexts: ReadonlyArray<EnvironmentContextRecord>;
+}
+
+export function restorePlanFollowUpComposer(input: {
+  readonly snapshot: PlanFollowUpComposerSnapshot;
+  readonly draftHasUserContent: boolean;
+  readonly routeIsCurrent: boolean;
+  readonly writeComposerRefs: (snapshot: PlanFollowUpComposerSnapshot) => void;
+  readonly writeReplyTo?: (response: ResponseContextRecord | null) => void;
+  readonly writePrompt: (prompt: string) => void;
+  readonly writeTerminalContexts: (contexts: ReadonlyArray<TerminalContextDraft>) => void;
+  readonly writeReviewComments: (comments: ReadonlyArray<ReviewCommentContext>) => void;
+  readonly writePreviewAnnotations: (annotations: ReadonlyArray<PreviewAnnotationPayload>) => void;
+  readonly writeThreadContexts: (records: ReadonlyArray<ThreadContextRecord>) => void;
+  readonly writeEnvironmentContexts: (records: ReadonlyArray<EnvironmentContextRecord>) => void;
+  readonly resetCursor: (options: {
+    cursor: number;
+    prompt: string;
+    detectTrigger: boolean;
+  }) => void;
+}): void {
+  if (input.draftHasUserContent) return;
+  if (input.routeIsCurrent) input.writeComposerRefs(input.snapshot);
+  input.writePrompt(input.snapshot.prompt);
+  input.writeReplyTo?.(input.snapshot.replyTo ?? null);
+  input.writeTerminalContexts(input.snapshot.terminalContexts);
+  input.writeReviewComments(input.snapshot.reviewComments);
+  input.writePreviewAnnotations(input.snapshot.previewAnnotations);
+  input.writeThreadContexts(input.snapshot.threadContexts);
+  input.writeEnvironmentContexts(input.snapshot.environmentContexts);
+  if (!input.routeIsCurrent) return;
+  input.resetCursor({
+    cursor: collapseExpandedComposerCursor(input.snapshot.prompt, input.snapshot.prompt.length),
+    prompt: input.snapshot.prompt,
+    detectTrigger: true,
+  });
+}
+
+export async function waitForStartedServerThread(
+  threadRef: ScopedThreadRef,
+  timeoutMs = 1_000,
+): Promise<boolean> {
+  const threadAtom = environmentThreadShells.threadShellAtom(threadRef);
+  return waitForAtomValue({
+    registry: appAtomRegistry,
+    atom: threadAtom,
+    predicate: threadHasStarted,
+    timeoutMs,
+  });
 }

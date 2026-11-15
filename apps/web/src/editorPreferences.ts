@@ -76,9 +76,30 @@ export function usePreferredEditor(availableEditors: ReadonlyArray<EditorId>) {
   return [effectiveEditor, setLastEditor] as const;
 }
 
+function resolveAndPersistPreferredEditor(availableEditors: readonly EditorId[]): EditorId | null {
+  const availableEditorIds = new Set(availableEditors);
+  let stored: EditorId | null = null;
+  try {
+    stored = getLocalStorageItem(LAST_EDITOR_KEY, EditorId);
+  } catch (error) {
+    console.warn("Could not read the preferred editor.", error);
+  }
+  if (stored && availableEditorIds.has(stored)) return stored;
+  const editor = EDITORS.find((editor) => availableEditorIds.has(editor.id))?.id ?? null;
+  if (editor) {
+    try {
+      setLocalStorageItem(LAST_EDITOR_KEY, editor, EditorId);
+    } catch (error) {
+      console.warn("Could not save the preferred editor.", error);
+    }
+  }
+  return editor ?? null;
+}
+
 export function useOpenInPreferredEditor(
   environmentId: EnvironmentId | null,
   availableEditors: readonly EditorId[],
+  projectRoot?: string,
 ) {
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, {
     reportFailure: false,
@@ -126,11 +147,7 @@ export function useOpenInPreferredEditor(
         ),
       );
     }
-    const storedEditor = getLocalStorageItem(LAST_EDITOR_KEY, EditorId);
-    const editor =
-      storedEditor && effectiveEditors.includes(storedEditor)
-        ? storedEditor
-        : (EDITORS.find((candidate) => effectiveEditors.includes(candidate.id))?.id ?? null);
+    const editor = resolveAndPersistPreferredEditor(effectiveEditors);
     if (!editor) {
       return AsyncResult.failure(
         Cause.fail(
@@ -153,19 +170,18 @@ export function useOpenInPreferredEditor(
         ...(position.column === undefined ? {} : { column: position.column }),
       });
       if (url !== undefined && (await openRemoteEditorUrl(url))) {
-        if (editor !== storedEditor) setLocalStorageItem(LAST_EDITOR_KEY, editor, EditorId);
         return AsyncResult.success(editor);
       }
       return AsyncResult.failure(
         Cause.fail(new PreferredEditorRemoteOpenError({ environmentId, targetPath, editor })),
       );
     }
-    if (editor !== storedEditor) setLocalStorageItem(LAST_EDITOR_KEY, editor, EditorId);
     const result = await openInEditor({
       environmentId,
       input: {
         cwd: targetPath,
         editor,
+        ...(projectRoot ? { projectRoot } : {}),
       },
     });
     return mapAtomCommandResult(result, () => editor);

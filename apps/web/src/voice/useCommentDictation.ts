@@ -31,7 +31,7 @@ export function useCommentDictation(input: {
         current.current.disabled ||
         !text.trim()
       ) {
-        throw new VoiceDictationServiceError("This comment is no longer available.");
+        throw VoiceDictationServiceError.new("This comment is no longer available.");
       }
       const value = current.current.value;
       const next = `${value}${value && !/\s$/u.test(value) ? " " : ""}${text}`;

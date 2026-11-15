@@ -12,7 +12,7 @@ import {
   AgentObservatorySubscribeNativeRosterInput,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -36,7 +36,7 @@ export class AgentObservatoryService extends Context.Service<
     ) => Effect.Effect<
       AgentObservatoryCommitResult,
       AgentObservatoryRefusal,
-      AgentObservatoryInvocation | Crypto.Crypto
+      AgentObservatoryInvocation | Digest.Digest
     >;
     /** Internal only: the destination read scope must be authorized before calling. */
     readonly read: (

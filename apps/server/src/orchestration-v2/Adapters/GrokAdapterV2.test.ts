@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ProjectId,
@@ -234,9 +235,12 @@ describe("Grok permission prompts", () => {
 });
 
 describe("Grok launch permission mode", () => {
-  const layerHost = TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer));
+  const layerHost = TestProviderHost.layer().pipe(
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  );
   const layerTest = Layer.mergeAll(
     NodeServices.layer,
+    NodeCrypto.layer,
     IdAllocator.layer,
     McpProviderSessions.layer,
     layerHost,
@@ -247,7 +251,7 @@ describe("Grok launch permission mode", () => {
       const launches: Array<ReadonlyArray<string>> = [];
       const childProcessSpawner = ChildProcessSpawner.make((command) => {
         if (command._tag === "StandardCommand") {
-          launches.push(command.args);
+          launches.push(command.args.map(String));
           assert.equal(command.options.env?.T3CODE_THREAD_ID, "grok-launch-test");
         }
         return Effect.fail(
@@ -366,9 +370,12 @@ describe("Grok launch permission mode", () => {
 });
 
 describe("Grok native questions", () => {
-  const layerHost = TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer));
+  const layerHost = TestProviderHost.layer().pipe(
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  );
   const layerTest = Layer.mergeAll(
     NodeServices.layer,
+    NodeCrypto.layer,
     IdAllocator.layer,
     McpProviderSessions.layer,
     layerHost,

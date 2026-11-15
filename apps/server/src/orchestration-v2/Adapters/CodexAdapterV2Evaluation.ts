@@ -175,7 +175,14 @@ export const runCodexEvaluation = Effect.fn("CodexAdapterV2.runEvaluation")(func
       cwd: input.cwd,
       includeLayers: false,
     });
-    const config = yield* Effect.try(() => codexVoiceIsolationConfig(effective, false));
+    const config = yield* Effect.try({
+      try: () => codexVoiceIsolationConfig(effective, false),
+      catch: (cause) =>
+        new ProviderAdapter.ProviderAdapterEvaluationError({
+          driver: ProviderDriverKind.make("codex"),
+          cause,
+        }),
+    });
     const started = yield* client.raw.request("thread/start", {
       model: input.modelSelection.model,
       ...(serviceTier ? { serviceTier } : {}),
@@ -191,7 +198,14 @@ export const runCodexEvaluation = Effect.fn("CodexAdapterV2.runEvaluation")(func
     });
     nativeThreadId = (yield* decodeThreadId(started)).thread.id;
     const selected = yield* decodeStarted(started);
-    yield* Effect.try(() => assertCodexVoiceThreadIsolation(started, true));
+    yield* Effect.try({
+      try: () => assertCodexVoiceThreadIsolation(started, true),
+      catch: (cause) =>
+        new ProviderAdapter.ProviderAdapterEvaluationError({
+          driver: ProviderDriverKind.make("codex"),
+          cause,
+        }),
+    });
     if (
       selected.model !== input.modelSelection.model ||
       (effort !== undefined && selected.reasoningEffort !== effort) ||
@@ -203,7 +217,14 @@ export const runCodexEvaluation = Effect.fn("CodexAdapterV2.runEvaluation")(func
       limit: 256,
       detail: "full",
     });
-    yield* Effect.try(() => assertCodexVoiceMcpIsolation(inventory));
+    yield* Effect.try({
+      try: () => assertCodexVoiceMcpIsolation(inventory),
+      catch: (cause) =>
+        new ProviderAdapter.ProviderAdapterEvaluationError({
+          driver: ProviderDriverKind.make("codex"),
+          cause,
+        }),
+    });
     const turn = yield* client.raw.request("turn/start", {
       threadId: nativeThreadId,
       model: input.modelSelection.model,

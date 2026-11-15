@@ -5,20 +5,27 @@ import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 export type ProtonPassState = "missing" | "unsupported" | "locked" | "signed-out" | "unavailable";
-export class ProtonPassUnavailable extends Error {
-  readonly state: ProtonPassState;
-  constructor(state: ProtonPassState) {
-    super(
-      state === "missing" || state === "unsupported"
-        ? "Proton Pass CLI is missing or unsupported. This integration requires CLI 2.4.2 installed on this desktop."
-        : state === "locked" || state === "signed-out"
-          ? `Proton Pass CLI is ${state}. Unlock or sign in to the CLI explicitly; the desktop app uses a separate session.`
-          : "Proton Pass CLI is unavailable. Check its local installation and CLI session, then try again.",
-    );
-    this.state = state;
+export class ProtonPassUnavailable extends Schema.TaggedError<ProtonPassUnavailable>()(
+  "ProtonPassUnavailable",
+  {
+    state: Schema.Literals(["missing", "unsupported", "locked", "signed-out", "unavailable"]),
+    message: Schema.String,
+  },
+) {
+  static new(state: ProtonPassState) {
+    return new ProtonPassUnavailable({
+      state,
+      message:
+        state === "missing" || state === "unsupported"
+          ? "Proton Pass CLI is missing or unsupported. This integration requires CLI 2.4.2 installed on this desktop."
+          : state === "locked" || state === "signed-out"
+            ? `Proton Pass CLI is ${state}. Unlock or sign in to the CLI explicitly; the desktop app uses a separate session.`
+            : "Proton Pass CLI is unavailable. Check its local installation and CLI session, then try again.",
+    });
   }
 }
 export interface ProtonLoginReference {
@@ -52,7 +59,7 @@ export const runProtonPassEffect = (args: readonly string[]) =>
             forceKillAfter: "1 second",
           }),
         )
-        .pipe(Effect.mapError(() => new ProtonPassUnavailable("missing")));
+        .pipe(Effect.mapError(() => ProtonPassUnavailable.new("missing")));
       const stdout = new Uint8Array(1024 * 1024);
       const stderr = new Uint8Array(4096);
       let stdoutBytes = 0;
@@ -63,7 +70,7 @@ export const runProtonPassEffect = (args: readonly string[]) =>
             Stream.runForEach((bytes) => {
               // Reject the whole excess chunk before copying or decoding any of it.
               if (bytes.byteLength > stdout.byteLength - stdoutBytes)
-                return Effect.fail(new ProtonPassUnavailable("unavailable"));
+                return Effect.fail(ProtonPassUnavailable.new("unavailable"));
               return Effect.sync(() => {
                 stdout.set(bytes, stdoutBytes);
                 stdoutBytes += bytes.byteLength;
@@ -89,14 +96,12 @@ export const runProtonPassEffect = (args: readonly string[]) =>
       const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
       if (code !== 0) {
         const diagnostic = decoder.decode(stderr.subarray(0, stderrBytes));
-        return yield* Effect.fail(
-          new ProtonPassUnavailable(
-            /locked|lock code|keyring/i.test(diagnostic)
-              ? "locked"
-              : /authenticated client|not logged|no session/i.test(diagnostic)
-                ? "signed-out"
-                : "unavailable",
-          ),
+        return yield* ProtonPassUnavailable.new(
+          /locked|lock code|keyring/i.test(diagnostic)
+            ? "locked"
+            : /authenticated client|not logged|no session/i.test(diagnostic)
+              ? "signed-out"
+              : "unavailable",
         );
       }
       return decoder.decode(stdout.subarray(0, stdoutBytes));
@@ -105,7 +110,7 @@ export const runProtonPassEffect = (args: readonly string[]) =>
     // Interrupting the scope kills the captured child, including on output overflow or timeout.
     Effect.timeout("15 seconds"),
     Effect.mapError((error) =>
-      error instanceof ProtonPassUnavailable ? error : new ProtonPassUnavailable("unavailable"),
+      isProtonPassUnavailable(error) ? error : ProtonPassUnavailable.new("unavailable"),
     ),
   );
 const cliProcessLayer = NodeChildProcessSpawner.layer.pipe(
@@ -127,20 +132,20 @@ const parse = (raw: string): Record<string, unknown> => {
     const value: unknown = JSON.parse(raw);
     if (record(value)) return value;
   } catch {}
-  throw new ProtonPassUnavailable("unsupported");
+  throw ProtonPassUnavailable.new("unsupported");
 };
 const field = (raw: string) => (raw.endsWith("\n") ? raw.slice(0, -1) : raw);
 
 export function makeProtonPassProvider(run: RunProtonPass = runProtonPass): ProtonPassProvider {
   const ready = async () => {
     if (!/^Proton Pass CLI 2\.4\.2\b/.test(await run(["--version"])))
-      throw new ProtonPassUnavailable("unsupported");
+      throw ProtonPassUnavailable.new("unsupported");
   };
   return {
     async vaults() {
       await ready();
       const entries = parse(await run(["vault", "list", "--output", "json"])).vaults;
-      if (!Array.isArray(entries)) throw new ProtonPassUnavailable("unsupported");
+      if (!Array.isArray(entries)) throw ProtonPassUnavailable.new("unsupported");
       return entries
         .filter(record)
         .filter((entry) => text(entry.share_id) && text(entry.name))
@@ -162,7 +167,7 @@ export function makeProtonPassProvider(run: RunProtonPass = runProtonPass): Prot
           "json",
         ]),
       ).items;
-      if (!Array.isArray(entries)) throw new ProtonPassUnavailable("unsupported");
+      if (!Array.isArray(entries)) throw ProtonPassUnavailable.new("unsupported");
       return entries
         .filter(record)
         .filter(
@@ -194,8 +199,10 @@ export function makeProtonPassProvider(run: RunProtonPass = runProtonPass): Prot
       const password = await read("password");
       await assertCurrent();
       if (!password || username.length > 65536 || password.length > 65536)
-        throw new ProtonPassUnavailable("unavailable");
+        throw ProtonPassUnavailable.new("unavailable");
       return { username, password };
     },
   };
 }
+
+const isProtonPassUnavailable = Schema.is(ProtonPassUnavailable);

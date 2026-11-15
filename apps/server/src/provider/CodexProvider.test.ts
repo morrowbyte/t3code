@@ -5,6 +5,7 @@ import {
   buildCodexInitializeParams,
   mapCodexModelCapabilities,
 } from "./CodexProvider.ts";
+import { codexCustomEndpoint, codexRoutesSpendNativeQuota } from "./CodexProvider.ts";
 
 it("maps current Codex model capability fields", () => {
   const capabilities = mapCodexModelCapabilities({
@@ -16,6 +17,7 @@ it("maps current Codex model capability fields", () => {
     id: "gpt-test",
     isDefault: true,
     model: "gpt-test",
+    availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] },
     defaultServiceTier: "flex",
     serviceTiers: [
       {
@@ -64,6 +66,16 @@ it("maps current Codex model capability fields", () => {
         },
       ],
       currentValue: "flex",
+    },
+    {
+      id: "cyberAccessProgram",
+      label: "Cyber Access",
+      type: "select",
+      options: [
+        { id: "standard", label: "Standard", isDefault: true },
+        { id: "daybreakBlue", label: "Daybreak Blue" },
+      ],
+      currentValue: "standard",
     },
   ]);
 });
@@ -163,4 +175,37 @@ it("advertises OpenAI form elicitation during initialization", () => {
     buildCodexInitializeParams().capabilities?.mcpServerOpenaiFormElicitation,
     true,
   );
+});
+
+it("reports native quota only for an OpenAI login on a native route", () => {
+  const chatgpt = { type: "chatgpt", email: "a@example.com", planType: "pro" } as const;
+  const hub = {
+    model_provider: "hub",
+    model_providers: { hub: { base_url: "https://hub.example.com/v1" } },
+  };
+  const cases = [
+    ["default route", chatgpt, true, {}, true],
+    ["openai base url", chatgpt, true, { openai_base_url: "https://chatgpt.com/x" }, true],
+    ["openai proxy url", chatgpt, true, { openai_base_url: "https://proxy.example.com" }, false],
+    ["custom provider", chatgpt, true, hub, false],
+    ["unknown provider id", chatgpt, true, { model_provider: "missing" }, false],
+    ["unreadable config", chatgpt, true, null, false],
+    ["login not required", chatgpt, false, {}, false],
+    ["api key", { type: "apiKey" }, true, {}, false],
+  ] as const;
+  for (const [name, account, requiresOpenaiAuth, config, expected] of cases) {
+    assert.strictEqual(
+      codexRoutesSpendNativeQuota({ account, requiresOpenaiAuth }, config),
+      expected,
+      name,
+    );
+  }
+  // The custom endpoint is what a usage-limit hub is matched against.
+  assert.strictEqual(codexCustomEndpoint(hub), "https://hub.example.com");
+  assert.strictEqual(
+    codexCustomEndpoint({ openai_base_url: "http://127.0.0.1:8317/v1" }),
+    "http://127.0.0.1:8317",
+  );
+  assert.strictEqual(codexCustomEndpoint({ openai_base_url: "https://chatgpt.com/x" }), undefined);
+  assert.strictEqual(codexCustomEndpoint({}), undefined);
 });

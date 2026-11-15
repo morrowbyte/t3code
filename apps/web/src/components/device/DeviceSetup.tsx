@@ -1,14 +1,12 @@
 import { DeviceHostUpdates } from "./DeviceHostUpdates";
 import type { DevicePlatform, DeviceServiceState, EnvironmentId } from "@t3tools/contracts";
-import { Check } from "lucide-react";
-import { Check as CheckGlyph, CircleAlert } from "lucide";
+import { Check, CircleAlert } from "lucide-react";
 import { AuthSettingsWriteScope } from "@t3tools/contracts";
 import { useAtomMount } from "@effect/atom-react";
 import { useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { DialogClose } from "~/components/ui/dialog";
-import { MorphIcon } from "~/components/MorphIcon";
 import { WizardHeader, WizardPanel, WizardSteps, WizardFooter } from "~/components/ui/wizard";
 import { Spinner } from "~/components/ui/spinner";
 import { Switch } from "~/components/ui/switch";
@@ -23,9 +21,20 @@ const deviceHubDescription = "Open local and remote simulators and emulators.";
 const agentDeviceDescription =
   "New agent sessions can start and control local and remote devices. Sets up required tools automatically.";
 
+/** Platforms whose latest listing on a ready host may be missing devices. */
+export const incompleteListings = (
+  status: DeviceServiceState["hostStatuses"][string] | undefined,
+) =>
+  (["ios", "android"] as const).filter(
+    (platform) =>
+      status?.status === "ready" &&
+      (status.incompletePlatforms?.includes(platform) ||
+        (platform === "android" && status.androidDiscoveryIncomplete === true)),
+  );
+
 export const isAndroidDiscoveryUncertain = (state: DeviceServiceState) =>
-  Object.values(state.hostStatuses).some(
-    (status) => status.status === "ready" && status.androidDiscoveryIncomplete,
+  Object.values(state.hostStatuses).some((status) =>
+    incompleteListings(status).includes("android"),
   );
 
 /**
@@ -102,6 +111,16 @@ export function platformSetupStatus(state: DeviceServiceState, platform: DeviceP
       (host.kind === "local" && state.hostStatus === "ready"),
   );
   if (readyHosts.length > 0 && !hasDevices) {
+    if (
+      readyHosts.some((host) =>
+        state.hostStatuses[host.id]?.incompletePlatforms?.includes(platform),
+      )
+    ) {
+      return {
+        ready: false,
+        message: `No ${platformName(platform)} devices were listed because device discovery reported a problem.`,
+      };
+    }
     return {
       ready: false,
       message:
@@ -118,7 +137,7 @@ export function platformSetupStatus(state: DeviceServiceState, platform: DeviceP
     ready: true,
     message:
       remoteHost?.kind === "eas"
-        ? `${remoteHost.label} starts ${platform === "ios" ? "iOS Simulators" : "Android emulators"} in the cloud with EAS Simulator.`
+        ? `${remoteHost.label} starts ${platform === "ios" ? "iOS Simulators" : "Android emulators"} in the cloud with Expo Simulators.`
         : platform === "ios"
           ? `Xcode and iOS Simulator are available${location}.`
           : `The Android SDK and Emulator are available${location}.`,
@@ -360,13 +379,11 @@ function PlatformStatus(props: {
     <div
       className={cn("flex gap-2", !props.compact && "rounded-md border border-border/60 px-3 py-2")}
     >
-      <MorphIcon
-        className={cn(
-          "mt-0.5 size-4 shrink-0",
-          props.status.ready ? "text-success" : "text-muted-foreground",
-        )}
-        icon={props.status.ready ? CheckGlyph : CircleAlert}
-      />
+      {props.status.ready ? (
+        <Check className="mt-0.5 size-4 shrink-0 text-success" />
+      ) : (
+        <CircleAlert className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+      )}
       <div className={cn(props.compact && props.status.ready && "flex items-center gap-2")}>
         <p className="font-medium">{props.platform}</p>
         <p className="text-xs text-muted-foreground">

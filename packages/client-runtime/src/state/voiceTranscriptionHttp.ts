@@ -1,5 +1,4 @@
 import * as Effect from "effect/Effect";
-import * as Data from "effect/Data";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
@@ -16,9 +15,10 @@ import * as ManagedRelay from "../relay/managedRelay.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "./environmentHttpAuth.ts";
 import type { VoiceTranscriptionSettingsInput } from "@t3tools/contracts";
 
-class VoiceSettingsStorageUnavailable extends Data.TaggedError(
+class VoiceSettingsStorageUnavailable extends Schema.TaggedError<VoiceSettingsStorageUnavailable>()(
   "VoiceSettingsStorageUnavailable",
-)<{}> {}
+  {},
+) {}
 
 export const requestEnvironmentVoiceSettings = Effect.fn(
   "voiceTranscriptionHttp.requestEnvironmentVoiceSettings",
@@ -35,7 +35,7 @@ export const requestEnvironmentVoiceSettings = Effect.fn(
       const request = (update?: typeof VoiceTranscriptionSettingsInput.Type) =>
         executeAuthenticatedEnvironmentHttpRequest({
           ...input,
-          group: "voice",
+          group: "voiceTranscription",
           method: update ? "PUT" : "GET",
           timeoutMs: 15_000,
           url: (urls) => urls.voiceSettings(),
@@ -121,7 +121,7 @@ export const transcribeEnvironmentVoiceRecording = (
     prepared: input.prepared,
     signer: input.signer,
     remoteAuthorization: input.remoteAuthorization,
-    group: "voice",
+    group: "voiceTranscription",
     method: "POST",
     url: (urls) => urls.voiceTranscription(),
     timeoutMs: 60_000,

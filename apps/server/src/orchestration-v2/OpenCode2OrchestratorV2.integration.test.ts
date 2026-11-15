@@ -24,6 +24,7 @@ import { OPENCODE_PROVIDER } from "@t3tools/provider-opencode/testing";
 import { provideDeterministicTestRuntime } from "./testkit/DeterministicRuntime.ts";
 import type { OrchestratorV2ScenarioStep } from "./testkit/OrchestratorScenario.ts";
 import { runOrchestratorV2ProviderReplayScenario } from "./testkit/ProviderReplayHarness.ts";
+import * as ProviderTurnStartServiceTestkit from "./ProviderTurnStartService.testkit.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import { readProviderReplayTranscript } from "@t3tools/provider-testing/replayTranscript";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -267,6 +268,8 @@ const threadCommands = (input: {
 const runScenario = (input: {
   readonly name: string;
   readonly threadId: ThreadId;
+  readonly projectId: ProjectId;
+  readonly cwd: string;
   readonly entries: ReadonlyArray<ProviderReplayEntry>;
   readonly commands: ReadonlyArray<OrchestrationV2Command>;
 }) =>
@@ -288,6 +291,12 @@ const runScenario = (input: {
     const result = yield* runOrchestratorV2ProviderReplayScenario(
       { name: input.name, transcript, commands: input.commands, steps },
       OpenCode2OrchestratorReplayHarness,
+      {
+        projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+          input.projectId,
+          input.cwd,
+        ),
+      },
     ).pipe(provideDeterministicTestRuntime);
     const projection = result.projections.get(input.threadId);
     assert.isDefined(projection);
@@ -305,6 +314,8 @@ describe("OpenCode 2 through the orchestrator", () => {
         const projection = yield* runScenario({
           name,
           threadId: thread.threadId,
+          projectId: thread.create.projectId,
+          cwd,
           entries: [
             ...createdSession(cwd, name),
             ...instructionsWritten,
@@ -346,7 +357,7 @@ describe("OpenCode 2 through the orchestrator", () => {
         );
 
         assert.lengthOf(projection.providerThreads, 1);
-      }).pipe(Effect.scoped),
+      }),
   );
 
   it.effect("rewrites the session's rules when the thread's mode changes between turns", () =>
@@ -364,6 +375,8 @@ describe("OpenCode 2 through the orchestrator", () => {
       const projection = yield* runScenario({
         name,
         threadId: thread.threadId,
+        projectId: thread.create.projectId,
+        cwd,
         entries: [
           ...createdSession(cwd, name),
           ...instructionsWritten,
@@ -397,7 +410,7 @@ describe("OpenCode 2 through the orchestrator", () => {
         ["completed", "completed", "completed"],
       );
       assert.lengthOf(projection.providerThreads, 1);
-    }).pipe(Effect.scoped),
+    }),
   );
 
   it.effect("denies edits outside the plan directory in plan mode and lifts it after", () =>
@@ -408,6 +421,8 @@ describe("OpenCode 2 through the orchestrator", () => {
       const projection = yield* runScenario({
         name,
         threadId: thread.threadId,
+        projectId: thread.create.projectId,
+        cwd,
         entries: [
           ...createdSession(cwd, name, planRules(name), true),
 
@@ -439,7 +454,7 @@ describe("OpenCode 2 through the orchestrator", () => {
         projection.runs.map((run) => run.status),
         ["completed", "completed"],
       );
-    }).pipe(Effect.scoped),
+    }),
   );
 
   it.effect("forks from an earlier turn before the next turn's user message", () =>
@@ -491,6 +506,12 @@ describe("OpenCode 2 through the orchestrator", () => {
       const result = yield* runOrchestratorV2ProviderReplayScenario(
         { name, transcript, commands, steps, projectionThreadIds: [source.threadId, target] },
         OpenCode2OrchestratorReplayHarness,
+        {
+          projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+            source.create.projectId,
+            cwd,
+          ),
+        },
       ).pipe(provideDeterministicTestRuntime);
       const forked = result.projections.get(target);
       assert.isDefined(forked);
@@ -584,6 +605,12 @@ describe("OpenCode 2 through the orchestrator", () => {
           steps,
         },
         OpenCode2OrchestratorReplayHarness,
+        {
+          projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+            thread.create.projectId,
+            cwd,
+          ),
+        },
       ).pipe(provideDeterministicTestRuntime);
       const projection = result.projections.get(thread.threadId);
       assert.isDefined(projection);
@@ -646,7 +673,13 @@ describe("OpenCode 2 through the orchestrator", () => {
       },
       OpenCode2OrchestratorReplayHarness,
 
-      { runContinuationWorker: true },
+      {
+        runContinuationWorker: true,
+        projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+          thread.create.projectId,
+          cwd,
+        ),
+      },
     ).pipe(provideDeterministicTestRuntime);
     const projection = result.projections.get(thread.threadId);
     assert.isDefined(projection);
@@ -915,7 +948,13 @@ describe("OpenCode 2 through the orchestrator", () => {
             ],
           },
           OpenCode2OrchestratorReplayHarness,
-          { runContinuationWorker: true },
+          {
+            runContinuationWorker: true,
+            projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+              thread.create.projectId,
+              cwd,
+            ),
+          },
         ).pipe(provideDeterministicTestRuntime);
         const projection = result.projections.get(thread.threadId);
         assert.isDefined(projection);

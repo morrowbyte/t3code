@@ -6,6 +6,7 @@ export function shouldShowOpenInPicker(input: {
   readonly activeProjectName: string | undefined;
   readonly activeThreadEnvironmentId: EnvironmentId;
   readonly primaryEnvironmentId: EnvironmentId | null;
+  readonly hostEnvironmentId: string | null;
   readonly remoteOpenMode: RemoteOpenMode;
 }): boolean {
   if (!input.activeProjectName) return false;

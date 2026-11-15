@@ -20,7 +20,12 @@ export function isOrchestrationV2ThreadSnoozed(
     (
       thread.pendingRuntimeRequests ??
       (thread.pendingRuntimeRequest === null ? [] : [thread.pendingRuntimeRequest])
-    ).length > 0 ||
+    ).some(
+      (request) =>
+        request.kind !== "user_input" ||
+        thread.snoozedAt == null ||
+        DateTime.toEpochMillis(request.createdAt) > DateTime.toEpochMillis(thread.snoozedAt),
+    ) ||
     (thread.pendingGuestMessageCount ?? 0) > 0
   )
     return false;

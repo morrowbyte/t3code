@@ -28,6 +28,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as DevRunnerControl from "@t3tools/shared/node/devRunnerControl";
 import * as DevShareOwnership from "@t3tools/shared/node/devShareOwnership";
+import { defaultDevMemoryLimitBytes, enforceDevMemoryLimit } from "./lib/dev-memory-limit.ts";
 import { type DevShareError, shareDevServer, unshareDevServer } from "./lib/dev-share.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
 
@@ -65,6 +66,13 @@ export function isProxiableBindHost(host: string): boolean {
     normalized === "::" ||
     normalized === "[::]"
   );
+}
+
+function sharedBackendTargetHost(host: string | undefined): string {
+  const normalized = host?.trim() ?? "";
+  if (normalized === "::1" || normalized === "[::1]") return "[::1]";
+  if (normalized === "localhost") return "localhost";
+  return "127.0.0.1";
 }
 
 export const DEFAULT_T3_HOME = Effect.map(Effect.service(Path.Path), (path) =>
@@ -380,12 +388,15 @@ export const createDevRunnerEnv = Effect.fn("dev-runner.createDevRunnerEnv")(fun
     delete output.T3CODE_SINGLE_ORIGIN_DEV;
     delete output.T3CODE_MODE;
     delete output.T3CODE_NO_BROWSER;
-    delete output.T3CODE_HOST;
     delete output.T3CODE_DEV_AUTH_TOKEN;
   }
 
+  // Agent shells inherit the parent T3 server's bind settings; only --host widens the dev server.
+  delete output.T3CODE_LAN;
   if (!isDesktopMode && host !== undefined) {
     output.T3CODE_HOST = host;
+  } else {
+    delete output.T3CODE_HOST;
   }
 
   if (!isDesktopMode) {
@@ -617,9 +628,9 @@ const runRepoScript = Effect.fn("dev-runner.runRepoScript")(function* (
 });
 
 /**
- * The first start in a worktree seeds its empty database from a small live database
- * and warms the web dependency cache. Each step checks for its own output, so
- * later starts skip it.
+ * The first start in a worktree seeds its empty database from a small live database,
+ * builds the native resource monitor, and warms the web dependency cache. Each step
+ * checks for its own output, so later starts skip it.
  */
 const prepareFirstStart = Effect.fn("dev-runner.prepareFirstStart")(function* (input: {
   readonly mode: DevMode;
@@ -671,6 +682,41 @@ const prepareFirstStart = Effect.fn("dev-runner.prepareFirstStart")(function* (i
   }
 
   const repoRoot = path.dirname(import.meta.dirname);
+  // Dev backends load the monitor from its Cargo output, which a fresh
+  // checkout or worktree does not have yet.
+  if (input.mode !== "dev:web") {
+    const crate = path.join(repoRoot, "native/resource-monitor");
+    const binary =
+      (yield* HostProcess.Platform) === "win32" ? "t3-resource-monitor.exe" : "t3-resource-monitor";
+    if (
+      !(yield* exists(path.join(crate, "target/release", binary))) &&
+      !(yield* exists(path.join(crate, "target/debug", binary)))
+    ) {
+      yield* Effect.logInfo("[dev-runner] building the resource monitor (first start only).");
+      const exitCode = yield* ChildProcess.make(
+        "cargo",
+        ["build", "--locked", "--release", "--manifest-path", path.join(crate, "Cargo.toml")],
+        {
+          cwd: repoRoot,
+          stdin: "ignore",
+          stdout: "inherit",
+          stderr: "inherit",
+          env: input.env,
+          extendEnv: false,
+        },
+      ).pipe(
+        Effect.flatMap((child) => child.exitCode),
+        Effect.scoped,
+        Effect.orElseSucceed(() => -1),
+      );
+      if (exitCode !== 0) {
+        yield* Effect.logWarning(
+          "[dev-runner] could not build the resource monitor; starting without process telemetry. Install Rust and run `vp run build:resource-monitor`.",
+        );
+      }
+    }
+  }
+
   if (
     input.mode !== "dev:server" &&
     !(yield* exists(path.join(repoRoot, "apps/web/node_modules/.vite/deps/_metadata.json")))
@@ -692,6 +738,7 @@ export const DevRunnerWorkerInput = Schema.Struct({
   share: Schema.Boolean,
   seed: Schema.optional(Schema.Boolean),
   built: Schema.Boolean,
+  memoryLimitGb: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   runArgs: Schema.Array(Schema.String),
 });
 type DevRunnerCliInput = typeof DevRunnerWorkerInput.Type;
@@ -872,12 +919,13 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
           ownership,
           ...(control?.runtime === undefined ? {} : { runtime: control.runtime }),
           // The backend binds 127.0.0.1 unless --host changes it. A wildcard
-          // still answers there; `--host ::1` binds only the IPv6 loopback.
+          // still answers there; `--host ::1` binds only the IPv6 loopback, and
+          // `localhost` binds whichever loopback Node resolves first.
           ...(input.built
             ? {
                 localTarget: {
                   port: Number(env.T3CODE_PORT),
-                  host: ["::1", "[::1]"].includes(input.host?.trim() ?? "") ? "[::1]" : "127.0.0.1",
+                  host: sharedBackendTargetHost(input.host),
                 },
               }
             : {}),
@@ -988,8 +1036,8 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
     env,
     extendEnv: false,
     shell: spawnCommand.shell,
-    // Task-owned groups let the captured handle stop descendants; manual runs keep terminal signals.
-    detached: control !== undefined && (yield* HostProcess.Platform) !== "win32",
+    // Linux teardown signals the owned process group; Windows retains direct child handling.
+    detached: (yield* HostProcess.Platform) !== "win32",
     forceKillAfter: "1500 millis",
   }).pipe(
     Effect.mapError(
@@ -1050,6 +1098,10 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
     onReady?.(connection, false);
   }
 
+  const memoryLimitBytes =
+    input.memoryLimitGb === undefined
+      ? defaultDevMemoryLimitBytes()
+      : input.memoryLimitGb * 1024 ** 3;
   const waitForExit = child.exitCode.pipe(
     Effect.mapError(
       (cause) =>
@@ -1059,6 +1111,7 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
           cause,
         }),
     ),
+    Effect.raceFirst(enforceDevMemoryLimit(memoryLimitBytes)),
   );
   const outcome = control
     ? yield* Effect.raceFirst(
@@ -1201,6 +1254,7 @@ const runTaskDevRunnerWithInput = Effect.fn("dev-runner.runTaskDevRunnerWithInpu
     });
   });
 });
+const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 const devRunnerCli = Command.make("dev-runner", {
   mode: Argument.Literals("mode", DEV_RUNNER_MODES).pipe(
@@ -1271,6 +1325,18 @@ const devRunnerCli = Command.make("dev-runner", {
     ),
     Flag.withDefault(false),
   ),
+  memoryLimitGb: Flag.Int("memory-limit-gb").pipe(
+    Flag.withSchema(NonNegativeInt),
+    Flag.withDescription(
+      "Stop the dev server when it and its child processes use more than this many GiB of RAM plus swap (equivalent to T3CODE_DEV_MEMORY_LIMIT_GB). Defaults to half of RAM, at most 16. 0 turns it off. Linux only.",
+    ),
+    Flag.withFallbackConfig(
+      Config.schema(NonNegativeInt, "T3CODE_DEV_MEMORY_LIMIT_GB").pipe(
+        Config.option,
+        Config.map(Option.getOrUndefined),
+      ),
+    ),
+  ),
   runArgs: Argument.String("run-arg").pipe(
     Argument.withDescription("Additional Vite+ run args (pass after `--`)."),
     Argument.variadic(),
@@ -1291,6 +1357,9 @@ const cliRuntimeLayer = Layer.mergeAll(
 );
 
 if (import.meta.main) {
+  // runMain interrupts (running finalizers such as the --share unmapping) only
+  // on SIGINT/SIGTERM; a closed terminal or dropped SSH session sends SIGHUP.
+  process.on("SIGHUP", () => process.kill(process.pid, "SIGTERM"));
   Command.run(devRunnerCli, { version: "0.0.0" }).pipe(
     Effect.scoped,
     Effect.provide(cliRuntimeLayer),

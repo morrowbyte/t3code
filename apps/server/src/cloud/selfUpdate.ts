@@ -1,4 +1,5 @@
 import {
+  DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE,
   ServerSelfUpdateError,
   HostUpdateHistoryError,
   type DeleteHostUpdateInput,
@@ -10,7 +11,6 @@ import {
   type ServerSelfUpdateResult,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { updateHistoryUuid } from "@t3tools/shared/updateHistory";
 import * as Cause from "effect/Cause";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -35,27 +35,35 @@ import packageJson from "../../package.json" with { type: "json" };
 import { readServiceState, updateStoppedServer } from "../serviceLauncher.ts";
 import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
+import * as DesktopUpdateMarker from "../desktopUpdate/DesktopUpdateMarker.ts";
 import { databaseMigrationHead } from "../persistence/databaseMigrationHead.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
-import { managedUpdateRefusal } from "../policy/managedUpdates.ts";
+import { managedUpdateMirror, managedUpdateRefusal } from "../policy/managedUpdates.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import {
   ensurePinnedRuntimeInstalled,
+  isUnpublishedRelease,
   pinnedRuntimeCommand,
   PinnedRuntimeInstallError,
   pinnedRuntimePaths,
   PinnedRuntimePreflightBlockedError,
   prunePinnedRuntimes,
 } from "./pinnedRuntime.ts";
+import { bootServiceProgramOf, bootServiceUnitPath } from "./bootService.ts";
 import { decodeServicePreflightResult } from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
-import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
+import {
+  SERVICE_LAUNCHER_PROTOCOL,
+  isExactServiceVersion,
+  type SupportedLauncherProtocol,
+} from "./serviceProtocol.ts";
 import { makeServerUpdateHistory } from "./updateHistory.ts";
 import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import { serverUpdatesOnHold } from "./serverRestore.ts";
 
-const PREFLIGHT_TIMEOUT = Duration.seconds(30);
+// A staged runtime's cold start can take over a minute on a loaded, swapping host.
+const PREFLIGHT_TIMEOUT = Duration.minutes(3);
 
 export function resolveServerSelfUpdateCapability(input: {
   readonly desktopManaged: boolean;
@@ -105,9 +113,24 @@ export const pruneRuntimesOnStart = Effect.fn("cloud.server_self_update.prune_on
     if (!input.managed && executablePath !== entryPath && executablePath !== realEntryPath) {
       return [];
     }
+    const unitPath = yield* bootServiceUnitPath();
+    // A stopped service's unit still names the launcher runtime it will start.
+    const unit =
+      unitPath === undefined
+        ? Option.none<string>()
+        : yield* fs.readFileString(unitPath).pipe(Effect.option);
+    const program = Option.flatMapNullishOr(unit, bootServiceProgramOf);
+    // The unit may name it through another spelling of a symlinked T3 home.
+    const references = Option.isNone(program)
+      ? []
+      : [
+          program.value,
+          yield* fs.realPath(program.value).pipe(Effect.orElseSucceed(() => program.value)),
+        ];
     const removed = yield* prunePinnedRuntimes({
       baseDir: input.baseDir,
       keep: [packageJson.version],
+      references,
     });
     if (removed.length > 0) {
       yield* Effect.logInfo("Removed unused t3 runtimes.", { versions: removed });
@@ -140,6 +163,7 @@ const validateServiceRuntime = Effect.fn("cloud.server_self_update.validate_runt
   runtime: ReturnType<typeof pinnedRuntimePaths>,
   dbPath: string,
   targetVersion: string,
+  launcherProtocol: SupportedLauncherProtocol,
 ) {
   const runner = yield* ProcessRunner.ProcessRunner;
   return yield* runner
@@ -151,7 +175,7 @@ const validateServiceRuntime = Effect.fn("cloud.server_self_update.validate_runt
         "--database-path",
         dbPath,
         "--launcher-protocol",
-        String(SERVICE_LAUNCHER_PROTOCOL),
+        String(launcherProtocol),
       ],
       timeout: PREFLIGHT_TIMEOUT,
     })
@@ -188,7 +212,7 @@ const validateServiceRuntime = Effect.fn("cloud.server_self_update.validate_runt
               }),
             );
           }
-          const preflight = decodeServicePreflightResult(parsed);
+          const preflight = decodeServicePreflightResult(parsed, launcherProtocol);
           if (preflight === undefined || preflight.version !== targetVersion) {
             return Effect.fail(
               new PinnedRuntimeInstallError({
@@ -252,7 +276,7 @@ export const updateStoppedRuntime = Effect.fn("cloud.server_self_update.update_s
         arch,
         releaseBaseUrl,
         validate: (runtime) =>
-          validateServiceRuntime(runtime, dbPath, targetVersion).pipe(
+          validateServiceRuntime(runtime, dbPath, targetVersion, SERVICE_LAUNCHER_PROTOCOL).pipe(
             Effect.provideService(ProcessRunner.ProcessRunner, runner),
           ),
       }).pipe(Effect.asVoid);
@@ -288,11 +312,12 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const arch = yield* HostProcess.Architecture;
   const httpClient = yield* HttpClient.HttpClient;
   const receiver = yield* Effect.serviceOption(DesktopTelemetryReceiver.DesktopTelemetryReceiver);
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
   const history = yield* makeServerUpdateHistory(serverConfig.baseDir, packageJson.version);
-  const releaseBaseUrl = Option.getOrUndefined(
-    yield* Config.String(CLI_RELEASE_BASE_URL_ENV).pipe(Config.option),
-  );
+  const mirror = managedUpdateMirror(policy.document);
+  const releaseBaseUrl =
+    mirror?.feedUrl ??
+    Option.getOrUndefined(yield* Config.String(CLI_RELEASE_BASE_URL_ENV).pipe(Config.option));
   const inFlight = yield* Ref.make(false);
 
   yield* pruneRuntimesOnStart({ baseDir: serverConfig.baseDir, managed: launcher.managed }).pipe(
@@ -349,12 +374,19 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         "This server is managed by the T3 Code desktop app on its machine; update the desktop app to update it.",
       );
     }
-    if (capability === null) {
+    // The target must accept the launcher that will run it, which can be older than this server.
+    const launcherProtocol = launcher.protocol;
+    if (capability === null || launcherProtocol === undefined) {
       return yield* failWith(
         "Remote updates require the T3 Code background service. Run `t3 service install` on the server machine.",
       );
     }
 
+    if (launcherProtocol === 3) {
+      return yield* failWith(
+        "This background launcher cannot prepare rollback-safe updates. Run `t3 service install` locally on the server machine, then retry.",
+      );
+    }
     const unsafeCrossing = crossesTrackUnsafely(input);
     if (unsafeCrossing !== null) return yield* failWith(unsafeCrossing);
     const targetVersion = input.targetVersion.trim();
@@ -369,10 +401,13 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       Effect.mapError((error) => failWith(error.message)),
       Effect.onError(() => Ref.set(inFlight, false)),
     );
-    const attemptId = yield* history.start("server", packageJson.version, targetVersion).pipe(
-      Effect.mapError((error) => failWith(error.message)),
-      Effect.onError(() => Ref.set(inFlight, false)),
-    );
+    const attemptId =
+      input.stageOnly === true
+        ? undefined
+        : yield* history.start("server", packageJson.version, targetVersion).pipe(
+            Effect.mapError((error) => failWith(error.message)),
+            Effect.onError(() => Ref.set(inFlight, false)),
+          );
     let handoffAccepted = false;
     return yield* Effect.gen(function* () {
       yield* reportProgress("downloading");
@@ -389,19 +424,45 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         platform,
         arch,
         releaseBaseUrl,
+        requirePublishedRelease: mirror !== undefined,
         validate: (runtime) =>
-          validateServiceRuntime(runtime, serverConfig.dbPath, targetVersion).pipe(
-            Effect.provideService(ProcessRunner.ProcessRunner, runner),
-          ),
+          validateServiceRuntime(
+            runtime,
+            serverConfig.dbPath,
+            targetVersion,
+            launcherProtocol,
+          ).pipe(Effect.provideService(ProcessRunner.ProcessRunner, runner)),
       }).pipe(
-        Effect.mapError((error) =>
-          error._tag === "PinnedRuntimePreflightBlockedError"
-            ? failWith(error.reason, error)
-            : failWith(`Could not prepare t3@${targetVersion}.`, error),
-        ),
+        Effect.mapError((error) => {
+          if (error._tag === "PinnedRuntimePreflightBlockedError") {
+            return failWith(error.reason, error);
+          }
+          if (mirror !== undefined && isUnpublishedRelease(error)) {
+            return failWith(
+              `${mirror.organization}'s update mirror has no t3@${targetVersion} for this machine.`,
+              error,
+            );
+          }
+          const downloadFailure = [
+            error.httpStatus === undefined ? undefined : `HTTP ${error.httpStatus}`,
+            error.downloadHost === undefined ? undefined : `from ${error.downloadHost}`,
+          ]
+            .filter((part) => part !== undefined)
+            .join(" ");
+          return failWith(
+            `Could not prepare t3@${targetVersion} while ${error.step}${downloadFailure ? ` (${downloadFailure})` : ""}.`,
+            error,
+          );
+        }),
       );
 
+      if (input.stageOnly === true) {
+        yield* Ref.set(inFlight, false);
+        return { targetVersion, method: "boot-service" as const };
+      }
       yield* reportProgress("installing");
+      if (attemptId === undefined)
+        return yield* failWith("The update attempt has no history receipt.");
       yield* history
         .patch(attemptId, "installing")
         .pipe(Effect.mapError((error) => failWith(error.message)));
@@ -425,6 +486,13 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
               handoffAccepted = true;
             }),
           ),
+          // The launcher stops this server next; one from before its serving lock holds nothing
+          // until the new server starts, so this marker is what an SSH launch waits on.
+          Effect.tap(() =>
+            DesktopUpdateMarker.publish(
+              path.join(serverConfig.baseDir, "runtime", DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE),
+            ).pipe(Effect.provideService(FileSystem.FileSystem, fs), Effect.ignore({ log: true })),
+          ),
           Effect.tap(() => onHandoffAccepted()),
         ),
       );
@@ -438,7 +506,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     }).pipe(
       Effect.onError((cause) =>
         Effect.gen(function* () {
-          if (!handoffAccepted || !Cause.hasInterruptsOnly(cause)) {
+          if (attemptId !== undefined && (!handoffAccepted || !Cause.hasInterruptsOnly(cause))) {
             yield* history
               .patch(attemptId, Cause.hasInterruptsOnly(cause) ? "interrupted" : "failed", {
                 observedVersion: packageJson.version,
@@ -466,11 +534,13 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
             reason:
               "The desktop host is unavailable. Reconnect before reading or deleting its history.",
           });
-        const requestId = yield* updateHistoryUuid(crypto).pipe(
-          Effect.mapError(
-            () => new HostUpdateHistoryError({ reason: "Could not create a history request." }),
-          ),
-        );
+        const requestId = yield* crypto
+          .uuidV4()
+          .pipe(
+            Effect.mapError(
+              () => new HostUpdateHistoryError({ reason: "Could not create a history request." }),
+            ),
+          );
         const { changes } = yield* receiver.value.desktopUpdates;
         yield* receiver.value
           .requestDesktopUpdateHistory(requestId, deleteId)

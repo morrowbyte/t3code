@@ -8,10 +8,12 @@ import {
 import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
 
 import {
+  answerContextRecords,
   carryDisplacedCustomAnswerIntoPrompt,
   derivePendingUserInputProgress,
   projectPendingUserInputAnswer,
   threadContextsReferencedByAnswer,
+  withdrawDisplacedCustomAnswerFromPrompt,
 } from "./pendingUserInput";
 
 describe("projectPendingUserInputAnswer", () => {
@@ -47,11 +49,63 @@ describe("projectPendingUserInputAnswer", () => {
     const corrected = { ...annotation, comment: "Payload62 corrected" };
     const deleted = { ...annotation, id: "deleted", comment: "Do not restore" };
     const answer = `Payload62 original stays literal.\n${original}`;
-    const expected = `Payload62 original stays literal.\n${formatInlineContextReference(previewAnnotationContextReference(corrected))}`;
-    expect(projectPendingUserInputAnswer(answer, [], [corrected, deleted])).toBe(expected);
-    expect(projectPendingUserInputAnswer("No reference", [], [corrected])).toBe("No reference");
+    const records = answerContextRecords(undefined, {
+      reviewComments: [],
+      previewAnnotations: [corrected, deleted],
+    });
+    const projected = projectPendingUserInputAnswer(answer, records);
+    expect(projected).toMatch(/^Payload62 original stays literal\.\n/);
+    expect(projected).toContain("comment: Payload62 corrected");
+    expect(projected).not.toContain("comment: Payload62 original");
+    expect(projected).not.toContain("Do not restore");
+    expect(projectPendingUserInputAnswer("No reference", records)).toBe("No reference");
     const options = ["Payload62 original"];
-    expect(projectPendingUserInputAnswer(options, [], [corrected])).toBe(options);
+    expect(projectPendingUserInputAnswer(options, records)).toBe(options);
+  });
+
+  // regression: #28022, #36293 review comment and preview annotation chips in an answer reached the agent as bare links
+  it("sends thread draft chips with their full content", () => {
+    const reviewComment = {
+      id: "file-comment-1",
+      sectionId: "branch",
+      sectionTitle: "Changes",
+      filePath: "notes.md",
+      startIndex: 2,
+      endIndex: 2,
+      rangeLabel: "+2",
+      text: "Rename this to line two updated",
+      diff: "@@ -0,0 +2,1 @@\n+line two changed",
+      fenceLanguage: "diff",
+    };
+    const annotation = {
+      id: "annotation-1",
+      pageUrl: "http://localhost:3000/",
+      pageTitle: "Home",
+      comment: "FIRST NOTE: this features section looks too bare; add three feature cards",
+      elements: [],
+      regions: [],
+      strokes: [],
+      styleChanges: [],
+      screenshot: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const records = answerContextRecords(undefined, {
+      reviewComments: [reviewComment],
+      previewAnnotations: [annotation],
+    });
+    const answer = `See my notes: ${records
+      .map((record) =>
+        formatInlineContextReference({
+          kind: record.kind,
+          contextId: record.contextId,
+          label: record.label,
+        }),
+      )
+      .join(" ")}`;
+    const projected = projectPendingUserInputAnswer(answer, records);
+    expect(projected).toContain("Rename this to line two updated");
+    expect(projected).toContain("+line two changed");
+    expect(projected).toContain(`comment: ${annotation.comment}`);
   });
 
   // regression: #18789 answers to pending questions lost exact text and option values
@@ -162,5 +216,42 @@ describe("carryDisplacedCustomAnswerIntoPrompt", () => {
     expect(carryDisplacedCustomAnswerIntoPrompt("first half\n", "second half")).toBe(
       "first half\n\nsecond half",
     );
+  });
+});
+
+describe("withdrawDisplacedCustomAnswerFromPrompt", () => {
+  // regression: #35205 an answer restored with undo stayed in the thread draft and was sent twice
+  it("takes set-aside text back out of the thread draft and leaves the rest", () => {
+    const setAside = carryDisplacedCustomAnswerIntoPrompt("", "first answer ");
+    expect(withdrawDisplacedCustomAnswerFromPrompt(setAside, "first answer ")).toBe("");
+
+    const afterDraft = carryDisplacedCustomAnswerIntoPrompt("draft", "first answer");
+    expect(withdrawDisplacedCustomAnswerFromPrompt(afterDraft, "first answer")).toBe("draft");
+
+    const beforeSecond = carryDisplacedCustomAnswerIntoPrompt(setAside, "second answer");
+    expect(
+      withdrawDisplacedCustomAnswerFromPrompt(beforeSecond, "first answer", ["second answer"]),
+    ).toBe("second answer");
+
+    const between = carryDisplacedCustomAnswerIntoPrompt(afterDraft, "second answer");
+    expect(
+      withdrawDisplacedCustomAnswerFromPrompt(between, "first answer", ["second answer"]),
+    ).toBe("draft\n\nsecond answer");
+  });
+
+  it("removes its own copy, not equal text inside a later set-aside answer", () => {
+    const first = carryDisplacedCustomAnswerIntoPrompt("", "foo");
+    const both = carryDisplacedCustomAnswerIntoPrompt(first, "bar\n\nfoo");
+    expect(withdrawDisplacedCustomAnswerFromPrompt(both, "foo", ["bar\n\nfoo"])).toBe("bar\n\nfoo");
+  });
+
+  it("leaves a thread draft that no longer holds the set-aside text where it was put", () => {
+    expect(withdrawDisplacedCustomAnswerFromPrompt("first answer, edited", "first answer")).toBe(
+      "first answer, edited",
+    );
+    expect(withdrawDisplacedCustomAnswerFromPrompt("my first answer", "first answer")).toBe(
+      "my first answer",
+    );
+    expect(withdrawDisplacedCustomAnswerFromPrompt("draft", "  ")).toBe("draft");
   });
 });

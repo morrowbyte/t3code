@@ -1,7 +1,9 @@
+import type { EnvironmentId } from "@t3tools/contracts";
 import type {
   OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderGoal,
   ScopedThreadRef,
+  OrchestrationV2ProviderSession,
   ThreadId,
 } from "@t3tools/contracts";
 import type { EnvironmentThreadShell, ThreadStructure } from "@t3tools/client-runtime/state/shell";
@@ -27,12 +29,26 @@ import {
 } from "lucide-react";
 import { Fragment } from "react";
 import { tickTextContent } from "~/lib/tickTextContent";
+import { BackgroundWorkDetails } from "./BackgroundWorkDetails";
 import { Button, InlineButton } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { BackgroundWorkActivity } from "./BackgroundWorkActivity";
 import { ComposerBanner } from "./ComposerBanner";
+import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 import type { ThreadNowItem } from "./ThreadNow";
+
+export function extensionStatusBannerItem(
+  statuses: NonNullable<OrchestrationV2ProviderSession["extensionStatuses"]>,
+): ComposerBannerStackItem | null {
+  if (statuses.length === 0) return null;
+  return {
+    id: "pi-extension-status",
+    variant: "default",
+    icon: <span>▸</span>,
+    title: <output>{`Pi · ${statuses.map((status) => status.text).join(" · ")}`}</output>,
+  };
+}
 
 /** Subagents and side chats waiting on the user, unless the parent is itself waiting on them. */
 export function childInputNowItem(input: {
@@ -104,7 +120,18 @@ export function goalBannerItem(input: {
           <ComposerBanner.Icon>
             <TargetIcon />
           </ComposerBanner.Icon>
-          <ComposerBanner.Content>{title}</ComposerBanner.Content>
+          <ComposerBanner.Content>
+            <Popover>
+              <PopoverTrigger openOnHover render={<InlineButton />}>
+                {title}
+              </PopoverTrigger>
+              <PopoverPopup side="top" width="md" padding="compact" aria-label="Goal objective">
+                <p className="whitespace-pre-wrap wrap-anywhere text-sm">
+                  {presentation.objective}
+                </p>
+              </PopoverPopup>
+            </Popover>
+          </ComposerBanner.Content>
           <ComposerBanner.Actions>
             {presentation.canResume && !isWorking ? (
               <Button
@@ -129,14 +156,6 @@ export function goalBannerItem(input: {
             {interruption.reason} {interruption.nextStep}
           </p>
         )}
-        <details className="min-w-0 px-2 pb-1">
-          <summary className="cursor-pointer truncate text-muted-foreground">
-            {presentation.objective}
-          </summary>
-          <ComposerBanner.Scroll className="max-h-[min(24dvh,10rem)] whitespace-pre-wrap py-2 wrap-anywhere">
-            {presentation.objective}
-          </ComposerBanner.Scroll>
-        </details>
       </>
     ),
   };
@@ -184,6 +203,7 @@ export function runStopNowItem(input: {
 
 /** Background commands and subagents, for the end of the timeline. */
 export function backgroundWorkNowItem(input: {
+  readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
   readonly turnItems: ThreadStructure["turnItems"];
@@ -196,9 +216,11 @@ export function backgroundWorkNowItem(input: {
   const presentation = presentPendingBackgroundWork(input.tasks, input.turnItems);
   if (presentation === null) return null;
   const rows = presentation.items.map((task) => {
+    const itemKey =
+      input.tasks.find((pending) => pending.taskId === task.taskId)?.nativeItemId ?? task.taskId;
     // Same key derivePendingBackgroundWork gives turn-item tasks; subagent items carry progress.
     const item = input.turnItems.findLast(
-      (candidate) => (candidate.nativeItemRef?.nativeId || candidate.id) === task.taskId,
+      (candidate) => (candidate.nativeItemRef?.nativeId || candidate.id) === itemKey,
     );
     const subagent = item?.type === "subagent" ? item : undefined;
     const label = task.commandLabel ?? task.label;
@@ -217,7 +239,6 @@ export function backgroundWorkNowItem(input: {
       activity: subagent?.progress?.replace(/\s+/gu, " ").trim() || null,
       startedAtMs: item?.startedAt ? DateTime.toEpochMillis(item.startedAt) : null,
       updatedAtMs: subagent ? DateTime.toEpochMillis(subagent.updatedAt) : 0,
-      childThreadId: task.childThreadId ?? subagent?.childThreadId ?? undefined,
     };
   });
   if (rows.some((row) => row.task.kind === "command")) {
@@ -248,7 +269,6 @@ export function backgroundWorkNowItem(input: {
     .filter((row) => row.activity)
     .toSorted((left, right) => right.updatedAtMs - left.updatedAtMs)[0];
   const isCommand = (row: (typeof rows)[number]) => row.task.kind !== "subagent";
-  const onlyThreadId = only?.childThreadId;
   const startedAtMs = only?.startedAtMs ?? null;
   return {
     id: `background-work:${input.threadId}`,
@@ -286,11 +306,13 @@ export function backgroundWorkNowItem(input: {
             className="tabular-nums"
           />
         )}
-        {onlyThreadId === undefined ? null : (
-          <InlineButton tone="muted" onClick={() => onOpenThread(onlyThreadId)}>
-            Open
-          </InlineButton>
-        )}
+        <BackgroundWorkDetails
+          environmentId={input.environmentId}
+          threadId={input.threadId}
+          tasks={input.tasks}
+          turnItems={input.turnItems}
+          onOpenThread={onOpenThread}
+        />
         <InlineButton disabled={input.stopDisabled} onClick={() => void input.onStop()}>
           {input.stopping ? "Stopping..." : "Stop"}
         </InlineButton>

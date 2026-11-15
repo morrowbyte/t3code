@@ -16,6 +16,7 @@ import {
   type OrchestrationV2ThreadShell,
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Net from "@t3tools/shared/Net";
 import * as Effect from "effect/Effect";
@@ -43,6 +44,7 @@ import * as Git from "../vcs/GitVcsDriver.ts";
 import { PreviewManager } from "../preview/Manager.ts";
 import { DeviceService } from "../device/DeviceService.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import { chooseComputePlacement } from "../orchestration-v2/ComputePlacement.ts";
 import { BoatApi } from "./BoatApi.ts";
 import * as BoatSshTunnel from "./BoatSshTunnel.ts";
 import { make, sourceSyncScript } from "./BoatService.ts";
@@ -66,7 +68,7 @@ function setup(
   onForwardClose: () => Effect.Effect<void> = () => Effect.void,
 ) {
   const calls: string[] = [];
-  const privateForwards: string[][] = [];
+  const privateForwards: Array<ChildProcess.StandardCommand["args"]> = [];
   const closedPreviews: string[] = [];
   const openedPreviews: string[] = [];
   const previewTabs = new Map<string, { tabId: string }>();
@@ -153,7 +155,7 @@ function setup(
       }).pipe(Effect.tap(() => onCall(path, method, body, idempotencyKey))),
   });
   const base = ServerConfig.layerTest(process.cwd(), { prefix: "boat-service-" }).pipe(
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
   const services = Layer.mergeAll(
     api,
@@ -197,7 +199,7 @@ function setup(
             if (command._tag !== "StandardCommand") return yield* Effect.die("Unexpected pipeline");
             const forwarding = command.args.includes("-L");
             if (forwarding) {
-              privateForwards.push([...command.args]);
+              privateForwards.push(command.args);
               yield* Effect.addFinalizer(() =>
                 Effect.sync(() => {
                   closedForwards++;
@@ -2601,7 +2603,7 @@ it.live("source sync removes deleted files and preserves ignored runtime data", 
     assert.equal(yield* sync, 0);
     assert.isFalse(yield* fs.exists(`${root}/new.ts`));
     assert.equal(yield* fs.readFileString(`${root}/node_modules/cache`), "dependency");
-  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)), Effect.scoped),
 );
 
 it.effect.each(["ready", "failed"] as const)(
@@ -2858,58 +2860,119 @@ it.effect("replays unknown creation with the original parameters despite canStar
   }).pipe(Effect.scoped, Effect.provide(test.services));
 });
 
-it.effect("treats an active resume retry as success without clearing the process or leases", () => {
-  const test = setup((path) => {
-    if (path.endsWith("/resume")) test.setMachineState("provisioned");
-    return Effect.void;
-  });
-  return Effect.gen(function* () {
-    const boat = yield* make;
-    yield* boat.connect(Redacted.make("boat_fixture_private"));
-    yield* boat.configure(projectId, {
-      ...DEFAULT_BOAT_PROJECT,
-      enabled: true,
-      devCommand: "npm run dev",
+it.effect.each(["ready", "provisioned"])(
+  "treats an active %s resume retry as success without clearing the process or leases",
+  (remoteState) => {
+    const test = setup((path) => {
+      if (path.endsWith("/resume")) test.setMachineState(remoteState);
+      return Effect.void;
     });
-    yield* boat.operate({ action: "start", projectId, requestId: "first" }, ownerThreadId);
-    yield* boat.operate({ action: "stop", projectId, requestId: "first" });
-    test.setMachineState("archiving");
-    const archiving = yield* boat
-      .operate({ action: "resume", projectId, requestId: "first" }, ownerThreadId)
-      .pipe(Effect.exit);
-    assert.isTrue(Exit.isFailure(archiving));
-    assert.equal(test.calls.filter((call) => call.endsWith("/resume")).length, 0);
-    test.setMachineState("archived");
-    const resumed = yield* boat.operate(
-      { action: "resume", projectId, requestId: "first" },
-      ownerThreadId,
+    return Effect.gen(function* () {
+      const boat = yield* make;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      yield* boat.configure(projectId, {
+        ...DEFAULT_BOAT_PROJECT,
+        enabled: true,
+        devCommand: "npm run dev",
+      });
+      yield* boat.operate({ action: "start", projectId, requestId: "first" }, ownerThreadId);
+      yield* boat.operate({ action: "stop", projectId, requestId: "first" });
+      test.setMachineState("archiving");
+      const archiving = yield* boat
+        .operate({ action: "resume", projectId, requestId: "first" }, ownerThreadId)
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(archiving));
+      assert.equal(test.calls.filter((call) => call.endsWith("/resume")).length, 0);
+      test.setMachineState("archived");
+      const resumed = yield* boat.operate(
+        { action: "resume", projectId, requestId: "first" },
+        ownerThreadId,
+      );
+      assert.equal(
+        resumed.instances[0]?.state,
+        remoteState === "provisioned" ? "idle" : remoteState,
+      );
+      assert.deepEqual(
+        chooseComputePlacement({
+          projectId,
+          ownerThreadId,
+          requestId: "first",
+          resources: null,
+          storageFailure: null,
+          forceBoat: true,
+          boat: resumed,
+        }),
+        { target: "boat", reason: "forced", requestId: "first", action: "renew" },
+      );
+      const lease = yield* boat.assertActiveLease(
+        { requestId: "first", sandboxId: "bx_23456789" },
+        ownerThreadId,
+      );
+      yield* lease.check;
+      yield* boat.reconcile();
+      assert.deepEqual((yield* boat.read(projectId)).instances[0]?.leases, [ownerThreadId]);
+      assert.equal(test.calls.filter((call) => call.endsWith("/stop")).length, 1);
+      yield* boat.operate({ action: "prepare", projectId, requestId: "first" });
+      const before = (yield* boat.read(projectId)).instances[0];
+      const result = yield* boat.operate({ action: "resume", projectId, requestId: "first" });
+      assert.equal(test.calls.filter((call) => call.endsWith("/resume")).length, 1);
+      assert.equal(result.instances[0]?.previewUrl, before?.previewUrl);
+      assert.equal(result.instances[0]?.processId, 123);
+      assert.deepEqual(result.instances[0]?.leases, [ownerThreadId]);
+      test.setOwnerActive(false);
+      yield* boat.reconcile();
+      assert.equal((yield* boat.read(projectId)).instances[0]?.processId, 123);
+      assert.equal(test.calls.filter((call) => call.endsWith("/stop")).length, 1);
+      test.setThread(ownerThreadId, { settledOverride: "settled" });
+      yield* boat.reconcile();
+      assert.equal((yield* boat.read(projectId)).instances[0]?.state, "archived");
+      assert.equal(test.calls.filter((call) => call.endsWith("/stop")).length, 2);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  },
+);
+
+it.effect.each([true, false])(
+  "revalidates a prepared command after stop and resume when running is %s",
+  (running) => {
+    let starts = 0;
+    const test = setup((path, _method, body) =>
+      Effect.sync(() => {
+        if (path.endsWith("/stop")) test.setMachineState("archiving");
+        if (body && typeof body === "object" && "detached" in body && body.detached === true)
+          starts++;
+      }),
     );
-    assert.equal(resumed.instances[0]?.state, "idle");
-    const lease = yield* boat.assertActiveLease(
-      { requestId: "first", sandboxId: "bx_23456789" },
-      ownerThreadId,
-    );
-    yield* lease.check;
-    yield* boat.reconcile();
-    assert.deepEqual((yield* boat.read(projectId)).instances[0]?.leases, [ownerThreadId]);
-    assert.equal(test.calls.filter((call) => call.endsWith("/stop")).length, 1);
-    yield* boat.operate({ action: "prepare", projectId, requestId: "first" });
-    const before = (yield* boat.read(projectId)).instances[0];
-    const result = yield* boat.operate({ action: "resume", projectId, requestId: "first" });
-    assert.equal(test.calls.filter((call) => call.endsWith("/resume")).length, 1);
-    assert.equal(result.instances[0]?.previewUrl, before?.previewUrl);
-    assert.equal(result.instances[0]?.processId, 123);
-    assert.deepEqual(result.instances[0]?.leases, [ownerThreadId]);
-    test.setOwnerActive(false);
-    yield* boat.reconcile();
-    assert.equal((yield* boat.read(projectId)).instances[0]?.processId, 123);
-    assert.equal(test.calls.filter((call) => call.endsWith("/stop")).length, 1);
-    test.setThread(ownerThreadId, { settledOverride: "settled" });
-    yield* boat.reconcile();
-    assert.equal((yield* boat.read(projectId)).instances[0]?.state, "archived");
-    assert.equal(test.calls.filter((call) => call.endsWith("/stop")).length, 2);
-  }).pipe(Effect.scoped, Effect.provide(test.services));
-});
+    return Effect.gen(function* () {
+      const boat = yield* make;
+      yield* boat.connect(Redacted.make("boat_fixture_private"));
+      yield* boat.configure(projectId, {
+        ...DEFAULT_BOAT_PROJECT,
+        enabled: true,
+        devCommand: "node server.js",
+      });
+      const target = { projectId, requestId: "prepared" };
+      yield* boat.operate({ ...target, action: "start" }, ownerThreadId);
+      yield* boat.operate({ ...target, action: "prepare" }, ownerThreadId);
+      assert.equal(starts, 1);
+      const processId = (yield* boat.read(projectId)).instances[0]!.processId;
+      const openedPreviews = test.openedPreviews.length;
+      yield* boat.operate({ ...target, action: "stop" }, ownerThreadId);
+      assert.lengthOf(test.openedPreviews, openedPreviews);
+      for (const state of ["archiving", "stopping"]) {
+        test.setMachineState(state);
+        yield* boat.read(projectId);
+        yield* boat.operate({ ...target, action: "preview" }, ownerThreadId);
+        assert.lengthOf(test.openedPreviews, openedPreviews);
+      }
+      test.setMachineState("archived");
+      yield* boat.operate({ ...target, action: "resume" }, ownerThreadId);
+      test.setCommandStatus({ processId, status: "lost", known: false, running, exitCode: null });
+      yield* boat.operate({ ...target, action: "prepare" }, ownerThreadId);
+      assert.include(test.calls, `GET /sandboxes/bx_23456789/commands/${processId}`);
+      assert.equal(starts, running ? 1 : 2);
+    }).pipe(Effect.scoped, Effect.provide(test.services));
+  },
+);
 
 it.effect("retains an unknown resume reservation and its idempotency key across restart", () => {
   let lose = true;

@@ -4,6 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import { assert, it } from "@effect/vitest";
@@ -70,7 +71,7 @@ const threadLayer = ThreadManagement.layer.pipe(
   ),
   Layer.provideMerge(stores),
   Layer.provideMerge(ServerSettings.layerTest({ defaultModelSelection: modelSelection })),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 const dependencies = Layer.mergeAll(
   threadLayer,

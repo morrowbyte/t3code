@@ -1,4 +1,5 @@
 import type * as Electron from "electron";
+import * as Schema from "effect/Schema";
 import { AutofillUnavailable, type AutofillTarget } from "./ProtonPassAutofill.ts";
 import { makeAutofill } from "./ProtonPassAutofill.ts";
 import { ProtonPassUnavailable } from "./ProtonPassCli.ts";
@@ -88,7 +89,7 @@ export async function makeAutofillMenu(
     } catch (error: unknown) {
       try {
         await ui.notice(
-          error instanceof ProtonPassUnavailable
+          isProtonPassUnavailable(error)
             ? error.message
             : "Proton Pass could not complete this fill. If sharing is paused, clear login fields and resume sharing explicitly.",
         );
@@ -103,7 +104,7 @@ export async function makeAutofillMenu(
       label: "Proton Pass",
       submenu: [
         ...(target.privateEntry
-          ? [{ label: "Private entry — sharing paused", enabled: false }]
+          ? [{ label: "Private entry: sharing paused", enabled: false }]
           : []),
         { label: `Linked logins for ${label(target.origin)}`, enabled: false },
         ...linked.flatMap((entry) => [
@@ -150,3 +151,5 @@ export async function makeAutofillMenu(
     },
   ];
 }
+
+const isProtonPassUnavailable = Schema.is(ProtonPassUnavailable);

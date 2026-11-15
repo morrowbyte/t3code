@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { DesktopHostTelemetryMessage } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -40,6 +41,7 @@ function layerElectronApp(
     metadata: Effect.die("unexpected metadata read"),
     name: Effect.succeed("T3 Code"),
     systemLocale: Effect.succeed("en-US"),
+    preferredSystemLanguages: Effect.succeed(["en-US"]),
     whenReady: Effect.void,
     requestSingleInstanceLock: Effect.succeed(true),
     quit: Effect.void,
@@ -94,6 +96,7 @@ describe("DesktopTelemetryPublisher", () => {
               Layer.succeed(DesktopShellEnvironment.DesktopShellEnvironment, {
                 installIntoProcess: Effect.succeed(true),
                 awaitDiscovery: Effect.succeed(true),
+                awaitUserShellDiscovery: Effect.succeed(true),
                 updates: Stream.make({
                   version: 1,
                   type: "shellEnvironment",
@@ -437,6 +440,7 @@ it.effect(
         Layer.provide(
           Layer.mergeAll(
             NodeServices.layer,
+            NodeCrypto.layerSecureRandom,
             layerElectronApp([]),
             layerHistory,
             Layer.succeed(DesktopShellEnvironment.DesktopShellEnvironment, {

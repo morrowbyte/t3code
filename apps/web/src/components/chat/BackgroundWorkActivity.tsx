@@ -7,7 +7,7 @@ import type { ThreadId } from "@t3tools/contracts";
 import { ChevronRightIcon, SquareIcon, TerminalIcon } from "lucide-react";
 import { Suspense, useId, useState } from "react";
 
-import { embeddedScripts } from "../../lib/embeddedScripts";
+import { embeddedScripts } from "@t3tools/client-runtime/work-log/embedded-scripts";
 import { useTheme } from "../../hooks/useTheme";
 import { RenderErrorBoundary } from "../RenderErrorBoundary";
 import { Button, InlineButton } from "../ui/button";

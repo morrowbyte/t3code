@@ -21,6 +21,7 @@ import {
   type OrchestratorV2ProviderReplayHarness,
 } from "./ProviderReplayHarness.ts";
 import { materializeReplayTranscriptRuntimeInstructions } from "./ReplayRuntimeInstructions.ts";
+import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 
 // Each driver's fixtures run from its own <Provider>ReplayFixtures.integration.test.ts,
 // so a focused run loads one adapter. A fixture for a driver missing here would
@@ -32,6 +33,7 @@ const DRIVERS_WITH_REPLAY_FIXTURE_FILES = new Set([
   "cursor",
   "fx",
   "grok",
+  "kiro",
   "muse",
   "opencode",
   "pi",
@@ -144,11 +146,13 @@ const runFixtureProvider = Effect.fn("runOrchestratorReplayFixture")(function* <
     },
   };
 
-  const result = yield* runOrchestratorV2ProviderReplayScenario(
-    scenario,
-    input.harness,
-    input.driver.runContinuationWorker === true ? { runContinuationWorker: true } : {},
-  ).pipe(provideDeterministicTestRuntime);
+  const result = yield* runOrchestratorV2ProviderReplayScenario(scenario, input.harness, {
+    ...(input.driver.runContinuationWorker === true ? { runContinuationWorker: true } : {}),
+    projectServiceLayer: ProviderTurnStartServiceTestkit.layerForProject(
+      materialized.projectId,
+      workspace,
+    ),
+  }).pipe(provideDeterministicTestRuntime);
   input.driver.assertOutput(result, transcript);
   assertProviderNativeSubagentRootTurns(result);
   const expectedAbsentWorkspacePaths = input.driver.expectedAbsentWorkspacePaths;
@@ -173,7 +177,14 @@ const runFixtureProvider = Effect.fn("runOrchestratorReplayFixture")(function* <
   const projection = result.projections.get(projectionThreadId);
   assert.isDefined(projection);
   const latestRun = projection.runs.at(-1);
-  assert.deepEqual(latestRun?.modelSelection, input.driver.modelSelection);
+  // A `set_model` step moves later runs to another model of the same instance.
+  const finalModel = fixtureInput.steps.findLast((step) => step.type === "set_model");
+  assert.deepEqual(
+    latestRun?.modelSelection,
+    finalModel?.type === "set_model"
+      ? { ...input.driver.modelSelection, model: finalModel.model }
+      : input.driver.modelSelection,
+  );
   if (projection.runs.some((run) => run.status === "completed")) {
     const threadStartCheckpoint = projection.checkpoints.find(
       (checkpoint) => checkpoint.ordinalWithinScope === 0 && checkpoint.appRunOrdinal === null,

@@ -4,7 +4,7 @@ import {
   approvalOrderDestinationChannels,
   approvalOrderSourceIsReady,
 } from "@t3tools/client-runtime/state/approval-orders";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   ApprovalReviewHostOrder,
   ApprovalReviewOrderCreate,
@@ -13,11 +13,12 @@ import type {
   EnvironmentId as HostEnvironmentId,
   ScopedThreadRef,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
-import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useId, useRef, useState, type FormEvent } from "react";
 
 import * as BrowserDpop from "../../cloud/dpop";
+import { useStableCallback } from "../../hooks/useStableCallback";
 
 import { approvalOrderEnvironment } from "../../state/approvalOrders";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -136,6 +137,7 @@ function HostOrderComposerSession({
     !pending &&
     !pendingDraft;
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- bounds outstanding host replies to this mounted session so they cannot update a departed view
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -143,7 +145,7 @@ function HostOrderComposerSession({
     };
   }, []);
 
-  // One wake-up at the next expiry keeps idle forms from polling the host.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns one timer at the next order expiry and cancels it when the deadline set changes or the view unmounts
   useEffect(() => {
     const next = sent.reduce((earliest, entry) => {
       const expiry = entry.order?.source.expiresAt ?? entry.input.expiresAt;
@@ -159,19 +161,19 @@ function HostOrderComposerSession({
     setPending(true);
     setReadiness(null);
     setReadinessError(null);
-    try {
+    const settled = await settlePromise(async () => {
       const result = await checkReadiness({ environmentId, input: {} });
       if (!mounted.current) return;
       if (result._tag === "Success") setReadiness(result.value);
       else setReadinessError(errorMessage(squashAtomCommandFailure(result)));
-    } catch (error) {
-      if (mounted.current) setReadinessError(errorMessage(error));
-    } finally {
-      setPending(false);
-    }
+    });
+    if (settled._tag === "Failure" && mounted.current)
+      setReadinessError(errorMessage(squashAtomCommandFailure(settled)));
+    setPending(false);
   }
 
   const initialReadiness = useEffectEvent(refreshReadiness);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- binds the queued host-authorization request to the active connection and cancels dispatch when that connection scope ends
   useEffect(() => {
     if (
       active &&
@@ -180,34 +182,43 @@ function HostOrderComposerSession({
       !pending &&
       readiness === null &&
       readinessError === null
-    )
-      queueMicrotask(() => void initialReadiness());
+    ) {
+      let cancelled = false;
+      queueMicrotask(() => {
+        if (!cancelled) void initialReadiness();
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
   }, [active, connected, canCheck, pending, readiness, readinessError]);
 
-  function updateSent(
-    input: ApprovalReviewOrderCreate,
-    order: ApprovalReviewHostOrder | null,
-    error: string | null,
-    alreadyClaimedActions?: ApprovalReviewOrderCancelResult["alreadyClaimedActions"],
-  ) {
-    updateSession((session) => ({
-      ...session,
-      sent: [
-        ...session.sent.filter((entry) => entry.input.clientRequestId !== input.clientRequestId),
-        {
-          input,
-          order,
-          error,
-          alreadyClaimedActions:
-            alreadyClaimedActions ??
-            session.sent.find((entry) => entry.input.clientRequestId === input.clientRequestId)
-              ?.alreadyClaimedActions ??
-            [],
-        },
-      ],
-    }));
-    if (mounted.current) setNow(Date.now());
-  }
+  const updateSent = useStableCallback(
+    (
+      input: ApprovalReviewOrderCreate,
+      order: ApprovalReviewHostOrder | null,
+      error: string | null,
+      alreadyClaimedActions?: ApprovalReviewOrderCancelResult["alreadyClaimedActions"],
+    ) => {
+      updateSession((session) => ({
+        ...session,
+        sent: [
+          ...session.sent.filter((entry) => entry.input.clientRequestId !== input.clientRequestId),
+          {
+            input,
+            order,
+            error,
+            alreadyClaimedActions:
+              alreadyClaimedActions ??
+              session.sent.find((entry) => entry.input.clientRequestId === input.clientRequestId)
+                ?.alreadyClaimedActions ??
+              [],
+          },
+        ],
+      }));
+      if (mounted.current) setNow(Date.now());
+    },
+  );
 
   async function send(input: ApprovalReviewOrderCreate) {
     if (
@@ -230,7 +241,7 @@ function HostOrderComposerSession({
     // Persist the exact request before dispatch, so navigation cannot turn a lost response into a new send.
     updateSent(input, null, null);
     let created: ApprovalReviewHostOrder | null = null;
-    try {
+    const settled = await settlePromise(async () => {
       const result = await create({ environmentId, input });
       if (result._tag === "Failure") {
         updateSent(input, null, errorMessage(squashAtomCommandFailure(result)));
@@ -243,11 +254,10 @@ function HostOrderComposerSession({
           : current,
       );
       created = result.value;
-    } catch (error) {
-      updateSent(input, null, errorMessage(error));
-    } finally {
-      setPending(false);
-    }
+    });
+    if (settled._tag === "Failure")
+      updateSent(input, null, errorMessage(squashAtomCommandFailure(settled)));
+    setPending(false);
     if (mounted.current && created !== null) onCreated?.(created);
   }
 
@@ -263,8 +273,8 @@ function HostOrderComposerSession({
     setPending(true);
     if (action === "cancel")
       updateSent(entry.input, entry.order, "Cancellation requested · outcome not yet confirmed");
-    try {
-      const command = { environmentId, input: { orderId: entry.order.source.orderId } };
+    const command = { environmentId, input: { orderId: entry.order.source.orderId } };
+    const settled = await settlePromise(async () => {
       let alreadyClaimedActions:
         | ApprovalReviewOrderCancelResult["alreadyClaimedActions"]
         | undefined;
@@ -284,15 +294,15 @@ function HostOrderComposerSession({
           entry.order,
           `${action === "cancel" ? "Cancellation outcome unknown" : "Status unavailable"}: ${errorMessage(squashAtomCommandFailure(result))}`,
         );
-    } catch (error) {
+    });
+    if (settled._tag === "Failure") {
       updateSent(
         entry.input,
         entry.order,
-        `${action === "cancel" ? "Cancellation outcome unknown" : "Status unavailable"}: ${errorMessage(error)}`,
+        `${action === "cancel" ? "Cancellation outcome unknown" : "Status unavailable"}: ${errorMessage(squashAtomCommandFailure(settled))}`,
       );
-    } finally {
-      setPending(false);
     }
+    setPending(false);
   }
 
   const disabledReason = !connected
@@ -320,30 +330,29 @@ function HostOrderComposerSession({
                       ? "The paired VM channel is unavailable."
                       : null));
 
+  const handleSubmit = useStableCallback((event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canSend || channel === undefined) return;
+    const input = draft ?? {
+      clientRequestId: Effect.runSync(
+        Crypto.SecureRandom.pipe(
+          Effect.flatMap((crypto) => crypto.uuidV4()),
+          Effect.provide(BrowserDpop.layer),
+          Effect.orDie,
+        ),
+      ),
+      sourceThreadId: channel.hostThreadId,
+      vmId: channel.vmId,
+      text,
+      expiresAt: Date.now() + 15 * 60_000,
+    };
+    setDraft(input);
+    void send(input);
+  });
+
   return (
     <div className="flex min-w-0 flex-col gap-3">
-      <form
-        className="flex min-w-0 flex-col gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!canSend || channel === undefined) return;
-          const input = draft ?? {
-            clientRequestId: Effect.runSync(
-              Crypto.Crypto.pipe(
-                Effect.flatMap((crypto) => crypto.randomUUIDv4()),
-                Effect.provide(BrowserDpop.layer),
-                Effect.orDie,
-              ),
-            ),
-            sourceThreadId: channel.hostThreadId,
-            vmId: channel.vmId,
-            text,
-            expiresAt: Date.now() + 15 * 60_000,
-          };
-          setDraft(input);
-          void send(input);
-        }}
-      >
+      <form className="flex min-w-0 flex-col gap-2" onSubmit={handleSubmit}>
         <p className="break-words text-sm">Host: {hostLabel}</p>
         <details className="text-sm text-muted-foreground">
           <summary>Connection details</summary>

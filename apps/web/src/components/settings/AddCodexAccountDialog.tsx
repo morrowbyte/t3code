@@ -32,6 +32,7 @@ export function AddCodexAccountDialog({
 }: {
   readonly environmentId: EnvironmentId;
   readonly onClose: () => void;
+  // Told when the account is created; the dialog then runs its own sign-in.
   readonly onAccountCreated?:
     | ((instanceId: ProviderInstanceId, displayName: string, mode: "existing" | "managed") => void)
     | undefined;

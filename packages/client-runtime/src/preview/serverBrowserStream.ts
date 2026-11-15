@@ -102,6 +102,7 @@ export type PreviewStreamInput =
   | { readonly type: "navigate"; readonly url: string }
   | { readonly type: "history"; readonly delta: -1 | 1 }
   | { readonly type: "reload"; readonly ignoreCache?: boolean }
+  | { readonly type: "stopLoading" }
   | { readonly type: "probe"; readonly x: number; readonly y: number };
 
 export interface PreviewStreamDownload {
@@ -252,6 +253,13 @@ export function createPreviewStreamClient(
   } | null = null;
 
   const cancelRelease = () => releasing?.complete(new Error("Browser control changed."));
+
+  // The server re-offers a picker still open, under a new id, when this viewer reattaches.
+  const withdrawFileChooser = () => {
+    if (fileChooser === null) return;
+    fileChooser = null;
+    events.onFileChooser?.(null);
+  };
 
   const connect = () => {
     if (stopped) return;
@@ -414,6 +422,7 @@ export function createPreviewStreamClient(
       cancelRelease();
       socket = null;
       control = null;
+      withdrawFileChooser();
       if (opened) events.onConnectedChange(false);
       if (stopped) return;
       if (event.code === 4404) {
@@ -495,6 +504,7 @@ export function createPreviewStreamClient(
       const ws = socket;
       socket = null;
       control = null;
+      withdrawFileChooser();
       ws?.close();
     },
   };

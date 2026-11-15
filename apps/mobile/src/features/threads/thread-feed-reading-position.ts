@@ -1,11 +1,22 @@
 import { resolveWorkGroupScrollAnchor } from "@t3tools/client-runtime/work-log/scroll-anchor";
 import type { RunId } from "@t3tools/contracts";
-import type {
-  ThreadFeedReflowLayout,
-  ThreadFeedReflowListState,
-  ThreadFeedReflowRowAnchor,
-  ThreadWorkGroupScrollPosition,
-} from "./thread-feed-live-follow";
+import type { ThreadWorkGroupScrollPosition } from "./thread-feed-scroll-position";
+interface ThreadFeedReflowLayout {
+  readonly rowsTop: number;
+  readonly headerInset: number;
+}
+interface ThreadFeedReflowRowAnchor {
+  readonly key: string;
+  readonly offsetWithinRow: number;
+  readonly size: number;
+}
+interface ThreadFeedReflowListState {
+  readonly data: ReadonlyArray<{ readonly id: string }>;
+  readonly scroll: number;
+  readonly sizes: ReadonlyMap<string, number>;
+  readonly indexByKey: (key: string) => number | undefined;
+  readonly positionAtIndex: (index: number) => number | undefined;
+}
 
 type ReadingListState = Pick<
   ThreadFeedReflowListState,

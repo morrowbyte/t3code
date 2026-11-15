@@ -1,9 +1,14 @@
 import type {
+  PreviewAnnotationContextRecord,
   PreviewAnnotationPayload,
+  ReviewCommentContextRecord,
   ThreadContextRecord,
   UserInputQuestion,
 } from "@t3tools/contracts";
-import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
+import {
+  projectComposerContextForProvider,
+  replaceComposerContextReferences,
+} from "@t3tools/shared/composerContextReferences";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
   buildPendingUserInputAnswers,
@@ -17,32 +22,59 @@ import {
   collectInlineContextIds,
   formatInlineContextReference,
 } from "./lib/composerContextReferences";
-import { previewAnnotationContextReference } from "./lib/composerContextRecords";
+import {
+  previewAnnotationContextRecord,
+  reviewCommentContextRecord,
+} from "./lib/composerContextRecords";
+import type { ReviewCommentContext } from "./reviewCommentContext";
+
+type AnswerContextRecord =
+  | ThreadContextRecord
+  | ReviewCommentContextRecord
+  | PreviewAnnotationContextRecord;
+
+// Diff comments and preview annotations land in the thread draft even when their chip is in an answer.
+export function answerContextRecords(
+  questionDraft: { threadContexts: ReadonlyArray<ThreadContextRecord> } | null | undefined,
+  threadDraft:
+    | {
+        reviewComments: ReadonlyArray<ReviewCommentContext>;
+        previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
+      }
+    | null
+    | undefined,
+): AnswerContextRecord[] {
+  return [
+    ...(questionDraft?.threadContexts ?? []),
+    ...(threadDraft?.reviewComments ?? []).map(reviewCommentContextRecord),
+    ...(threadDraft?.previewAnnotations ?? []).map((annotation) =>
+      previewAnnotationContextRecord(annotation),
+    ),
+  ];
+}
 
 export function projectPendingUserInputAnswer(
   answer: unknown,
-  threadContexts: ReadonlyArray<ThreadContextRecord>,
-  previewAnnotations: ReadonlyArray<PreviewAnnotationPayload> = [],
+  records: ReadonlyArray<AnswerContextRecord>,
 ) {
-  if (
-    typeof answer !== "string" ||
-    (threadContexts.length === 0 && previewAnnotations.length === 0)
-  )
-    return answer;
-  const recordsById = new Map(threadContexts.map((record) => [record.contextId, record]));
-  const annotationsById = new Map(
-    previewAnnotations.map((annotation) => {
-      const reference = previewAnnotationContextReference(annotation);
-      return [reference.contextId, reference] as const;
-    }),
-  );
+  if (typeof answer !== "string" || records.length === 0) return answer;
+  const recordsById = new Map(records.map((record) => [record.contextId, record]));
   return replaceComposerContextReferences(answer, (reference) => {
-    if (reference.kind === "preview-annotation") {
-      const current = annotationsById.get(reference.contextId);
-      return current ? formatInlineContextReference(current) : reference.source;
-    }
-    const record = reference.kind === "thread" ? recordsById.get(reference.contextId) : undefined;
-    return record ? formatThreadLink(record, reference.label) : reference.source;
+    const record = recordsById.get(reference.contextId);
+    if (record?.kind !== reference.kind) return reference.source;
+    return record.kind === "thread"
+      ? formatThreadLink(record, reference.label)
+      : projectComposerContextForProvider({
+          text:
+            record.kind === "preview-annotation"
+              ? formatInlineContextReference({
+                  kind: record.kind,
+                  contextId: record.contextId,
+                  label: record.label,
+                })
+              : reference.source,
+          records: [record],
+        });
   });
 }
 
@@ -55,9 +87,9 @@ export function threadContextsReferencedByAnswer(
   return threadContexts.filter((record) => referencedIds.has(record.contextId));
 }
 
-export interface PendingUserInputProgress {
+export interface PendingUserInputProgress<Q extends UserInputQuestion = UserInputQuestion> {
   questionIndex: number;
-  activeQuestion: UserInputQuestion | null;
+  activeQuestion: Q | null;
   activeDraft: PendingUserInputDraftAnswer | undefined;
   selectedOptionValues: ReadonlyArray<string>;
   customAnswer: string;
@@ -85,6 +117,28 @@ export function carryDisplacedCustomAnswerIntoPrompt(
   return `${prompt.trimEnd()}${DISPLACED_ANSWER_SEPARATOR}${displaced}`;
 }
 
+/**
+ * Takes set-aside answer text back out of the thread draft once it is the answer again.
+ * `laterDisplaced` is what was set aside after it, in order: together they locate this copy,
+ * so equal text inside another answer or the user's own draft is never the one removed.
+ */
+export function withdrawDisplacedCustomAnswerFromPrompt(
+  prompt: string,
+  displaced: string,
+  laterDisplaced: ReadonlyArray<string> = [],
+): string {
+  const text = displaced.trim();
+  if (text.length === 0) return prompt;
+  const later = laterDisplaced.map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+  const suffix = [text, ...later].join(DISPLACED_ANSWER_SEPARATOR);
+  if (!prompt.endsWith(suffix)) return prompt;
+  const before = prompt.slice(0, prompt.length - suffix.length);
+  const after = later.join(DISPLACED_ANSWER_SEPARATOR);
+  if (before.length === 0) return after;
+  if (!before.endsWith(DISPLACED_ANSWER_SEPARATOR)) return prompt;
+  return after.length === 0 ? before.slice(0, -DISPLACED_ANSWER_SEPARATOR.length) : before + after;
+}
+
 function countAnsweredPendingUserInputQuestions(
   questions: ReadonlyArray<UserInputQuestion>,
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
@@ -96,11 +150,11 @@ function countAnsweredPendingUserInputQuestions(
   }, 0);
 }
 
-export function derivePendingUserInputProgress(
-  questions: ReadonlyArray<UserInputQuestion>,
+export function derivePendingUserInputProgress<Q extends UserInputQuestion>(
+  questions: ReadonlyArray<Q>,
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
   questionIndex: number,
-): PendingUserInputProgress {
+): PendingUserInputProgress<Q> {
   const normalizedQuestionIndex =
     questions.length === 0 ? 0 : Math.max(0, Math.min(questionIndex, questions.length - 1));
   const activeQuestion = questions[normalizedQuestionIndex] ?? null;

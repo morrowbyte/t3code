@@ -12,6 +12,7 @@ export function FoldedSettingsSection({
   summary,
   control,
   headerPlacement = "inside",
+  collapsedContent,
   children,
 }: {
   readonly id: string;
@@ -19,6 +20,8 @@ export function FoldedSettingsSection({
   readonly summary?: string | null;
   readonly control?: ReactNode;
   readonly headerPlacement?: "inside" | "outside";
+  /** Shown under the header only while folded. */
+  readonly collapsedContent?: ReactNode;
   readonly children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -81,13 +84,16 @@ export function FoldedSettingsSection({
             ) : null}
           </CollapsibleTrigger>
           {control ? (
-            <div className="flex max-w-full flex-wrap items-center pb-2 pt-1 sm:py-0">
+            <div className="ms-auto flex max-w-full flex-wrap items-center pb-2 pt-1 sm:py-0">
               {control}
             </div>
           ) : null}
         </div>
+        {!open && collapsedContent ? (
+          <div className="border-t border-border/50 empty:hidden">{collapsedContent}</div>
+        ) : null}
         <CollapsiblePanel>
-          <div className="border-t border-border/50 [&>*+*]:border-t [&>*+*]:border-border/50">
+          <div className="border-t border-border/50 *:not-first:border-t *:not-first:border-border/50">
             {children}
           </div>
         </CollapsiblePanel>

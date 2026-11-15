@@ -1,4 +1,5 @@
 import { DEFAULT_HOSTED_APP_URL } from "./connectAuth.ts";
+import { parseUrl } from "./url.ts";
 
 export const PROMPT_LINK_MAX_PROMPT_LENGTH = 8_000;
 
@@ -198,8 +199,8 @@ export function promptLinkTarget(
   value: string,
   hostedAppUrl: string = DEFAULT_HOSTED_APP_URL,
 ): PromptLinkTarget | null {
-  if (!URL.canParse(value)) return null;
-  const url = new URL(value);
+  const url = parseUrl(value);
+  if (!url) return null;
   let thread: RegExpExecArray | null;
   if (APP_SCHEME.test(url.protocol)) {
     if (url.host === "new" && (url.pathname === "" || url.pathname === "/")) {
@@ -207,11 +208,16 @@ export function promptLinkTarget(
     }
     thread = url.host === "threads" ? THREAD_PATH.exec(url.pathname) : null;
   } else {
-    if (!URL.canParse(hostedAppUrl) || url.origin !== new URL(hostedAppUrl).origin) return null;
+    if (url.origin !== parseUrl(hostedAppUrl)?.origin) return null;
     if (url.pathname === "/new") {
       return { kind: "new", appPath: `/new${url.search}`, search: url.search };
     }
-    thread = url.searchParams.has("prompt") ? THREAD_PATH.exec(url.pathname) : null;
+    // Explicit copied-thread routes need no prompt; normal app routes still do.
+    thread = url.pathname.startsWith("/threads/")
+      ? THREAD_PATH.exec(url.pathname.slice("/threads".length))
+      : url.searchParams.has("prompt")
+        ? THREAD_PATH.exec(url.pathname)
+        : null;
   }
   if (!thread) return null;
   try {

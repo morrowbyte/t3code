@@ -10,7 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -34,7 +34,7 @@ export const layer = Layer.effect(
   ExecutionUsage,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const crypto = yield* Crypto.Crypto;
+    const digest = yield* Digest.Digest;
     const read = Effect.fn("ExecutionUsage.read")(
       function* (input: ExecutionUsageInput) {
         const rows = yield* sql<{
@@ -151,7 +151,9 @@ export const layer = Layer.effect(
             const started = row.started_at === null ? NaN : Date.parse(row.started_at);
             const completed = row.completed_at === null ? NaN : Date.parse(row.completed_at);
             const taskKey = row.task_key
-              ? Hex.encode(yield* crypto.digest("SHA-256", new TextEncoder().encode(row.task_key)))
+              ? Hex.encode(
+                  yield* digest.digest(Digest.sha256, new TextEncoder().encode(row.task_key)),
+                )
               : "";
             return {
               runId: RunId.make(row.run_id),

@@ -45,13 +45,14 @@ import {
   SecretProviderId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Data from "effect/Data";
 import * as Fiber from "effect/Fiber";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
+import type * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as PlatformError from "effect/PlatformError";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as TestClock from "effect/testing/TestClock";
 import * as FileSystem from "effect/FileSystem";
@@ -166,7 +167,9 @@ it.effect("does not accept an account id outside the trusted JWT namespace match
 it.effect("sanitizes trusted broker failures before they can escape", () =>
   Effect.gen(function* () {
     const secret = "fakebrokersecret-for-voice-test";
-    class BrokerFailure extends Data.TaggedError("BrokerFailure")<{ readonly message: string }> {}
+    class BrokerFailure extends Schema.TaggedError<BrokerFailure>()("BrokerFailure", {
+      message: Schema.String,
+    }) {}
     const codex = {
       request: () =>
         Effect.fail(new BrokerFailure({ message: `broker returned Bearer ${secret}` })),
@@ -331,6 +334,7 @@ it.effect("passes an explicit environment to Codex spawn without extending ambie
       binaryPath: settings.binaryPath,
       homePath: effectiveHomePath,
       cwd: process.cwd(),
+      // @effect-diagnostics-next-line processEnvInEffect:off -- This boundary fixture inspects or changes the actual child-process environment and restores it after use.
       environment: { PATH: process.env.PATH },
       extendEnv: false,
     }).pipe(
@@ -348,7 +352,7 @@ it.effect("passes an explicit environment to Codex spawn without extending ambie
     assert.strictEqual(captured?.options?.env?.OPENAI_API_KEY, undefined);
     assert.strictEqual(captured?.options?.env?.T3CODE_TRANSCRIPTION_API_KEY, undefined);
     assert.strictEqual(captured?.options?.env?.CODEX_HOME, shadowHome);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("reports upstream 403 without retaining the raw response or request", () =>
@@ -375,7 +379,7 @@ it.effect("reports upstream 403 without retaining the raw response or request", 
     }).pipe(Effect.result);
     assert.strictEqual(result._tag, "Failure");
     if (result._tag === "Failure") {
-      assert(result.failure instanceof VoiceTranscriptionError);
+      assert(isVoiceTranscriptionError(result.failure));
       assert.strictEqual(result.failure.status, 403);
       assert.strictEqual(result.failure.reason, "upstream_forbidden");
       assert.include(result.failure.detail, "does not confirm transcription access");
@@ -485,7 +489,11 @@ it.effect("forces redirect rejection for provider HTTP requests", () =>
 );
 
 function recoveryServiceLayer(
-  calls: { spawns: number; commands?: Array<string>; environments?: Array<NodeJS.ProcessEnv> },
+  calls: {
+    spawns: number;
+    commands?: Array<string>;
+    environments?: Array<NonNullable<ChildProcess.StandardCommand["options"]["env"]>>;
+  },
   options: {
     instances?: ReadonlyArray<ProviderInstance>;
     acquire?: CodexInstallation.CodexInstallation["Service"]["acquire"];
@@ -499,6 +507,7 @@ function recoveryServiceLayer(
       Layer.succeed(SecretResolver.SecretResolver, {
         read: () => Effect.succeed(options.secretValues ?? []),
         invalidate: () => Effect.void,
+        label: (provider) => Effect.succeed(provider),
       }),
     ),
     Layer.provide(
@@ -507,7 +516,7 @@ function recoveryServiceLayer(
     Layer.provideMerge(ServerSettings.layerTest()),
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
-        getInstance: () => Effect.sync(() => undefined),
+        getInstance: () => Effect.undefined,
         listInstances: Effect.succeed(options.instances ?? []),
         listUnavailable: Effect.succeed([]),
         streamChanges: Stream.empty,
@@ -559,7 +568,7 @@ function recoveryServiceLayer(
         Layer.provideMerge(
           ServerConfig.layerTest(process.cwd(), { prefix: "voice-service-recovery-" }),
         ),
-        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
       ),
     ),
   );
@@ -576,7 +585,7 @@ it.effect.each([
   const calls = {
     spawns: 0,
     commands: [] as Array<string>,
-    environments: [] as Array<NodeJS.ProcessEnv>,
+    environments: [] as Array<NonNullable<ChildProcess.StandardCommand["options"]["env"]>>,
     acquired: 0,
     released: 0,
   };
@@ -681,14 +690,18 @@ it.effect(
     return Effect.gen(function* () {
       yield* Effect.acquireRelease(
         Effect.sync(() => {
+          // @effect-diagnostics-next-line processEnvInEffect:off -- This boundary fixture inspects or changes the actual child-process environment and restores it after use.
           const previous = process.env.T3CODE_TRANSCRIPTION_API_KEY;
+          // @effect-diagnostics-next-line processEnvInEffect:off -- This boundary fixture inspects or changes the actual child-process environment and restores it after use.
           process.env.T3CODE_TRANSCRIPTION_API_KEY =
             "fixture-environment-fallback-must-not-be-used";
           return previous;
         }),
         (previous) =>
           Effect.sync(() => {
+            // @effect-diagnostics-next-line processEnvInEffect:off -- This boundary fixture inspects or changes the actual child-process environment and restores it after use.
             if (previous === undefined) delete process.env.T3CODE_TRANSCRIPTION_API_KEY;
+            // @effect-diagnostics-next-line processEnvInEffect:off -- This boundary fixture inspects or changes the actual child-process environment and restores it after use.
             else process.env.T3CODE_TRANSCRIPTION_API_KEY = previous;
           }),
       );
@@ -789,3 +802,5 @@ it.effect("does not present unrelated preference read failures as credential rec
     assert.equal(recoveryNetwork.calls, networkBefore);
   }).pipe(Effect.provide(recoveryServiceLayer(calls)), Effect.scoped);
 });
+
+const isVoiceTranscriptionError = Schema.is(VoiceTranscriptionError);

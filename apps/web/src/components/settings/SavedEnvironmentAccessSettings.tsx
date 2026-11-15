@@ -7,7 +7,7 @@ import {
   type AuthPairingCredentialResult,
   type AdvertisedEndpoint,
 } from "@t3tools/contracts";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { ServerClientSessionRecord } from "~/environments/primary";
 import { authEnvironment } from "~/state/auth";
 import { useEnvironmentQuery } from "~/state/query";
@@ -71,7 +71,7 @@ export function SavedEnvironmentAccess({ environment }: { environment: Environme
     if (!readEnvironmentScope(environmentId, AuthAccessWriteScope)) return;
     setRevokingPairingId(id);
     setError(null);
-    try {
+    const settled = await settlePromise(async () => {
       const result = await revokePairing({ environmentId, input: id });
       if (result._tag === "Failure") throw squashAtomCommandFailure(result);
       setCredentials((current) => {
@@ -79,24 +79,26 @@ export function SavedEnvironmentAccess({ environment }: { environment: Environme
         next.delete(id);
         return next;
       });
-    } catch (cause) {
+    });
+    if (settled._tag === "Failure") {
+      const cause = squashAtomCommandFailure(settled);
       setError(cause instanceof Error ? cause.message : "Could not revoke pairing link.");
-    } finally {
-      setRevokingPairingId(null);
     }
+    setRevokingPairingId(null);
   };
   const onRevokeClient = async (sessionId: ServerClientSessionRecord["sessionId"]) => {
     if (!readEnvironmentScope(environmentId, AuthAccessWriteScope)) return;
     setRevokingClientId(sessionId);
     setError(null);
-    try {
+    const settled = await settlePromise(async () => {
       const result = await revokeClient({ environmentId, input: sessionId });
       if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-    } catch (cause) {
+    });
+    if (settled._tag === "Failure") {
+      const cause = squashAtomCommandFailure(settled);
       setError(cause instanceof Error ? cause.message : "Could not revoke client.");
-    } finally {
-      setRevokingClientId(null);
     }
+    setRevokingClientId(null);
   };
   const onRevokeOthers = async () => {
     if (!readEnvironmentScope(environmentId, AuthAccessWriteScope)) return;
@@ -108,14 +110,15 @@ export function SavedEnvironmentAccess({ environment }: { environment: Environme
       return;
     setRevokingOthers(true);
     setError(null);
-    try {
+    const settled = await settlePromise(async () => {
       const result = await revokeOthers({ environmentId, input: null });
       if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-    } catch (cause) {
+    });
+    if (settled._tag === "Failure") {
+      const cause = squashAtomCommandFailure(settled);
       setError(cause instanceof Error ? cause.message : "Could not revoke other clients.");
-    } finally {
-      setRevokingOthers(false);
     }
+    setRevokingOthers(false);
   };
   const endpointUrl = prepared?.httpBaseUrl;
   return (
@@ -148,12 +151,14 @@ export function SavedEnvironmentAccess({ environment }: { environment: Environme
         : null}
       {canRead ? (
         <PairingClientsList
+          servedByEnvironment={false}
           endpointUrl={endpointUrl}
           endpoints={EMPTY_ADVERTISED_ENDPOINTS}
           defaultEndpointKey={null}
           isLoading={access.isPending && snapshot === null}
           pairingLinks={pairingLinks}
           createdPairingCredentials={credentials}
+          sharedPairingLinkId={null}
           clientSessions={clients}
           revokingPairingLinkId={revokingPairingId}
           revokingClientSessionId={revokingClientId}

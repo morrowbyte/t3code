@@ -15,6 +15,8 @@ import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ProjectEnrichment from "../project/ProjectEnrichmentService.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
@@ -63,11 +65,14 @@ it.effect.each([
         checkpointScopes: [{ id: scopeId, runId, kind: "root_run" as const, cwd: "/repo" }],
         checkpoints: [],
       }),
+    getThreadShell: () => Effect.succeed(null),
   });
   const observer = RunFinalization.layerObserver.pipe(
     Layer.provide(
       Layer.mergeAll(
         projections,
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(ProjectEnrichment.ProjectEnrichmentService)({}),
         Layer.mock(WorkspaceEntries.WorkspaceEntries)({ refresh: () => Effect.void }),
         Layer.mock(PullRequestService.PullRequestService)({ refreshAfterTurn: () => Effect.void }),
         Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
@@ -109,7 +114,10 @@ it.effect.each([
         Layer.mock(CheckpointRollback.CheckpointRollbackServiceV2)({}),
         Layer.mock(RuntimeRequests.RuntimeRequestServiceV2)({}),
         Layer.mock(ThreadTitles.ThreadTitleRegenerationService)({}),
-        Layer.mock(ThreadManagement.ThreadManagementService)({}),
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          recoverDelegatedTask: () => Effect.void,
+        }),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
         ServerSettings.layerTest(),
         Layer.mock(PrivilegedCommands.PrivilegedCommandService)({
           cleanup: () => Effect.fail(new ApprovalReviewError({ reason: "storage" })),

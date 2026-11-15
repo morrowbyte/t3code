@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   AgentObservatoryOwner,
@@ -51,7 +52,7 @@ const dependencies = Layer.mergeAll(stores, sink, environment);
 const layer = Layer.mergeAll(
   dependencies,
   AgentObservatoryService.layer.pipe(Layer.provide(dependencies)),
-  NodeServices.layer,
+  Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
 );
 
 function makeThread(threadId: ThreadId, now: DateTime.Utc): OrchestrationV2AppThread {

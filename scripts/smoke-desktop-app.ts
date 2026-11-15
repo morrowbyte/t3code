@@ -22,12 +22,16 @@ const { values } = NodeUtil.parseArgs({
   options: {
     executable: { type: "string" },
     "expect-version": { type: "string" },
+    // An unpackaged app directory for a plain Electron executable, as PR CI runs it.
+    app: { type: "string" },
     "artifacts-dir": { type: "string" },
   },
 });
 const executable = values.executable;
 if (!executable)
-  throw new Error("Usage: smoke-desktop-app.ts --executable <app> [--artifacts-dir <dir>]");
+  throw new Error(
+    "Usage: smoke-desktop-app.ts --executable <app> [--app <dir>] [--artifacts-dir <dir>]",
+  );
 const artifactsDir = NodePath.resolve(values["artifacts-dir"] ?? "desktop-launch-check");
 const platform = Effect.runSync(HostProcess.Platform);
 
@@ -43,6 +47,7 @@ try {
     executablePath: executable,
     // Linux CI runners do not allow the Chromium sandbox's user namespaces.
     args: [
+      ...(values.app ? [NodePath.resolve(values.app)] : []),
       "--no-sandbox",
       ...(platform === "win32" ? [`--user-data-dir=${NodePath.join(home, "electron")}`] : []),
     ],

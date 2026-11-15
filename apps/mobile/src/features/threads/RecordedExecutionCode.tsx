@@ -1,6 +1,8 @@
+import { withVisibleControlCharacters } from "@t3tools/client-runtime/work-log/command-label";
+import { highlightCommand } from "../../lib/highlights";
 import { executionEmbeddedScripts } from "@t3tools/client-runtime/work-log/embedded-scripts";
 import { useMemo, useState } from "react";
-import { Pressable, View } from "react-native";
+import { Pressable, Text as RNText, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -14,22 +16,36 @@ function RecordedCodeText(props: {
   readonly code: string;
   readonly language: string;
   readonly theme: "light" | "dark";
+  readonly shell?: boolean;
 }) {
-  const highlighted = useMarkdownCodeHighlight({
-    code: props.code,
+  const code = props.shell ? withVisibleControlCharacters(props.code.trim()) : props.code;
+  const plainHighlight = useMarkdownCodeHighlight({
+    code,
     language: props.language,
     theme: props.theme,
-    enabled: props.code.length <= MAX_ANALYZED_INPUT_LENGTH,
+    enabled: !props.shell && code.length <= MAX_ANALYZED_INPUT_LENGTH,
   });
-  if (props.code.length > MAX_ANALYZED_INPUT_LENGTH)
+  const shellHighlight = useMemo(
+    () =>
+      props.shell && code.length <= MAX_ANALYZED_INPUT_LENGTH
+        ? highlightCommand(
+            code,
+            props.language === "powershell" ? "powershell" : "shellscript",
+            props.theme,
+          )
+        : null,
+    [code, props.shell, props.language, props.theme],
+  );
+  const highlighted = shellHighlight ?? plainHighlight;
+  if (code.length > MAX_ANALYZED_INPUT_LENGTH)
     return (
       <Text selectable className="font-mono text-2xs leading-normal text-foreground">
-        {props.code}
+        {code}
       </Text>
     );
   return (
     <View className="min-w-0">
-      {props.code.split(/\r?\n/u).map((line, index) => (
+      {code.split(/\r?\n/u).map((line, index) => (
         // Source positions stay stable; soft wraps remain within the same numbered row.
         // oxlint-disable-next-line react/no-array-index-key
         <View key={index} className="min-w-0 flex-row gap-2">
@@ -46,9 +62,9 @@ function RecordedCodeText(props: {
             {highlighted?.[index]?.map((token, tokenIndex) => (
               // Token positions remain stable within this recorded source line.
               // oxlint-disable-next-line react/no-array-index-key
-              <Text key={tokenIndex} style={token.color ? { color: token.color } : undefined}>
+              <RNText key={tokenIndex} style={token.color ? { color: token.color } : undefined}>
                 {token.content}
-              </Text>
+              </RNText>
             )) ?? line}
           </Text>
         </View>
@@ -127,7 +143,12 @@ export function RecordedExecutionCode(props: {
         </Pressable>
       ) : null}
       {scripts.length === 0 || originalOpen ? (
-        <RecordedCodeText code={props.code} language={props.language} theme={props.theme} />
+        <RecordedCodeText
+          code={props.code}
+          language={props.language}
+          theme={props.theme}
+          shell={shell}
+        />
       ) : null}
     </View>
   );

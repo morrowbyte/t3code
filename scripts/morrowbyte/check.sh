@@ -322,7 +322,6 @@ for native_integration_test in "${native_integration_tests[@]}"; do
   focused_tests+=("$native_integration_test")
 done
 optional_voice_tests=(
-  apps/web/src/voice/useVoiceDictation.test.tsx
   packages/client-runtime/src/state/voiceTranscriptionHttp.test.ts
 )
 voice_tests=(
@@ -456,6 +455,7 @@ renderer_tests=(
   apps/web/src/components/chat/ApprovalActionSummary.browser.test.tsx
   apps/web/src/components/streamable-ui/StreamableUi.browser.test.tsx
   apps/web/src/components/chat/ThreadDetailsBoat.browser.test.tsx
+  apps/web/src/voice/useVoiceDictation.browser.test.tsx
   apps/web/src/components/auth/PairingRouteSurface.browser.test.tsx
   apps/web/src/observatory/AgentObservatory.browser.test.tsx
   apps/web/src/components/chat/ExecutionCodePanel.browser.test.tsx

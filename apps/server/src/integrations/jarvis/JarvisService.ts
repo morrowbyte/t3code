@@ -8,7 +8,8 @@ import {
   JarvisNativeResponse,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -81,7 +82,8 @@ const make = Effect.gen(function* () {
   const client = yield* JarvisClient.JarvisClient;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const environment = yield* ServerEnvironment.ServerEnvironmentIdentity;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Crypto.SecureRandom;
+  const digestService = yield* Digest.Digest;
 
   // Every field comes from authenticated scope and canonical projections.
   // In particular, task.id/DelegateTaskResult.childNodeId is never a child root.
@@ -190,8 +192,8 @@ const make = Effect.gen(function* () {
           operation,
           key,
         ]).pipe(Effect.mapError(unavailable));
-        const digest = yield* crypto
-          .digest("SHA-256", new TextEncoder().encode(encoded))
+        const digest = yield* digestService
+          .digest(Digest.sha256, new TextEncoder().encode(encoded))
           .pipe(Effect.mapError(unavailable));
         return `morrowbyte:${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
       }),
@@ -223,7 +225,7 @@ const make = Effect.gen(function* () {
             "capability_denied",
             "The caller's configured plan mode does not submit capability work.",
           );
-        const id = yield* crypto.randomUUIDv4().pipe(Effect.mapError(unavailable));
+        const id = yield* crypto.uuidV4().pipe(Effect.mapError(unavailable));
         const request = yield* decodeJarvisNativeRequest({
           jsonrpc: "2.0",
           id,
@@ -316,7 +318,7 @@ const make = Effect.gen(function* () {
               "invalid_request",
               "Event waits must be between zero and 30000 milliseconds.",
             );
-          const id = yield* crypto.randomUUIDv4().pipe(Effect.mapError(unavailable));
+          const id = yield* crypto.uuidV4().pipe(Effect.mapError(unavailable));
           const request = {
             jsonrpc: "2.0",
             id,

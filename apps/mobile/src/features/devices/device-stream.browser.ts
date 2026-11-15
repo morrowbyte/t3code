@@ -351,7 +351,7 @@ export function start(configuration: DeviceStreamConfiguration) {
     if (activeClient === client) post({ type: "unauthorized" });
   };
   const client = createDeviceStreamClient(
-    { ...configuration, preferMjpeg: platform === "ios" },
+    configuration,
     createCanvasFrameSink(canvas, updatePresentation),
     {
       onStatus: reportStatus,

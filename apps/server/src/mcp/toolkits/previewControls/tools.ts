@@ -1,4 +1,5 @@
 import {
+  clampedPositiveInt,
   NonNegativeInt,
   OrchestratorMcpFailure,
   PreviewAutomationError,
@@ -28,7 +29,7 @@ const PreviewListTool = Tool.make("t3_preview_list", {
     "List this thread's preview tabs. For an existing local desktop tab, check preview_status with its tabId: an attached native tab can be automated in place with its current login. A missing runtime field alone does not mean unavailable. If status is unavailable, its desktop host is not attached to this environment; do not replace the tab with a separate login.",
   parameters: Schema.Struct({
     cursor: Schema.optional(NonNegativeInt),
-    limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
+    limit: Schema.optional(clampedPositiveInt(50)),
   }),
   success: Schema.Struct({
     ...PreviewListResult.fields,

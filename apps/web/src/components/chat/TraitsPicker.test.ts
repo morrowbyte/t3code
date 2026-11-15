@@ -150,6 +150,7 @@ describe("buildTraitsTriggerDisplay", () => {
     expect(display([EFFORT, fastModeDescriptor(false), CONTEXT_WINDOW])).toEqual({
       label: "High · 1M",
       speedLabel: null,
+      ultracode: false,
     });
   });
 
@@ -157,10 +158,12 @@ describe("buildTraitsTriggerDisplay", () => {
     expect(display([EFFORT, fastModeDescriptor(true), CONTEXT_WINDOW])).toEqual({
       label: "High Fast · 1M",
       speedLabel: "Fast",
+      ultracode: false,
     });
     expect(display([EFFORT, CONTEXT_WINDOW, fastModeDescriptor(true)])).toEqual({
       label: "High Fast · 1M",
       speedLabel: "Fast",
+      ultracode: false,
     });
   });
 
@@ -183,6 +186,7 @@ describe("buildTraitsTriggerDisplay", () => {
         ).toEqual({
           label: "Balanced · 1M · High Fast",
           speedLabel: "Fast",
+          ultracode: false,
         });
       }
       expect(
@@ -192,7 +196,7 @@ describe("buildTraitsTriggerDisplay", () => {
           primarySelectDescriptorId: CONTEXT_WINDOW.id,
           ultrathinkPromptControlled: false,
         }),
-      ).toEqual({ label: "1M · High Ultrafast", speedLabel: "Ultrafast" });
+      ).toEqual({ label: "1M · High Ultrafast", speedLabel: "Ultrafast", ultracode: false });
     },
   );
 
@@ -211,6 +215,7 @@ describe("buildTraitsTriggerDisplay", () => {
     ).toEqual({
       label: "High Fast · Thinking On",
       speedLabel: "Fast",
+      ultracode: false,
     });
   });
 
@@ -225,14 +230,17 @@ describe("buildTraitsTriggerDisplay", () => {
     expect(display([thinking, fastModeDescriptor(true)])).toEqual({
       label: `${label} · Fast`,
       speedLabel: "Fast",
+      ultracode: false,
     });
     expect(display([thinking, { ...EFFORT, id: "reasoning" }, fastModeDescriptor(true)])).toEqual({
       label: `${label} · High Fast`,
       speedLabel: "Fast",
+      ultracode: false,
     });
     expect(display([thinking, fastModeDescriptor(false)])).toEqual({
       label,
       speedLabel: null,
+      ultracode: false,
     });
   });
 
@@ -240,6 +248,7 @@ describe("buildTraitsTriggerDisplay", () => {
     expect(display([CONTEXT_WINDOW, fastModeDescriptor(true)])).toEqual({
       label: "1M · Fast",
       speedLabel: "Fast",
+      ultracode: false,
     });
   });
 
@@ -257,7 +266,7 @@ describe("buildTraitsTriggerDisplay", () => {
             primarySelectDescriptorId: EFFORT.id,
             ultrathinkPromptControlled: false,
           }),
-        ).toEqual({ label: `${label} Fast`, speedLabel: "Fast" });
+        ).toEqual({ label: `${label} Fast`, speedLabel: "Fast", ultracode: false });
       }
     },
   );
@@ -266,10 +275,12 @@ describe("buildTraitsTriggerDisplay", () => {
     expect(display([EFFORT, serviceTierDescriptor("default")])).toEqual({
       label: "High",
       speedLabel: null,
+      ultracode: false,
     });
     expect(display([EFFORT, serviceTierDescriptor("priority")])).toEqual({
       label: "High Fast",
       speedLabel: "Fast",
+      ultracode: false,
     });
   });
 
@@ -277,6 +288,7 @@ describe("buildTraitsTriggerDisplay", () => {
     expect(display([EFFORT, serviceTierDescriptor("ultrafast")])).toEqual({
       label: "High Ultrafast",
       speedLabel: "Ultrafast",
+      ultracode: false,
     });
   });
 
@@ -287,13 +299,14 @@ describe("buildTraitsTriggerDisplay", () => {
         EFFORT,
         { ...descriptor, options: descriptor.options.filter(({ id }) => id !== "priority") },
       ]),
-    ).toEqual({ label: "High Ultrafast", speedLabel: "Ultrafast" });
+    ).toEqual({ label: "High Ultrafast", speedLabel: "Ultrafast", ultracode: false });
   });
 
   it("keeps other Codex service tiers in the label", () => {
     expect(display([EFFORT, serviceTierDescriptor("flex")])).toEqual({
       label: "High · Flex",
       speedLabel: null,
+      ultracode: false,
     });
   });
 
@@ -306,10 +319,12 @@ describe("buildTraitsTriggerDisplay", () => {
     expect(display([EFFORT, nonSpeedDescriptor])).toEqual({
       label: "High · Standard",
       speedLabel: null,
+      ultracode: false,
     });
     expect(display([nonSpeedDescriptor])).toEqual({
       label: "Standard",
       speedLabel: null,
+      ultracode: false,
     });
   });
 
@@ -317,10 +332,12 @@ describe("buildTraitsTriggerDisplay", () => {
     expect(display([serviceTierDescriptor("default")])).toEqual({
       label: "Standard",
       speedLabel: null,
+      ultracode: false,
     });
     expect(display([serviceTierDescriptor("priority")])).toEqual({
       label: "Fast",
       speedLabel: "Fast",
+      ultracode: false,
     });
   });
 
@@ -328,6 +345,7 @@ describe("buildTraitsTriggerDisplay", () => {
     expect(display([serviceTierDescriptor("ultrafast")])).toEqual({
       label: "Ultrafast",
       speedLabel: "Ultrafast",
+      ultracode: false,
     });
   });
 
@@ -341,6 +359,7 @@ describe("buildTraitsTriggerDisplay", () => {
     expect(display([EFFORT, thinking])).toEqual({
       label: "High · Thinking On",
       speedLabel: null,
+      ultracode: false,
     });
   });
 
@@ -348,10 +367,12 @@ describe("buildTraitsTriggerDisplay", () => {
     expect(display([fastModeDescriptor(true)])).toEqual({
       label: "Fast",
       speedLabel: "Fast",
+      ultracode: false,
     });
     expect(display([fastModeDescriptor(false)])).toEqual({
       label: "Normal",
       speedLabel: null,
+      ultracode: false,
     });
   });
 
@@ -359,6 +380,7 @@ describe("buildTraitsTriggerDisplay", () => {
     expect(display([EFFORT, CONTEXT_WINDOW])).toEqual({
       label: "High · 1M",
       speedLabel: null,
+      ultracode: false,
     });
   });
 
@@ -372,7 +394,7 @@ describe("buildTraitsTriggerDisplay", () => {
         { id: "high", label: "High" },
       ],
     };
-    expect(display([unresolved])).toEqual({ label: "", speedLabel: null });
+    expect(display([unresolved])).toEqual({ label: "", speedLabel: null, ultracode: false });
   });
 
   it("still renders prompt-controlled ultrathink with Fast", () => {
@@ -383,7 +405,7 @@ describe("buildTraitsTriggerDisplay", () => {
         primarySelectDescriptorId: "reasoningEffort",
         ultrathinkPromptControlled: true,
       }),
-    ).toEqual({ label: "Ultrathink Fast", speedLabel: "Fast" });
+    ).toEqual({ label: "Ultrathink Fast", speedLabel: "Fast", ultracode: false });
   });
 });
 

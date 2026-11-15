@@ -8,7 +8,7 @@ import type {
 } from "../../../../../packages/contracts/src/connectedEnvironmentMcp.ts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -52,7 +52,7 @@ export class ConnectedEnvironmentBroker extends Context.Service<
 >()("t3/mcp/connectedEnvironment/Broker/ConnectedEnvironmentBroker") {}
 
 export const make = Effect.gen(function* () {
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Crypto.SecureRandom;
   const locks = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const threads = yield* ThreadManagement.ThreadManagementService;
   let connection: Connection | undefined;
@@ -77,7 +77,7 @@ export const make = Effect.gen(function* () {
             if (connection) yield* disconnect(connection);
             const current: Connection = {
               sessionId,
-              connectionId: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
+              connectionId: yield* crypto.uuidV4().pipe(Effect.orDie),
               queue: yield* Queue.unbounded<ConnectedEnvironmentBridgeEvent, Cause.Done>(),
               pending: new Map(),
             };
@@ -116,7 +116,7 @@ export const make = Effect.gen(function* () {
     bridgeRequest: ConnectedEnvironmentBridgeRequest,
   ) {
     if (connection !== current) return yield* failure("The app relay disconnected.");
-    const requestId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const requestId = yield* crypto.uuidV4().pipe(Effect.orDie);
     const deferred = yield* Deferred.make<
       ConnectedEnvironmentBridgeResult,
       OrchestratorMcpFailure

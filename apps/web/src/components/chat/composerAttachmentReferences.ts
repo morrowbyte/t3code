@@ -18,7 +18,9 @@ export function insertAttachmentReferencesForDraft(input: {
     // The shared editor now belongs to another draft or question.
     const store = useComposerDraftStore.getState();
     const prompt = store.getComposerDraft(input.target)?.prompt ?? "";
-    store.setPrompt(input.target, ensureInlineContextReferences(prompt, input.references));
+    store.setPrompt(input.target, ensureInlineContextReferences(prompt, input.references), {
+      edit: true,
+    });
     return true;
   }
   return input.insertReferences();

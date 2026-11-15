@@ -4,9 +4,11 @@ import { act, render } from "../../../test/render";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import { dismissContextMenu } from "~/contextMenuFallback";
+import { isMacPlatform } from "~/lib/utils";
 
 import FileBrowserPanel from "./FileBrowserPanel";
 import { COMPOSER_MENTION_DRAG_TYPE } from "~/components/chat/composerMentionDrag";
+import { dispatchPreviewAction } from "../preview/previewActionBus";
 
 const files = vi.hoisted(() => ({
   directoryEntries: [] as ProjectEntry[],
@@ -310,5 +312,168 @@ describe("Files panel search", () => {
 
     row.click();
     await vi.waitFor(() => expect(onOpenFile).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps an expanded folder open when a very large listing rebuilds the tree", async () => {
+    setup();
+    const renderPanel = () => (
+      <FileBrowserPanel
+        environmentId={EnvironmentId.make("env-files")}
+        cwd="/repo-large-folder-1"
+        projectName="repo"
+        selectedPath={null}
+        selectedPathRevealId={0}
+        onOpenFile={() => {}}
+        workspaceMutationId={null}
+      />
+    );
+    await using screen = await render(renderPanel());
+    await vi.waitFor(() => expect(findTreeRow("src/")).not.toBeNull());
+    findTreeRow("src/")!.click();
+    await vi.waitFor(() => expect(findTreeRow("src/")!.getAttribute("aria-expanded")).toBe("true"));
+
+    files.directoryEntries = [
+      ...files.directoryEntries,
+      // Out of sort order, because inserting in order hides the cost of each insert.
+      ...Array.from({ length: 2_000 }, (_, index): ProjectEntry => {
+        const name = String((index * 7_919) % 2_000).padStart(4, "0");
+        return { path: `src/generated-${name}`, kind: "directory" };
+      }),
+    ];
+    await screen.rerender(renderPanel());
+
+    await vi.waitFor(() => expect(findTreeRow("src/generated-0000/")).not.toBeNull());
+    expect(findTreeRow("src/")!.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("keeps the selected file through a very large listing without reopening it", async () => {
+    const onOpenFile = vi.fn();
+    const renderPanel = () => (
+      <FileBrowserPanel
+        environmentId={EnvironmentId.make("env-files")}
+        cwd="/repo-large-folder-2"
+        projectName="repo"
+        selectedPath="src/aaa.ts"
+        selectedPathRevealId={1}
+        onOpenFile={onOpenFile}
+        workspaceMutationId={null}
+      />
+    );
+    setup();
+    files.directoryEntries = [...files.directoryEntries, { path: "src/aaa.ts", kind: "file" }];
+    await using screen = await render(renderPanel());
+    await vi.waitFor(() =>
+      expect(findTreeRow("src/aaa.ts")?.getAttribute("aria-selected")).toBe("true"),
+    );
+
+    files.directoryEntries = [
+      ...files.directoryEntries,
+      ...Array.from({ length: 2_000 }, (_, index): ProjectEntry => {
+        const name = String((index * 7_919) % 2_000).padStart(4, "0");
+        return { path: `src/generated-${name}.ts`, kind: "file" };
+      }),
+    ];
+    await screen.rerender(renderPanel());
+
+    await vi.waitFor(() => expect(findTreeRow("src/generated-0000.ts")).not.toBeNull());
+    expect(findTreeRow("src/aaa.ts")?.getAttribute("aria-selected")).toBe("true");
+    expect(findTreeRow("src/")?.getAttribute("aria-expanded")).toBe("true");
+    expect(onOpenFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps an open search accurate when a very large folder listing arrives", async () => {
+    const renderPanel = () => (
+      <FileBrowserPanel
+        environmentId={EnvironmentId.make("env-files")}
+        cwd="/repo-large-folder-3"
+        projectName="repo"
+        selectedPath={null}
+        selectedPathRevealId={0}
+        onOpenFile={() => {}}
+        workspaceMutationId={null}
+      />
+    );
+    setup();
+    files.directoryEntries = [
+      ...files.directoryEntries,
+      { path: "lib", kind: "directory" },
+      { path: "lib/generated-existing.ts", kind: "file" },
+    ];
+    await using screen = await render(renderPanel());
+    const search = page.getByRole("searchbox", { name: "Search repo files" });
+    await userEvent.fill(search, "generated-");
+    await vi.waitFor(() => expect(findTreeRow("lib/generated-existing.ts")).not.toBeNull());
+
+    files.directoryEntries = [
+      ...files.directoryEntries,
+      ...Array.from({ length: 2_000 }, (_, index): ProjectEntry => {
+        const name = String((index * 7_919) % 2_000).padStart(4, "0");
+        return { path: `src/generated-${name}.ts`, kind: "file" };
+      }),
+    ];
+    await screen.rerender(renderPanel());
+
+    await vi.waitFor(() => expect(findTreeRow("src/generated-0000.ts")).not.toBeNull());
+    expect(findTreeRow("lib/generated-existing.ts")).not.toBeNull();
+    await expect.element(search).toHaveValue("generated-");
+  });
+
+  it("mod+f from a tree row, or the panel find command, focuses the file search", async () => {
+    setup();
+    files.directoryEntries = [
+      { path: "src", kind: "directory" },
+      { path: "README.md", kind: "file" },
+    ];
+    await using _screen = await render(
+      <FileBrowserPanel
+        environmentId={EnvironmentId.make("env-files")}
+        cwd="/repo"
+        projectName="repo"
+        selectedPath={null}
+        selectedPathRevealId={0}
+        onOpenFile={() => {}}
+        workspaceMutationId={null}
+        answersPanelFind
+      />,
+    );
+    await vi.waitFor(() => expect(findTreeRow("README.md")).not.toBeNull());
+    findTreeRow("README.md")!.focus();
+
+    const modifier = isMacPlatform(navigator.platform) ? "Meta" : "Control";
+    await userEvent.keyboard(`{${modifier}>}f{/${modifier}}`);
+
+    const search = page.getByRole("searchbox", { name: "Search repo files" });
+    await expect.element(search).toHaveFocus();
+
+    (search.element() as HTMLElement).blur();
+    dispatchPreviewAction("find");
+    await expect.element(search).toHaveFocus();
+  });
+
+  it("keeps expanded folders when the panel remounts", async () => {
+    setup();
+    const panel = () => (
+      <FileBrowserPanel
+        environmentId={EnvironmentId.make("env-files")}
+        cwd="/repo"
+        projectName="repo"
+        selectedPath={null}
+        selectedPathRevealId={0}
+        onOpenFile={() => {}}
+        workspaceMutationId={null}
+      />
+    );
+    {
+      await using _first = await render(panel());
+      await vi.waitFor(() => expect(findTreeRow("src/")).not.toBeNull());
+      findTreeRow("src/")!.click();
+      await vi.waitFor(() =>
+        expect(findTreeRow("src/")!.getAttribute("aria-expanded")).toBe("true"),
+      );
+    }
+
+    await using _second = await render(panel());
+    await vi.waitFor(() => expect(findTreeRow("src/")).not.toBeNull());
+    await vi.waitFor(() => expect(findTreeRow("src/")!.getAttribute("aria-expanded")).toBe("true"));
   });
 });

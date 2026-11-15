@@ -13,6 +13,10 @@ inputs:
     description: Arguments for `vp install`, such as filters. Empty installs the whole workspace.
     required: false
     default: ""
+  save-pnpm-store:
+    description: Set to "false" when a concurrent job with the same install args saves the pnpm store
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:
@@ -40,7 +44,7 @@ runs:
         fi
 
     - name: Setup pinned Vite+ and restore dependencies
-      uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+      uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1.15.0
       env:
         VP_DOWNLOAD_TIMEOUT: "120"
         # Restoring the full 785 MiB store took 160s on Boat, longer than a fresh install.

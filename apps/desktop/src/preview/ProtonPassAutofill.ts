@@ -2,7 +2,6 @@ import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
-import * as Data from "effect/Data";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
@@ -28,16 +27,18 @@ export interface BindingStore {
   read(): Promise<readonly LinkedLogin[]>;
   write(bindings: readonly LinkedLogin[]): Promise<void>;
 }
-export class AutofillUnavailable extends Data.TaggedError("AutofillUnavailable")<{
-  readonly message: string;
-}> {
-  constructor() {
-    super({
-      message:
-        "This login target changed or cannot be filled privately. Focus its main-frame login field and try again.",
-    });
-  }
-}
+export class AutofillUnavailable extends Schema.TaggedError<AutofillUnavailable>()(
+  "AutofillUnavailable",
+  {
+    message: Schema.String.pipe(
+      Schema.withConstructorDefault(
+        Effect.succeed(
+          "This login target changed or cannot be filled privately. Focus its main-frame login field and try again.",
+        ),
+      ),
+    ),
+  },
+) {}
 export const validOrigin = (raw: string) => {
   try {
     const url = new URL(raw);

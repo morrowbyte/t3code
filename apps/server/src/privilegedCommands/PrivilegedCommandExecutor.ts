@@ -1,6 +1,7 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -96,14 +97,15 @@ export class PrivilegedCommandExecutor extends Context.Service<
 const make = Effect.gen(function* () {
   const platform = yield* HostProcess.Platform;
   const environment = yield* HostProcess.Environment;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Crypto.SecureRandom;
+  const digestService = yield* Digest.Digest;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const runner = yield* ProcessRunner.ProcessRunner;
 
   const unitName = Effect.fn("PrivilegedCommandExecutor.unitName")(function* (requestId: string) {
-    const digest = yield* crypto
-      .digest("SHA-256", new TextEncoder().encode(requestId))
+    const digest = yield* digestService
+      .digest(Digest.sha256, new TextEncoder().encode(requestId))
       .pipe(
         Effect.mapError(
           () => new PrivilegedCommandExecutionError({ reason: "control-unavailable" }),
@@ -643,7 +645,7 @@ const make = Effect.gen(function* () {
       };
     // The systemd runtime limit survives wrapper or supervisor death. Its cgroup also catches
     // descendants that leave the worker's process group. Never retry an ambiguous interruption.
-    const receiptResult = yield* crypto.randomUUIDv4().pipe(Effect.option);
+    const receiptResult = yield* crypto.uuidV4().pipe(Effect.option);
     if (receiptResult._tag === "None") {
       return {
         status: "failed",

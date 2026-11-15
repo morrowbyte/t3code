@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 import {
   contextUsageForHandoff,
   handoffBudget,
+  handoffCoverage,
   historyCost,
   historyResponseItems,
   selectHistory,
@@ -139,6 +140,23 @@ describe("handoff budget", () => {
     assert.equal(command?.kind, "command_execution");
     assert.include(command!.text, "Exit code: 1");
     assert.include(command!.text, "界".repeat(300));
+    assert.equal(
+      historicalMessage({
+        ...base,
+        type: "file_change",
+        fileName: "src/a.ts",
+        changes: [
+          { operation: "update", path: "src/a.ts" },
+          { operation: "add", path: "src/b.ts" },
+          { operation: "update", path: "src/new.ts", oldPath: "src/old.ts" },
+        ],
+      })?.text,
+      "File change: src/a.ts, src/b.ts, src/new.ts",
+    );
+    assert.equal(
+      historicalMessage({ ...base, type: "file_change", fileName: "src/a.ts", changes: [] })?.text,
+      "File change: src/a.ts",
+    );
     assert.isNull(
       historicalMessage({
         ...base,
@@ -215,7 +233,7 @@ describe("handoff budget", () => {
         "assistant",
         "Stop for every technical detail. ".repeat(4),
       );
-      const pairs = [1_100, 1_200, 1_300, 1_400, 1_500]
+      const pairs = [1_200, 1_300, 1_400, 1_500]
         .map((budget) =>
           selectHistory({
             messages: [original, competingPlan, correction],
@@ -283,6 +301,21 @@ describe("handoff budget", () => {
         }),
       ContextHandoffBudgetError,
     );
+  });
+
+  it("points history recovery at the omitted items instead of a read from the thread's start", () => {
+    const omitted = message("item:omitted", "assistant", "o".repeat(4_000));
+    const selected = selectHistory({
+      messages: [
+        messages[0]!,
+        omitted,
+        ...Array.from({ length: 3 }, (_, i) => message(`item:recent-${i}`, "assistant", "recent")),
+      ],
+      coverage: handoffCoverage({ threadId, coveredRunOrdinals: { from: 1, to: 46 }, items: [] }),
+      budget: 3_000,
+    });
+    assert.deepEqual(selected.omittedItemIds, [omitted.itemId]);
+    assert.include(selected.context, omitted.itemId);
   });
 
   it("counts JSON escaping and UTF-8 bytes across many messages", () => {
@@ -374,6 +407,17 @@ describe("handoff budget", () => {
       );
     }
     assert.equal(handoffBudget({ ...base, tokenCap: 2_000 }), 2_000);
+    // The work reserve never takes more than half of a small local window.
+    for (const [modelContextWindow, nativeContextEstimate, expected] of [
+      [8_192, 0, 4_086],
+      [32_768, 0, 16_758],
+      [131_072, 50_000, 48_294],
+    ] as const) {
+      assert.equal(
+        handoffBudget({ ...base, tokenCap: 64_000, modelContextWindow, nativeContextEstimate }),
+        expected,
+      );
+    }
   });
 
   it("keeps measured occupancy across a model change", () => {
@@ -502,13 +546,15 @@ describe("handoff budget", () => {
         assert.isAtMost(historyCost(selected.messages, selected.context), budget);
       }
       assert.equal(handoffBudget({ ...input, modelContextWindow: 2_000_000 }), 16_000);
-      assert.equal(handoffBudget({ ...input, modelContextWindow: 20_000 }), 0);
+      // 20k window: half is reserved for work, then 27 prompt bytes and 8,192 per image.
+      const smallWindowBudget = count === 1 ? 1_781 : 0;
+      assert.equal(handoffBudget({ ...input, modelContextWindow: 20_000 }), smallWindowBudget);
       assert.equal(
         handoffBudget({
           ...input,
           providerThread: { ...providerThread, contextUsage: { usedTokens: 0, maxTokens: 20_000 } },
         }),
-        0,
+        smallWindowBudget,
       );
       assert.equal(
         handoffBudget({
@@ -519,7 +565,7 @@ describe("handoff budget", () => {
             contextUsage: { usedTokens: 0, maxTokens: 1_000_000, autoCompactThreshold: 20_000 },
           },
         }),
-        0,
+        smallWindowBudget,
       );
     }
   });

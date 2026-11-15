@@ -1,5 +1,5 @@
 // @effect-diagnostics globalFetch:off -- Explicit redirect rejection protects the bootstrap credential at this native HTTP boundary.
-import { NodeSocket } from "@effect/platform-node";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import { credentialConnectionId } from "@t3tools/client-runtime/connection";
 import {
   ConnectionCatalogDocument,
@@ -15,7 +15,7 @@ import {
   type DesktopPrivilegedDecision,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
@@ -324,7 +324,7 @@ export const respond = Effect.fn("desktop.privilegedDecision.respond")(function*
         message: "The saved HTTP and WebSocket routes do not share a safe origin.",
       }),
   });
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Crypto.SecureRandom;
   const cookie = yield* Effect.tryPromise({
     try: () => createApprovalCookie(new URL(httpBaseUrl), bearer, input.environmentId),
     catch: (cause) =>
@@ -355,7 +355,7 @@ export const respond = Effect.fn("desktop.privilegedDecision.respond")(function*
         ).pipe(
           Layer.provide(
             Socket.layerWebSocket(socketUrl.href, { headers: { cookie } }).pipe(
-              Layer.provide(NodeSocket.layerWebSocketConstructorWS),
+              Layer.provide(NodeWS.layerWebSocketConstructor),
             ),
           ),
           Layer.provide(RpcSerialization.layerJson),
@@ -378,7 +378,7 @@ export const respond = Effect.fn("desktop.privilegedDecision.respond")(function*
           message: "Privileged request is no longer pending or does not match.",
         });
       }
-      const commandId = CommandId.make(yield* crypto.randomUUIDv4());
+      const commandId = CommandId.make(yield* crypto.uuidV4());
       yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
         type: "runtime-request.respond",
         commandId,

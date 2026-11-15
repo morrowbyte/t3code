@@ -63,7 +63,7 @@ it("a real menu selection links the chosen item then fills privately without any
 });
 it("shows a static locked state and does not read a password or resume after failure", async () => {
   const { target, service, ui, provider } = setup();
-  provider.vaults.mockRejectedValueOnce(new ProtonPassUnavailable("locked"));
+  provider.vaults.mockRejectedValueOnce(ProtonPassUnavailable.new("locked"));
   const menu = await makeAutofillMenu(target, service, ui);
   const submenu = menu[0]!.submenu;
   if (!Array.isArray(submenu)) throw new Error("Missing submenu");

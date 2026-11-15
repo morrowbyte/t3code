@@ -6,8 +6,8 @@ import type {
   FileDiffMetadata,
   SelectedLineRange,
 } from "@pierre/diffs";
-import type { CodeViewHandle } from "@pierre/diffs/react";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { CodeViewHandle, CodeViewProps } from "@pierre/diffs/react";
+import type { EnvironmentId, ProjectId, ScopedThreadRef } from "@t3tools/contracts";
 import { useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
 import { useComposerHandleContext } from "~/composerHandleContext";
 import { Button } from "../ui/button";
@@ -76,6 +76,8 @@ function appendAnnotationEntry(
 }
 
 interface AnnotatableCodeViewProps {
+  environmentId?: EnvironmentId | undefined;
+  projectId?: ProjectId | null | undefined;
   codeViewKey: string;
   files: ReadonlyArray<{
     fileDiff: FileDiffMetadata;
@@ -90,6 +92,7 @@ interface AnnotatableCodeViewProps {
   composerDraftTarget: ScopedThreadRef | DraftId;
   options: StyledDiffCodeViewOptions<DiffCommentAnnotationGroup>;
   viewerRef?: Ref<AnnotatableCodeViewHandle>;
+  onScroll?: CodeViewProps<DiffCommentAnnotationGroup, undefined>["onScroll"];
   className?: string;
   renderCodeViewFooter?: () => ReactNode;
   unsafeCSSExtra?: string;
@@ -100,7 +103,7 @@ interface AnnotatableCodeViewProps {
     fileKey: string,
     collapsed: boolean,
   ) => ReactNode;
-  onRevealSearchMatch: (fileKey: string) => void;
+  onFileCollapsedChange: (fileKey: string, collapsed: boolean) => void;
 }
 
 interface DiffSelectionContext {
@@ -108,6 +111,8 @@ interface DiffSelectionContext {
 }
 
 export function AnnotatableCodeView({
+  environmentId,
+  projectId,
   codeViewKey,
   files,
   pendingFiles,
@@ -116,13 +121,14 @@ export function AnnotatableCodeView({
   composerDraftTarget,
   options,
   viewerRef,
+  onScroll,
   className,
   renderCodeViewFooter,
   unsafeCSSExtra,
   renderHeaderMetadata,
   renderHeaderFilenameSuffix,
   renderHeaderPrefix,
-  onRevealSearchMatch,
+  onFileCollapsedChange,
 }: AnnotatableCodeViewProps) {
   const addReviewComment = useComposerDraftStore((store) => store.addReviewComment);
   const composer = useComposerHandleContext();
@@ -278,7 +284,7 @@ export function AnnotatableCodeView({
         }
       : null);
   const selectKeyboardRange = (file: (typeof files)[number], range: SelectedLineRange) => {
-    onRevealSearchMatch(file.fileKey);
+    onFileCollapsedChange(file.fileKey, false);
     setSelectedLines({ id: file.fileKey, range });
     codeView?.scrollTo({ type: "range", id: file.fileKey, range, align: "nearest" });
   };
@@ -378,6 +384,7 @@ export function AnnotatableCodeView({
       <StyledDiffCodeView<DiffCommentAnnotationGroup>
         key={codeViewKey}
         viewerRef={setCodeView}
+        {...(onScroll ? { onScroll } : {})}
         className={`min-h-0 flex-1 ${className ?? ""}`}
         {...(unsafeCSSExtra ? { unsafeCSSExtra } : {})}
         {...(renderHeaderMetadata
@@ -390,12 +397,14 @@ export function AnnotatableCodeView({
         items={items}
         selectedLines={selectedLines}
         onSelectedLinesChange={setSelectedLines}
-        onRevealSearchMatch={(item) => onRevealSearchMatch(item.id)}
+        onRevealSearchMatch={(item) => onFileCollapsedChange(item.id, false)}
         options={{
           ...options,
           enableGutterUtility: !hasOpenComment,
           enableLineSelection: !hasOpenComment,
           onGutterUtilityClick: beginComment,
+          onItemCollapsedChange: (_item, nextItem) =>
+            onFileCollapsedChange(nextItem.id, nextItem.collapsed === true),
         }}
         renderHeaderFilenameSuffix={(item) =>
           item.type === "diff" ? renderHeaderFilenameSuffix(item.fileDiff) : null
@@ -414,6 +423,14 @@ export function AnnotatableCodeView({
               {annotation.metadata.entries.map((entry) => (
                 <DiffCommentAnnotation
                   key={entry.id}
+                  environmentId={environmentId}
+                  projectId={projectId}
+                  ownerKey={JSON.stringify([
+                    environmentId,
+                    composerDraftTarget,
+                    codeViewKey,
+                    entry.id,
+                  ])}
                   kind={entry.kind}
                   rangeLabel={entry.rangeLabel}
                   text={entry.kind === "draft" ? draftText : entry.text}

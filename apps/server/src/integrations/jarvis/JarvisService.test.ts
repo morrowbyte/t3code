@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -255,7 +256,7 @@ describe("Jarvis bound capability service", () => {
           expect(a.params).not.toHaveProperty("envelope");
           expect(a.params.binding.origin.childRootNodeId).toBe(childRootId);
         }).pipe(Effect.provide(f.layer));
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect(
@@ -282,7 +283,7 @@ describe("Jarvis bound capability service", () => {
           }
           expect(yield* Ref.get(f.calls)).toHaveLength(0);
         }).pipe(Effect.provide(f.layer));
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("does not substitute the task-node alias when the actual child root is absent", () =>
@@ -298,7 +299,7 @@ describe("Jarvis bound capability service", () => {
         ).toBe("unavailable");
       }).pipe(Effect.provide(f.layer));
       expect(yield* Ref.get(f.calls)).toHaveLength(0);
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect(
@@ -326,7 +327,7 @@ describe("Jarvis bound capability service", () => {
           expect((yield* Fiber.join(pending)).code).toBe("outcome_unknown");
           expect(yield* Ref.get(f.calls)).toHaveLength(1);
         }).pipe(Effect.provide(f.layer));
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect(
@@ -354,7 +355,7 @@ describe("Jarvis bound capability service", () => {
           ).toBe("outcome_unknown");
         }).pipe(Effect.provide(wrongEpoch.layer));
         expect(yield* Ref.get(wrongEpoch.subscriptions)).toBe(1);
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect(
@@ -380,7 +381,7 @@ describe("Jarvis bound capability service", () => {
           ).toBe("invalid_request");
         }).pipe(Effect.provide(f.layer));
         expect(yield* Ref.get(f.calls)).toHaveLength(0);
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 });
 
@@ -401,7 +402,7 @@ it.effect("registers real MCP tools and returns bound data while rejecting an ou
         getClient: Effect.die("unused"),
       });
       const layer = McpHttpServer.layerJarvisToolkit.pipe(
-        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(f.dependencies),
       );
       yield* Effect.gen(function* () {
@@ -436,5 +437,5 @@ it.effect("registers real MCP tools and returns bound data while rejecting an ou
         expect(yield* Ref.get(f.calls)).toHaveLength(1);
       }).pipe(Effect.provide(layer));
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

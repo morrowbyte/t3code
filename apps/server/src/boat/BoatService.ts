@@ -29,7 +29,8 @@ import {
   isOrchestrationV2WorkActive,
 } from "@t3tools/contracts";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
-import * as Crypto from "effect/Crypto";
+import * as Crypto from "effect/crypto/SecureRandom";
+import * as Digest from "effect/crypto/Digest";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -434,7 +435,8 @@ export const make = Effect.gen(function* () {
   const projects = yield* Projects.ProjectService;
   const git = yield* Git.GitVcsDriver;
   const api = yield* BoatApi;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Crypto.SecureRandom;
+  const digestService = yield* Digest.Digest;
   const previews = yield* PreviewManager;
   const devices = yield* DeviceService;
   const projections = yield* ProjectionStoreV2;
@@ -1255,7 +1257,7 @@ export const make = Effect.gen(function* () {
                     candidate.requestId === item.requestId &&
                     candidate.projectId === item.projectId,
                 ) ?? item;
-              if (!current.sandboxId || inactive.has(current.state) || current.state === "deleting")
+              if (!current.sandboxId || !["ready", "idle", "running"].includes(current.state))
                 return current;
               const settings = projectSettings(current.projectId);
               if (settings.webAccess === "private") {
@@ -1637,7 +1639,11 @@ export const make = Effect.gen(function* () {
               ...(current.resumeOperation && !pending ? { resumeOperation: null } : {}),
             };
           });
-          if (next.threadId && next.processId !== null && !inactive.has(next.state)) {
+          if (
+            next.threadId &&
+            next.processId !== null &&
+            ["ready", "idle", "running"].includes(next.state)
+          ) {
             if (next.previewUrl) return yield* attachPreview(next, token);
             const settings = projectSettings(item.projectId);
             const probe = yield* api
@@ -1769,7 +1775,9 @@ export const make = Effect.gen(function* () {
           const workspace = yield* fs
             .readFileString(path.join(source.workspaceRoot, "pnpm-workspace.yaml"))
             .pipe(
-              Effect.flatMap((text) => Effect.try(() => parseYaml(text))),
+              Effect.flatMap((text) =>
+                Effect.try({ try: () => parseYaml(text), catch: storageError }),
+              ),
               Effect.flatMap(decodeWorkspaceVersions),
               Effect.orElseSucceed(() => null),
             );
@@ -2163,7 +2171,8 @@ export const make = Effect.gen(function* () {
                 : yield* api
                     .request(token, `${sandboxPath}/commands/${preparedInstance.processId}`)
                     .pipe(Effect.flatMap(decode(ProcessStatus)));
-            const running = process !== null && process.exitCode === undefined;
+            const running =
+              process !== null && process.exitCode === undefined && process.running !== false;
             if (!settings.devCommand.trim()) return yield* new BoatError({ category: "disabled" });
             if (settings.previewKind === "android" && settings.webAccess !== "private")
               yield* api.request(token, `${sandboxPath}/desktop?vnc=1`, "POST");
@@ -2491,9 +2500,7 @@ ${action.command}`;
                         resumeOperation,
                         state: "provisioning",
                         expiresAt: DateTime.formatIso(DateTime.makeUnsafe(expiresAt)),
-                        ...(current.resumeOperation
-                          ? {}
-                          : { stoppedAt: null, processId: null, previewUrl: null }),
+                        ...(current.resumeOperation ? {} : { stoppedAt: null, previewUrl: null }),
                       }
                     : item,
                 ),
@@ -2554,7 +2561,6 @@ ${action.command}`;
         yield* updateInstance(action, (current) => ({
           state: "stopping",
           commandGeneration: current.commandGeneration + 1,
-          processId: null,
           previewUrl: null,
           leases: [],
           resumeOperation: null,
@@ -2566,7 +2572,10 @@ ${action.command}`;
       yield* previews
         .close({ threadId: instance.threadId, tabId: PreviewTabId.make(instance.previewTabId) })
         .pipe(Effect.orElseSucceed(() => undefined));
-      yield* updateInstance(action, { previewTabId: null, processId: null });
+      yield* updateInstance(action, {
+        previewTabId: null,
+        ...(action.action === "delete" ? { processId: null } : {}),
+      });
     }
     if (["stop", "delete"].includes(action.action)) {
       yield* workLock.withPermits(1)(
@@ -2694,7 +2703,9 @@ ${action.command}`;
       const content = yield* fs.readFile(file).pipe(Effect.mapError(storageError));
       if (content.length !== Number(stat.size) || content.length > 2_097_152)
         return yield* new BoatError({ category: "conflict" });
-      const digest = yield* crypto.digest("SHA-256", content).pipe(Effect.mapError(storageError));
+      const digest = yield* digestService
+        .digest(Digest.sha256, content)
+        .pipe(Effect.mapError(storageError));
       files.push({
         path: name,
         sha256: Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""),

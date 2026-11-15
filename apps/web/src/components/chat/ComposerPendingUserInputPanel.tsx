@@ -197,7 +197,9 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
       }
       if (
         target instanceof HTMLElement &&
-        target.closest('[contenteditable]:not([contenteditable="false"])')
+        target.closest(
+          'select, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [aria-modal="true"], [role="menu"], [role="combobox"], [data-slot$="popup"]',
+        )
       ) {
         return;
       }
@@ -279,7 +281,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
           isCollapsed ? "Show the question and its options" : "Hide the question and its options"
         }
         data-pending-user-input-toggle={isCollapsed ? "collapsed" : "expanded"}
-        className="px-4 pt-1.5"
+        className="px-4 py-1.5"
       >
         <ComposerBanner.Content>
           <span
@@ -336,7 +338,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
               text={activeQuestion.question}
               cwd={cwd}
               threadRef={threadRef}
-              className={cn("pt-2 text-foreground/85", questionTextAlign)}
+              lineBreaks
+              className={cn("pt-0.5 text-foreground/85", questionTextAlign)}
             />
             {activeQuestion.multiSelect ? (
               <p className="mt-1 text-secondary-label text-xs">Select one or more options.</p>
@@ -365,7 +368,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                   <>
                     <span className="pointer-events-none flex h-5 shrink-0 items-center">
                       {activeQuestion.multiSelect ? (
-                        <CheckboxMark checked={isSelected} />
+                        <CheckboxMark checked={isSelected} variant="contrast" />
                       ) : (
                         <OptionRadio checked={isSelected} />
                       )}
@@ -390,54 +393,65 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                     ) : null}
                   </>
                 );
+                // The preview sits outside the button: it can hold links, and a click on a single-select option advances.
                 return (
-                  <button
-                    key={`${activeQuestion.id}:${optionValue}`}
-                    type="button"
-                    role={activeQuestion.multiSelect ? "checkbox" : "radio"}
-                    aria-checked={isSelected}
-                    disabled={responseDisabled}
-                    data-question-option
-                    aria-keyshortcuts="ArrowUp ArrowDown J K Control+N Control+P Space"
-                    onKeyDown={(event) => {
-                      if (event.nativeEvent.isComposing || event.altKey || event.metaKey) return;
-                      if (event.ctrlKey && event.key !== "n" && event.key !== "p") return;
-                      const offset =
-                        event.key === "ArrowDown" ||
-                        event.key === "j" ||
-                        (event.ctrlKey && event.key === "n")
-                          ? 1
-                          : event.key === "ArrowUp" ||
-                              event.key === "k" ||
-                              (event.ctrlKey && event.key === "p")
-                            ? -1
-                            : 0;
-                      if (offset === 0 && event.key !== "Home" && event.key !== "End") return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      const options = [
-                        ...event.currentTarget
-                          .closest('[data-keyboard-object="Question"]')!
-                          .querySelectorAll<HTMLButtonElement>(
-                            "[data-question-option]:not(:disabled)",
-                          ),
-                      ];
-                      const next =
-                        event.key === "Home"
-                          ? 0
-                          : event.key === "End"
-                            ? options.length - 1
-                            : (options.indexOf(event.currentTarget) + offset + options.length) %
-                              options.length;
-                      options[next]?.focus();
-                    }}
-                    onClick={() => {
-                      handleOptionSelection(activeQuestion.id, optionValue);
-                    }}
-                    className={className}
-                  >
-                    {content}
-                  </button>
+                  <div key={`${activeQuestion.id}:${optionValue}`}>
+                    <button
+                      type="button"
+                      role={activeQuestion.multiSelect ? "checkbox" : "radio"}
+                      aria-checked={isSelected}
+                      disabled={responseDisabled}
+                      data-question-option
+                      aria-keyshortcuts="ArrowUp ArrowDown J K Control+N Control+P Space"
+                      onKeyDown={(event) => {
+                        if (event.nativeEvent.isComposing || event.altKey || event.metaKey) return;
+                        if (event.ctrlKey && event.key !== "n" && event.key !== "p") return;
+                        const offset =
+                          event.key === "ArrowDown" ||
+                          event.key === "j" ||
+                          (event.ctrlKey && event.key === "n")
+                            ? 1
+                            : event.key === "ArrowUp" ||
+                                event.key === "k" ||
+                                (event.ctrlKey && event.key === "p")
+                              ? -1
+                              : 0;
+                        if (offset === 0 && event.key !== "Home" && event.key !== "End") return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const options = [
+                          ...event.currentTarget
+                            .closest('[data-keyboard-object="Question"]')!
+                            .querySelectorAll<HTMLButtonElement>(
+                              "[data-question-option]:not(:disabled)",
+                            ),
+                        ];
+                        const next =
+                          event.key === "Home"
+                            ? 0
+                            : event.key === "End"
+                              ? options.length - 1
+                              : (options.indexOf(event.currentTarget) + offset + options.length) %
+                                options.length;
+                        options[next]?.focus();
+                      }}
+                      onClick={() => {
+                        handleOptionSelection(activeQuestion.id, optionValue);
+                      }}
+                      className={className}
+                    >
+                      {content}
+                    </button>
+                    {option.preview ? (
+                      <ChatMarkdown
+                        text={option.preview}
+                        cwd={cwd}
+                        threadRef={threadRef}
+                        lineBreaks
+                        className="ps-9 pe-2 pb-1.5 text-xs text-foreground/70 sm:ps-8"
+                      />
+                    ) : null}
+                  </div>
                 );
               })}
             </div>
@@ -470,7 +484,7 @@ function OptionRadio({ checked }: { checked: boolean }) {
     <span
       aria-hidden
       className={cn(
-        "relative inline-flex size-4.5 shrink-0 items-center justify-center rounded-full border border-input bg-background not-dark:bg-clip-padding sm:size-4 dark:bg-input/32",
+        "relative inline-flex size-4.5 shrink-0 items-center justify-center rounded-full border border-foreground/55 bg-background not-dark:bg-clip-padding sm:size-4 dark:bg-input/32",
         checked ? "shadow-none" : "shadow-xs/5",
       )}
     >

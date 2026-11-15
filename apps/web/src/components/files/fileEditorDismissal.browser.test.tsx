@@ -1,3 +1,4 @@
+import { DEFAULT_THEMES, preloadHighlighter } from "@pierre/diffs";
 import { Editor, type EditorFactory } from "@pierre/diffs/edit";
 import { EditProvider, File } from "@pierre/diffs/react";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -12,6 +13,8 @@ describe("installFileEditorDismissal", () => {
     let editor: Editor<"file" | "file-diff", undefined, undefined> | undefined;
     const createEditor: EditorFactory<undefined, undefined> = (...args) =>
       (editor = new Editor(...args));
+    // File paints nothing until the shared highlighter has loaded; once it has, mount renders synchronously.
+    await preloadHighlighter({ themes: Object.values(DEFAULT_THEMES), langs: ["typescript"] });
     await using screen = await render(
       <>
         <p>Assistant reply</p>
@@ -22,7 +25,6 @@ describe("installFileEditorDismissal", () => {
         </div>
       </>,
     );
-    const shadowRoot = () => screen.container.querySelector("diffs-container")?.shadowRoot;
     const content = screen.getByRole("textbox");
     await expect.element(content).toBeInTheDocument();
 
@@ -41,9 +43,7 @@ describe("installFileEditorDismissal", () => {
         cancelable: true,
       }),
     );
-    await vi.waitFor(() =>
-      expect(shadowRoot()?.querySelectorAll("[data-match-range]")).toHaveLength(1),
-    );
+    await vi.waitFor(() => expect(CSS.highlights.get("diffs-search-current")?.size).toBe(1));
 
     using _dismissal = {
       [Symbol.dispose]: installFileEditorDismissal({

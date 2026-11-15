@@ -20,6 +20,8 @@ import { Argument, Command } from "effect/cli";
 
 import { resolveBaseDir } from "../os-jank.ts";
 import { baseDirFlag } from "./config.ts";
+import * as DesktopUpdateMarker from "../desktopUpdate/DesktopUpdateMarker.ts";
+import { serviceLauncherIsServing, stateDirOwned } from "../serviceLauncher.ts";
 
 const canBind = (port: number) =>
   new Promise<boolean>((resolve) => {
@@ -111,7 +113,7 @@ const runtimePort = Command.make("runtime-port", {
   Command.withHandler(({ runtimeFile }) =>
     Effect.sync(() => {
       try {
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - mirrors the shell snippet's loose parse.
+        // @effect-diagnostics-next-line globalJsonInEffect:off - mirrors the shell snippet's loose parse.
         const runtime = JSON.parse(NodeFS.readFileSync(runtimeFile, "utf8")) as {
           pid?: unknown;
           port?: unknown;
@@ -305,8 +307,42 @@ const desktopBrowser = Command.make("desktop-browser", {
     }),
   ),
 );
+const updateRemaining = Command.make("update-remaining", {
+  markerFile: Argument.String("marker-file"),
+}).pipe(
+  Command.withHandler(({ markerFile }) =>
+    DesktopUpdateMarker.DesktopUpdateMarker.use((marker) => marker.remainingWait(markerFile)).pipe(
+      Effect.flatMap((remaining) =>
+        Effect.sync(() => {
+          process.stdout.write(Option.match(remaining, { onNone: () => "", onSome: String }));
+        }),
+      ),
+    ),
+  ),
+  Command.provide(DesktopUpdateMarker.layer),
+);
+
+/** Exits 0 while a server holds this home or a boot service is about to start one. */
+const homeOwned = Command.make("home-owned", {
+  baseDir: Argument.String("base-dir"),
+}).pipe(
+  Command.withHandler(({ baseDir }) =>
+    Effect.promise(async () => {
+      if (!((await serviceLauncherIsServing(baseDir)) || (await stateDirOwned(baseDir)))) {
+        process.exitCode = 1;
+      }
+    }),
+  ),
+);
 
 export const sshHelperCommand = Command.make("__ssh-helper").pipe(
   Command.unlisted,
-  Command.withSubcommands([pickPort, waitReady, runtimePort, desktopBrowser]),
+  Command.withSubcommands([
+    pickPort,
+    waitReady,
+    runtimePort,
+    desktopBrowser,
+    updateRemaining,
+    homeOwned,
+  ]),
 );

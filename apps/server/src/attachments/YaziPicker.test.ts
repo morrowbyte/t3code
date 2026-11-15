@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { YaziPickerError } from "@t3tools/contracts";
@@ -103,7 +104,7 @@ it.effect(
         yield* picker.close("owner", opened);
         assert.strictEqual(yield* fs.exists(path.dirname(chooserPath)), false);
       }).pipe(Effect.provide(pickerLayer));
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("keeps another auth session out of terminal input and selected file bytes", () =>
@@ -131,7 +132,7 @@ it.effect("keeps another auth session out of terminal input and selected file by
       yield* picker.close("owner", opened);
       assert.strictEqual(process.killed, true);
     }).pipe(Effect.provide(pickerLayer));
-  }).pipe(Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("cancels cleanly and rejects directories instead of attaching paths", () =>
@@ -151,5 +152,5 @@ it.effect("cancels cleanly and rejects directories instead of attaching paths", 
       assert.deepStrictEqual(result.files, []);
       assert.isDefined(result.error);
     }).pipe(Effect.provide(pickerLayer));
-  }).pipe(Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

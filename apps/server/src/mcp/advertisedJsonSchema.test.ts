@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+import { ThemeToolkit } from "./toolkits/theme/tools.ts";
 
 it.each([undefined, false, true])(
   "compacts schemas without changing strict mode (%s)",
@@ -54,3 +55,18 @@ it.each([undefined, false, true])(
     });
   },
 );
+
+it("advertises only string enum values, which Gemini requires", () => {
+  const enumValues: Array<unknown> = [];
+  const collect = (node: unknown): void => {
+    if (Array.isArray(node)) return node.forEach(collect);
+    if (typeof node !== "object" || node === null) return;
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "enum" && Array.isArray(value)) enumValues.push(...value);
+      else collect(value);
+    }
+  };
+  collect(advertisedJsonSchema(ThemeToolkit.tools.t3_theme_set));
+
+  expect(enumValues.filter((value) => typeof value !== "string")).toEqual([]);
+});

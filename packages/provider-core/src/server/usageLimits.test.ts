@@ -33,6 +33,29 @@ describe("applyUsageLimitsUpdate", () => {
       },
     });
     expect(next).toBe(published);
+    const scoped = { checkedAt, windows: [{ ...weekly, modelIds: ["opencode/a"] }] };
+    const providerScoped = { checkedAt, windows: [{ ...weekly, providerIds: ["opencode"] }] };
+    expect(
+      applyUsageLimitsUpdate({
+        previous: providerScoped,
+        checkedAt,
+        update: { windows: [{ ...weekly, providerIds: ["console-custom"] }] },
+      })?.windows[0]?.providerIds,
+    ).toEqual(["console-custom"]);
+    expect(
+      applyUsageLimitsUpdate({
+        previous: scoped,
+        checkedAt,
+        update: { windows: [{ ...weekly, modelIds: ["opencode/a"] }] },
+      }),
+    ).toBe(scoped);
+    expect(
+      applyUsageLimitsUpdate({
+        previous: scoped,
+        checkedAt,
+        update: { windows: [{ ...weekly, modelIds: ["opencode/b"] }] },
+      })?.windows[0]?.modelIds,
+    ).toEqual(["opencode/b"]);
   });
 
   it("upserts by id and keeps the reset a percent-only update omits", () => {
@@ -66,11 +89,11 @@ describe("applyUsageLimitsUpdate", () => {
     ).toEqual({ checkedAt, windows: [weekly], unavailable: { reason: "probeFailed" } });
   });
 
-  it("preserves reset credits when a streamed window update changes usage", () => {
+  it("preserves reset credits and a $0 cap when a streamed window update changes usage", () => {
     const resetCredits = { availableCount: 2, nextExpiresAt: "2026-10-01T00:00:00.000Z" };
     const creditBalance = { balance: "27.5", hasCredits: true, unlimited: false };
     const next = applyUsageLimitsUpdate({
-      previous: { ...published, resetCredits, creditBalance },
+      previous: { ...published, resetCredits, creditBalance, zeroSpendCap: true },
       checkedAt: "2026-09-03T12:00:05.000Z",
       update: { windows: [{ ...session, usedPercent: 55 }] },
     });
@@ -80,6 +103,7 @@ describe("applyUsageLimitsUpdate", () => {
       windows: [{ ...session, usedPercent: 55 }, weekly],
       resetCredits,
       creditBalance,
+      zeroSpendCap: true,
     });
   });
 });

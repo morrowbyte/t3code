@@ -21,7 +21,7 @@ import * as VoiceTranscriptionService from "./VoiceTranscriptionService.ts";
 
 export const layer = HttpApiBuilder.group(
   EnvironmentHttpApi,
-  "voice",
+  "voiceTranscription",
   Effect.fnUntraced(function* (handlers) {
     const service = yield* VoiceTranscriptionService.VoiceTranscriptionService;
     const fs = yield* FileSystem.FileSystem;
@@ -68,7 +68,7 @@ export const layer = HttpApiBuilder.group(
                   ),
               }),
               Effect.catchIf(
-                (error) => !Schema.is(VoiceTranscriptionHttpError)(error),
+                (error) => !isVoiceTranscriptionHttpError(error),
                 (error) => failEnvironmentInternal("internal_error", error),
               ),
             );
@@ -77,3 +77,5 @@ export const layer = HttpApiBuilder.group(
       );
   }),
 );
+
+const isVoiceTranscriptionHttpError = Schema.is(VoiceTranscriptionHttpError);

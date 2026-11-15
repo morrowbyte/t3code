@@ -1,15 +1,15 @@
 import type { Editor } from "@tiptap/core";
-import { TextSelection } from "@tiptap/pm/state";
 import { createRef } from "react";
 import { expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
 
-import { serializeEditorDoc } from "~/composer-rich-text-doc";
+import { flatToMarkdown, pmToFlat, serializeEditorDoc } from "~/composer-rich-text-doc";
 import {
   ComposerPromptEditorTiptap as ComposerPromptEditor,
   type ComposerPromptEditorHandle,
 } from "./ComposerPromptEditorTiptap";
 import { LeaderNavigation } from "./keyboard/LeaderNavigation";
-import { act, render } from "../../test/render";
+import { act, fakeTimers, render } from "../../test/render";
 import { leaveNavigationMode } from "./keyboard/navigationMode";
 
 const draft =
@@ -122,37 +122,43 @@ function press(editor: Editor, key: string, options: KeyboardEventInit = {}) {
   return handled;
 }
 
+function markdownOffset(editor: Editor) {
+  const map = serializeEditorDoc(editor.state.doc);
+  return flatToMarkdown(map, pmToFlat(map, editor.state.selection.head));
+}
+
+async function focusAt(editor: Editor, position: number | "end") {
+  // ProseMirror's deferred focus rewrite must settle before native arrow navigation.
+  using _timers = fakeTimers();
+  await act(async () => {
+    editor.commands.focus(position);
+  });
+  await vi.waitFor(() => expect(document.activeElement).toBe(editor.view.dom));
+  vi.runOnlyPendingTimers();
+}
+
 it("keeps Up before the opening bold marker in a quote, including while typing", async () => {
   await using screen = await mountEditor(draft);
   const { editor } = screen;
-  const position = editor.state.selection.from;
-  await act(async () => {
-    editor.view.focus();
-    expect(press(editor, "ArrowUp")).toBe(true);
-    expect(editor.state.selection.from).toBe(position);
-    editor.view.updateState(editor.state);
-    const marker = editor.view.dom.querySelector(".composer-rich-marker");
-    const caret = window.getSelection()?.getRangeAt(0);
-    if (!marker || !caret) throw new Error("Caret or bold marker is missing");
-    const markerRange = document.createRange();
-    markerRange.selectNode(marker);
-    expect(caret.compareBoundaryPoints(Range.START_TO_START, markerRange)).toBeLessThanOrEqual(0);
-    expect(press(editor, "ArrowUp")).toBe(false);
-    editor.commands.insertContent("x");
-  });
-  expect(serializeEditorDoc(editor.state.doc).value).toBe(draft.replace("> **", "> x**"));
+  await focusAt(editor, editor.state.selection.from);
+  expect(markdownOffset(editor)).toBe("> ".length);
+  await userEvent.keyboard("{ArrowUp}{ArrowUp}");
+  await vi.waitFor(() => expect(markdownOffset(editor)).toBe("> ".length));
+  await userEvent.keyboard("x");
+  await vi.waitFor(() =>
+    expect(serializeEditorDoc(editor.state.doc).value).toBe(draft.replace("> **", "> x**")),
+  );
 });
 
 it("keeps Down after a closing marker, including while typing", async () => {
   await using screen = await mountEditor("> **bold**");
   const { editor } = screen;
-  await act(async () => {
-    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.atEnd(editor.state.doc)));
-    expect(press(editor, "ArrowDown")).toBe(true);
-    expect(press(editor, "ArrowDown")).toBe(false);
-    editor.commands.insertContent("x");
-  });
-  expect(serializeEditorDoc(editor.state.doc).value).toBe("> **bold**x");
+  await focusAt(editor, "end");
+  expect(markdownOffset(editor)).toBe("> **bold**".length);
+  await userEvent.keyboard("{ArrowDown}{ArrowDown}");
+  await vi.waitFor(() => expect(markdownOffset(editor)).toBe("> **bold**".length));
+  await userEvent.keyboard("x");
+  await vi.waitFor(() => expect(serializeEditorDoc(editor.state.doc).value).toBe("> **bold**x"));
 });
 
 it("leaves vertical navigation between paragraphs to the browser", async () => {
@@ -177,7 +183,11 @@ it.each([
   await using screen = await mountEditor(draft);
   const { editor } = screen;
   await act(async () => {
+    editor.commands.setTextSelection(editor.state.selection.from + "**".length);
+    expect(markdownOffset(editor)).toBe("> **".length);
+    const position = editor.state.selection.from;
     expect(press(editor, "ArrowUp", options)).toBe(false);
+    expect(editor.state.selection.from).toBe(position);
     editor.commands.insertContent("x");
   });
   expect(serializeEditorDoc(editor.state.doc).value).toBe(draft.replace("> **", "> **x"));

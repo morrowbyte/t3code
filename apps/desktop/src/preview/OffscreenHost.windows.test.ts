@@ -1,8 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { it as effectIt } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -21,7 +22,7 @@ effectIt.live.skipIf(HostProcess.Platform.defaultValue() !== "win32")(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const crypto = yield* Crypto.Crypto;
+      const digest = yield* Digest.Digest;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const artifactsRoot = process.env.NATIVE_PREVIEW_ARTIFACTS;
       if (artifactsRoot) yield* fs.makeDirectory(artifactsRoot, { recursive: true, mode: 0o700 });
@@ -89,10 +90,10 @@ effectIt.live.skipIf(HostProcess.Platform.defaultValue() !== "win32")(
         sources.push({
           path: sourcePath,
           sha256: Buffer.from(
-            yield* crypto.digest("SHA-256", new TextEncoder().encode(source)),
+            yield* digest.digest(Digest.sha256, new TextEncoder().encode(source)),
           ).toString("hex"),
           loadedSha256: Buffer.from(
-            yield* crypto.digest("SHA-256", yield* fs.readFile(path.join(runtime, output))),
+            yield* digest.digest(Digest.sha256, yield* fs.readFile(path.join(runtime, output))),
           ).toString("hex"),
         });
       }
@@ -171,5 +172,5 @@ effectIt.live.skipIf(HostProcess.Platform.defaultValue() !== "win32")(
         status: "captured-awaiting-pixel-review",
       });
       expect(manifest.stages).toHaveLength(3);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.provide(NodeCrypto.layer)),
 );

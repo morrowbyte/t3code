@@ -23,7 +23,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Stream from "effect/Stream";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Database from "../persistence/Sqlite.ts";
@@ -399,7 +399,7 @@ it.effect(
       yield* seed;
       const trusted = yield* Trusted.TrustedAppControlInvocation;
       const service = yield* Observatory.AgentObservatoryService;
-      const crypto = yield* Crypto.Crypto;
+      const crypto = yield* Digest.Digest;
       const call = makeObservatoryInvocationCallback(captured, trusted, service, crypto);
       const initial = yield* call(native, { action: "read" });
       assert.equal(initial.action, "read");

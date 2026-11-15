@@ -7,7 +7,7 @@ import {
   matchesExecutionTarget,
   type ExecutionCodeTarget,
 } from "../../lib/executionCode";
-import { embeddedScripts } from "../../lib/embeddedScripts";
+import { embeddedScripts } from "@t3tools/client-runtime/work-log/embedded-scripts";
 import { useTurnItemDetail } from "../../state/queries";
 import { useTheme } from "../../hooks/useTheme";
 import { RenderErrorBoundary } from "../RenderErrorBoundary";

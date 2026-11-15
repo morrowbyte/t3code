@@ -4,6 +4,7 @@ import * as PortScanner from "../preview/PortScanner.ts";
 import * as CuaControl from "../cua/CuaControl.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -52,7 +53,7 @@ import { CURSOR_MODEL_SELECTION, SUBAGENT_PROMPT } from "./testkit/fixtures/shar
 
 const fixtureEnvironmentId = EnvironmentId.make("00000000-0000-4000-8000-000000000001");
 const layerPlatformTest = Layer.mergeAll(
-  NodeServices.layer,
+  Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
   }),
@@ -101,7 +102,7 @@ const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pi
         Layer.provide(layerServerConfig),
         Layer.provide(layerPlatformTest),
       ),
-      NodeServices.layer,
+      Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
       FetchHttpClient.layer,
       OpenCodeRuntime.layer.pipe(
         Layer.provide(OpenCodeServerLedger.layerTest),

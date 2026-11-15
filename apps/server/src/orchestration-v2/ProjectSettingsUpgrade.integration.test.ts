@@ -1,4 +1,5 @@
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { assert, it } from "@effect/vitest";
@@ -123,6 +124,7 @@ const layerRuntime = (dbPath: string) => {
   );
   const layerPlatform = Layer.mergeAll(
     NodeServices.layer,
+    NodeCrypto.layer,
     Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
       resolveLink: () => Effect.die("unused"),
     }),
@@ -171,8 +173,7 @@ const layerRuntime = (dbPath: string) => {
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
-        // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
-        getInstance: () => Effect.succeed(undefined),
+        getInstance: () => Effect.undefined,
         listInstances: Effect.succeed([]),
         listUnavailable: Effect.succeed([]),
         streamChanges: Stream.empty,
@@ -205,5 +206,5 @@ it.live("keeps project settings through the V2 migrations and the first V2 boot"
         assert.equal(project._tag, "Some");
       }).pipe(Effect.provide(layerRuntime(dbPath)));
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

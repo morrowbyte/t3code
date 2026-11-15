@@ -1,12 +1,16 @@
 // @effect-diagnostics nodeBuiltinImport:off -- The fixture uses real owned Unix sockets and replaces only native Electron/process identity boundaries.
-import * as NodeFS from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodeNet from "node:net";
 import * as NodePath from "node:path";
-import * as Events from "node:events";
+import * as NodeEvents from "node:events";
 import { assert, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
+import * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
+import * as Queue from "effect/Queue";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -78,8 +82,8 @@ it.live.each([
     Effect.scoped(
       Effect.gen(function* () {
         const root = yield* Effect.acquireRelease(
-          Effect.promise(() => NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "main-diag-local-"))),
-          (dir) => Effect.promise(() => NodeFS.rm(dir, { recursive: true, force: true })),
+          Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "main-diag-local-"))),
+          (dir) => Effect.promise(() => NodeFSP.rm(dir, { recursive: true, force: true })),
         );
         const userId = yield* HostProcess.UserId;
         const config = yield* ServerConfig.ServerConfig;
@@ -94,13 +98,31 @@ it.live.each([
         if (userId === undefined || address.directory === null) return;
         const requested = yield* Deferred.make<MainRendererDiagnosticsRequest>();
         const release = yield* Deferred.make<void>();
-        const run = Effect.runPromiseWith(yield* Effect.context<never>());
+        const callbacks = yield* Queue.unbounded<Effect.Effect<void>>();
+        yield* Queue.take(callbacks).pipe(
+          Effect.flatMap(Effect.forkScoped),
+          Effect.forever,
+          Effect.forkScoped,
+        );
+        const run = <A, E>(task: Effect.Effect<A, E>) =>
+          new Promise<A>((resolve, reject) => {
+            Queue.offerUnsafe(
+              callbacks,
+              task.pipe(
+                Effect.exit,
+                Effect.map((exit) => {
+                  if (Exit.isSuccess(exit)) resolve(exit.value);
+                  else reject(Cause.squash(exit.cause));
+                }),
+              ),
+            );
+          });
         let activates = 0;
         let sends = 0;
         let replaced = false;
         let current = true;
         let service: MainDiagnostics.MainRendererDiagnostics["Service"];
-        const wc = Object.assign(new Events.EventEmitter(), {
+        const wc = Object.assign(new NodeEvents.EventEmitter(), {
           id: 70,
           isDestroyed: () => false,
           mainFrame: { processId: 11, routingId: 12 },
@@ -132,7 +154,7 @@ it.live.each([
         service = yield* MainDiagnostics.make().pipe(
           Effect.provide(
             Layer.mergeAll(
-              NodeServices.layer,
+              Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
               Layer.mock(ElectronWindow.ElectronWindow)({
                 main: Effect.sync(() => (current ? Option.some(window) : Option.none())),
               }),
@@ -279,9 +301,9 @@ it.live.each([
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
           ServerConfig.layerTest("/fixture", { prefix: "local-main" }).pipe(
-            Layer.provide(NodeServices.layer),
+            Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
           ),
         ),
       ),
@@ -294,14 +316,14 @@ it.live(
     Effect.scoped(
       Effect.gen(function* () {
         const root = yield* Effect.acquireRelease(
-          Effect.promise(() => NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "main-owner-"))),
-          (dir) => Effect.promise(() => NodeFS.rm(dir, { recursive: true, force: true })),
+          Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "main-owner-"))),
+          (dir) => Effect.promise(() => NodeFSP.rm(dir, { recursive: true, force: true })),
         );
         const userId = yield* HostProcess.UserId;
         if (userId === undefined) return;
         const address = NodePath.join(root, "control.sock");
         const lock = NodePath.join(root, "SingletonLock");
-        yield* Effect.promise(() => NodeFS.symlink(`${NodeOS.hostname()}-${process.pid}`, lock));
+        yield* Effect.promise(() => NodeFSP.symlink(`${NodeOS.hostname()}-${process.pid}`, lock));
         yield* Effect.acquireRelease(
           Effect.promise(
             () =>
@@ -314,7 +336,7 @@ it.live(
           (server) =>
             Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
         );
-        yield* Effect.promise(() => NodeFS.chmod(address, 0o600));
+        yield* Effect.promise(() => NodeFSP.chmod(address, 0o600));
         const inspect = () =>
           Effect.tryPromise({
             try: () =>
@@ -322,7 +344,7 @@ it.live(
             catch: (error) => (error instanceof Error ? error.message : "unexpected"),
           }).pipe(Effect.flip);
         assert.equal(yield* inspect(), "local-main-executable-unavailable");
-        yield* Effect.promise(() => NodeFS.chmod(root, 0o755));
+        yield* Effect.promise(() => NodeFSP.chmod(root, 0o755));
         assert.equal(yield* inspect(), "local-main-ownership-unavailable");
       }),
     ),
@@ -363,9 +385,9 @@ it.live(
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
-          NodeServices.layer,
+          Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
           ServerConfig.layerTest("/fixture", { prefix: "local-main-refusal" }).pipe(
-            Layer.provide(NodeServices.layer),
+            Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
           ),
         ),
       ),

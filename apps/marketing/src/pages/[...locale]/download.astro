@@ -1,0 +1,283 @@
+---
+import Layout from "../../layouts/Layout.astro";
+import { RELEASES_URL } from "../../lib/releases";
+import { NIXOS_INSTALL_URL } from "../../lib/site";
+
+import { messagesFor } from "../../i18n";
+import { localeStaticPaths, templateParts } from "../../i18n/locales";
+
+export const getStaticPaths = localeStaticPaths;
+const { locale } = Astro.props;
+const t = messagesFor(locale).download;
+
+const platforms = [
+  { name: "Windows", arch: "x64", format: t.windowsInstaller, url: RELEASES_URL, asset: ".exe" },
+  { name: "Linux", arch: "x64", format: "AppImage", url: RELEASES_URL, asset: ".AppImage" },
+  { name: "NixOS", arch: "x64", format: t.nixosGuide, url: NIXOS_INSTALL_URL, asset: null },
+  { name: "Android", arch: "ARM64", format: "APK", url: RELEASES_URL, asset: ".apk" },
+];
+---
+
+<Layout
+  locale={locale}
+  localizedPath="/download"
+  title={t.title}
+  description={t.description}
+>
+  <div class="download-page" id="download-page" data-channel="stable" data-built-ago={t.builtAgo} data-releases-fallback={t.releasesFallback}>
+    <header class="download-head">
+      <div class="head-inner" data-rise>
+        <img src="/crew-native.svg" width="64" height="64" loading="eager" alt="" decoding="async" />
+        <h1 class="heading">{t.heading}</h1>
+      </div>
+      <div class="channel-toggle" role="tablist" aria-label={t.channelLabel}>
+        <button type="button" role="tab" data-channel="stable" aria-selected="true">{t.stable}</button>
+        <button type="button" role="tab" data-channel="nightly" aria-selected="false">{t.nightly}</button>
+      </div>
+      <p class="head-meta" data-rise style="--d:90ms">
+        <a id="changelog-link" href={RELEASES_URL}><span id="version-label">&nbsp;</span></a>
+      </p>
+    </header>
+
+    <div class="platforms">
+      {platforms.map((platform) => (
+        <section class="platform-section" data-rise style="--d:180ms">
+          <h2 class="platform-name">{platform.name}</h2>
+          <a class="download-card" href={platform.url} data-asset={platform.asset}>
+            <img src="/crew-native.svg" width="28" height="28" loading="lazy" alt="" decoding="async" />
+            <span class="card-text">
+              <span class="card-arch">{platform.arch}</span>
+              <span class="card-format">{platform.format}</span>
+            </span>
+            <span class="card-action">{platform.name === "NixOS" ? t.installGuide : t.viewReleases}<span aria-hidden="true"> ↗</span></span>
+          </a>
+        </section>
+      ))}
+    </div>
+
+    <p class="releases-link" data-rise style="--d:270ms">
+      {
+        templateParts(t.allBuilds).map((part) =>
+          typeof part === "string" ? (
+            part
+          ) : part.key === "link" ? (
+            <a id="releases-page-link" href={RELEASES_URL}>{t.releasesPage}</a>
+          ) : null,
+        )
+      }
+      {" "}
+      {t.unavailablePlatforms}
+    </p>
+  </div>
+</Layout>
+
+<script>
+  import { fetchLatestRelease, RELEASES_URL, NIGHTLY_RELEASES_URL, type ReleaseChannel } from "../../lib/releases";
+
+  const page = document.getElementById("download-page")!;
+  const versionLabel = document.getElementById("version-label")!;
+  const changelogLink = document.getElementById("changelog-link") as HTMLAnchorElement;
+  const releasesPageLink = document.getElementById("releases-page-link") as HTMLAnchorElement;
+  const tabs = page.querySelectorAll<HTMLButtonElement>(".channel-toggle button");
+  // Only release-asset links; mobile store cards have no data-asset and keep their href.
+  const cards = page.querySelectorAll<HTMLAnchorElement>("a[data-asset]");
+
+  function readChannel(): ReleaseChannel {
+    return new URLSearchParams(location.search).get("channel") === "nightly" ? "nightly" : "stable";
+  }
+
+  const relativeTime = new Intl.RelativeTimeFormat(document.documentElement.lang);
+
+  function relativeAge(iso: string): string {
+    const minutes = Math.max(1, Math.round((Date.now() - Date.parse(iso)) / 60_000));
+    if (minutes < 60) return relativeTime.format(-minutes, "minute");
+    const hours = Math.round(minutes / 60);
+    if (hours < 48) return relativeTime.format(-hours, "hour");
+    return relativeTime.format(-Math.round(hours / 24), "day");
+  }
+
+  async function load(channel: ReleaseChannel) {
+    const fallback = channel === "nightly" ? NIGHTLY_RELEASES_URL : RELEASES_URL;
+    page.dataset.channel = channel;
+    tabs.forEach((tab) => tab.setAttribute("aria-selected", String(tab.dataset.channel === channel)));
+    releasesPageLink.href = fallback;
+    changelogLink.href = fallback;
+    versionLabel.textContent = "\u00a0";
+    cards.forEach((card) => {
+      card.href = fallback;
+    });
+
+    try {
+      const release = await fetchLatestRelease(channel);
+      // A toggle click while the fetch was in flight wins; drop the stale result.
+      if (page.dataset.channel !== channel) return;
+
+      versionLabel.textContent =
+        channel === "nightly"
+          ? page.dataset.builtAgo!.replace("{age}", relativeAge(release.published_at))
+          : release.tag_name;
+      if (release.html_url) changelogLink.href = release.html_url;
+      cards.forEach((card) => {
+        const match = (release.assets ?? []).find((a) => a.name.endsWith(card.dataset.asset!));
+        card.href = match?.browser_download_url ?? fallback;
+      });
+    } catch {
+      if (page.dataset.channel === channel) versionLabel.textContent = page.dataset.releasesFallback!;
+    }
+  }
+
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const channel = tab.dataset.channel as ReleaseChannel;
+      const url = new URL(location.href);
+      if (channel === "nightly") url.searchParams.set("channel", "nightly");
+      else url.searchParams.delete("channel");
+      history.replaceState(null, "", url);
+      load(channel);
+    });
+  });
+
+  load(readChannel());
+</script>
+
+<style>
+  .channel-toggle { display: flex; gap: 0.5rem; margin-top: 1.5rem; }
+  .channel-toggle button { padding: 0.5rem 1rem; border: 1px solid var(--border); border-radius: 8px; color: var(--fg-muted); background: transparent; cursor: pointer; }
+  .channel-toggle button[aria-selected="true"] { color: var(--fg); border-color: var(--border-strong); }
+
+  .download-page {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0 1.5rem 4rem;
+  }
+
+  .download-head {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 9vh 1.5rem 2.5rem;
+    margin-bottom: 2rem;
+  }
+
+  .head-inner {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .head-inner img {
+    flex-shrink: 0;
+  }
+
+  .heading {
+    font-weight: 500;
+    font-size: clamp(1.75rem, 4vw, 2.75rem);
+    letter-spacing: -0.035em;
+    line-height: 1.15;
+  }
+
+  .head-meta {
+    margin-top: 1rem;
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+  }
+
+  .head-meta a,
+  .releases-link a {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .platforms {
+    width: 100%;
+    max-width: 720px;
+    display: flex;
+    flex-direction: column;
+    gap: 2.5rem;
+  }
+
+  .platform-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .platform-name {
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    font-weight: 500;
+    font-size: 1.1rem;
+    letter-spacing: -0.01em;
+  }
+
+  .download-card {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.85rem 1rem;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .download-card:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: var(--border-strong);
+  }
+
+  .download-card img {
+    flex-shrink: 0;
+  }
+
+  .card-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .card-arch {
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+
+  .card-format {
+    font-size: 0.8rem;
+    color: var(--fg-dim);
+  }
+
+  .card-action {
+    margin-left: auto;
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    text-align: right;
+  }
+
+  .releases-link {
+    max-width: 720px;
+    margin-top: 3rem;
+    font-size: 0.825rem;
+    color: var(--fg-dim);
+  }
+
+  @media (max-width: 640px) {
+    .download-page {
+      padding: 0 1.25rem 4rem;
+    }
+
+    .download-head {
+      padding: 6vh 1.25rem 2rem;
+    }
+
+    .head-inner {
+      flex-direction: column;
+      text-align: center;
+    }
+
+    .card-action {
+      max-width: 6rem;
+    }
+  }
+</style>

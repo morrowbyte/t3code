@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { EventId, ProviderDriverKind, type ProviderReplayEntry } from "@t3tools/contracts";
@@ -16,6 +17,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as EffectWorker from "../EffectWorker.ts";
 import * as EventSink from "../EventSink.ts";
 import * as Orchestrator from "../Orchestrator.ts";
+import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import { CLAUDE_BACKGROUND_SUBAGENT_AFTER_ROOT_PROMPT } from "./fixtures/claude_background_subagent_after_root/input.ts";
@@ -153,12 +155,16 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
     modelSelection: CLAUDE_MODEL_SELECTION,
   });
 
+  const projectServiceLayer = ProviderTurnStartServiceTestkit.layerForProject(
+    materialized.projectId,
+    workspace,
+  );
   const firstIdle = materialized.steps.findIndex((step) => step.type === "await_thread_idle");
   const phase1Steps = materialized.steps.slice(0, firstIdle + 1);
   const phase2Steps = materialized.steps.slice(firstIdle + 1);
   const { harness, assertComplete } = makeClaudeRestartReplayHarness(transcript);
   const layerDatabase = SqlitePersistence.layerFromPath(path.join(tempDir, "state.sqlite")).pipe(
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
   const snapshotPath = path.join(tempDir, "restart-state.sqlite");
   const scenario = (name: string, steps: typeof materialized.steps) => ({
@@ -209,6 +215,7 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
       Effect.provide(
         Layer.merge(
           ProviderReplayHarness.layerProviderReplay(beforeScenario, harness, {
+            projectServiceLayer,
             databaseLayer: layerDatabase,
           }),
           layerDatabase,
@@ -217,7 +224,7 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
     ),
   );
   const snapshotDatabase = SqlitePersistence.layerFromPath(snapshotPath).pipe(
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
   const settled = projectionFor(before, SCENARIO);
   assert.equal(settled.runs[0]?.status, "completed");
@@ -232,6 +239,7 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
     }).pipe(
       Effect.provide(
         ProviderReplayHarness.layerProviderReplay(restartScenario, harness, {
+          projectServiceLayer,
           databaseLayer: snapshotDatabase,
           recoverOnStartup: true,
           continueThreadsAfterServerUpdate: input.continueThreadsAfterServerUpdate,
@@ -249,6 +257,7 @@ const runRestart = Effect.fn("runRestart")(function* (input: {
 
   const after = yield* Effect.scoped(
     runOrchestratorV2ProviderReplayScenario(scenario("after-restart", phase2Steps), harness, {
+      projectServiceLayer,
       databaseLayer: snapshotDatabase,
       continueThreadsAfterServerUpdate: input.continueThreadsAfterServerUpdate,
     }),
@@ -267,32 +276,30 @@ describe("restart-cancelled background work", () => {
   it.effect.each([false, true])(
     "keeps the thread settled and tells the next user turn once when continuation is %s",
     (continueThreadsAfterServerUpdate) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const projection = yield* runRestart({
-            resumedPrompts: [
-              `${NOTE}\n\nUser message:\n${FIRST_AFTER_RESTART}`,
-              SECOND_AFTER_RESTART,
-            ],
-            userMessagesAfterRestart: [FIRST_AFTER_RESTART, SECOND_AFTER_RESTART],
-            continueThreadsAfterServerUpdate,
-          });
-          assert.deepEqual(
-            projection.runs.map((run) => run.status),
-            ["completed", "completed", "completed"],
-          );
-          assert.isFalse(
-            projection.runs.some((run) => run.restartContinuationOfRunId !== undefined),
-          );
-
-          assert.deepEqual(userTexts(projection), [
-            CLAUDE_BACKGROUND_SUBAGENT_AFTER_ROOT_PROMPT,
-            FIRST_AFTER_RESTART,
+      Effect.gen(function* () {
+        const projection = yield* runRestart({
+          resumedPrompts: [
+            `${NOTE}\n\nUser message:\n${FIRST_AFTER_RESTART}`,
             SECOND_AFTER_RESTART,
-          ]);
-        }).pipe(
-          provideDeterministicTestRuntime,
-          Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer)),
+          ],
+          userMessagesAfterRestart: [FIRST_AFTER_RESTART, SECOND_AFTER_RESTART],
+          continueThreadsAfterServerUpdate,
+        });
+        assert.deepEqual(
+          projection.runs.map((run) => run.status),
+          ["completed", "completed", "completed"],
+        );
+        assert.isFalse(projection.runs.some((run) => run.restartContinuationOfRunId !== undefined));
+
+        assert.deepEqual(userTexts(projection), [
+          CLAUDE_BACKGROUND_SUBAGENT_AFTER_ROOT_PROMPT,
+          FIRST_AFTER_RESTART,
+          SECOND_AFTER_RESTART,
+        ]);
+      }).pipe(
+        provideDeterministicTestRuntime,
+        Effect.provide(
+          Layer.merge(IdAllocator.layer, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         ),
       ),
   );
