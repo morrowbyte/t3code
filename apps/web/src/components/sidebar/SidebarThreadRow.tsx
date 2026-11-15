@@ -1159,7 +1159,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           shouldRecede ? "font-normal" : "font-medium",
           variant !== "slim"
             ? cn(
-                "truncate",
                 shouldRecede
                   ? "text-foreground/75 group-hover/sidebar-row:text-foreground group-focus-visible/sidebar-row:text-foreground"
                   : status === "failed" && !isUnread && !isWoke
@@ -1167,7 +1166,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                     : "text-foreground",
               )
             : cn(
-                "truncate group-focus-within/sidebar-row:text-foreground group-hover/sidebar-row:text-foreground",
+                "group-focus-within/sidebar-row:text-foreground group-hover/sidebar-row:text-foreground",
                 shouldRecede
                   ? "text-secondary-label"
                   : props.isActive || isWoke || status === "input" || status === "request"
@@ -1180,8 +1179,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         )}
         dir={textDirection(thread.title)}
       >
-        <span className="block truncate">{thread.title}</span>
-        <span className="block text-2xs text-muted-foreground" dir="auto">
+        <span className="line-clamp-2 wrap-anywhere">{thread.title}</span>
+        <span className="block truncate text-2xs text-muted-foreground" dir="auto">
           <AgentIdentityLabel threadRef={threadRef} featureTitle={thread.title} />
         </span>
       </span>
@@ -1389,8 +1388,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 className={cn(
                   rowSurfaceClassName,
                   multiline
-                    ? "flex flex-col justify-center px-2.5 py-1.5"
-                    : "flex min-h-14 items-center gap-2.5 px-2.5 py-1.5",
+                    ? "flex flex-col justify-center px-2.5 py-1"
+                    : "flex min-h-12 items-center gap-2.5 px-2.5 py-1",
                   // Lines titles up with the folder name, past its chevron and icon.
                   inFolder && "ps-9",
                 )}
@@ -1568,8 +1567,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       {...(fileDropHandlers ?? {})}
       className={cn(
         "list-none py-0.5",
-        !props.familyRow && "[content-visibility:auto] [contain-intrinsic-size:auto_104px]",
-        metaLineEmpty && "[contain-intrinsic-size:auto_58px]",
+        !props.familyRow && "[content-visibility:auto] [contain-intrinsic-size:auto_5.75rem]",
+        metaLineEmpty && "[contain-intrinsic-size:auto_4.5rem]",
         sortable?.isDragging && "relative z-20",
       )}
     >
@@ -1597,12 +1596,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           }
         >
           {accessibleTitle}
-          <div
-            className={cn(
-              "relative z-10 min-h-[6.5rem] px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)",
-              metaLineEmpty && "h-auto",
-            )}
-          >
+          <div className="relative z-10 px-(--sidebar-row-content-inset) py-1">
             <div className="flex h-5 min-w-0 items-center gap-1.5">
               {draftIndicator}
               {props.project ? (
