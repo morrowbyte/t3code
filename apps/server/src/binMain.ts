@@ -8,7 +8,25 @@ export async function runCliCommand() {
   // Install the socket guard before importing code that can open outbound connections.
   const { ignoreMacosTypeOfServiceEinval } = await import("./outboundHttp.ts");
   ignoreMacosTypeOfServiceEinval();
-  if (command === "__document-text") {
+  if (command === "__cursor-sdk-worker") {
+    const { runCursorSdkWorker } = await import("@t3tools/provider-cursor/server/CursorSdkWorker");
+    await runCursorSdkWorker();
+    process.exit(0);
+  } else if (command === "--crew-desktop-restore-controller") {
+    if (process.argv.length !== 5) {
+      process.exitCode = 2;
+    } else {
+      try {
+        const { runDesktopRestoreController } = await import("@t3tools/shared/desktopRestore");
+        await runDesktopRestoreController({
+          baseDir: process.argv[3]!,
+          transactionId: process.argv[4]!,
+        });
+      } catch {
+        process.exitCode = 1;
+      }
+    }
+  } else if (command === "__document-text") {
     const { extractDocumentText } = await import("./provider/documentTextWorker.ts");
     try {
       process.stdout.write(await extractDocumentText(process.argv[3]!, process.argv[4]!));
