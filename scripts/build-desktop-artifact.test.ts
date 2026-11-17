@@ -1082,7 +1082,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
-  it.effect("does not emit an upstream-identified Debian package for Morrowbyte Linux builds", () =>
+  it.effect("keeps the versioned AppImage as the only Morrowbyte Linux release target", () =>
     Effect.gen(function* () {
       const config = yield* createBuildConfig(
         "linux",
@@ -1095,9 +1095,16 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       );
 
       assert.deepStrictEqual((config.linux as Record<string, unknown>).target, ["AppImage"]);
+      assert.equal(config.artifactName, "T3-Code-${version}-x86_64.${ext}");
+      assert.notProperty(config, "appImage");
+      assert.isNotNull(config.publish);
     }).pipe(
       Effect.provideService(HostProcess.Environment, { T3CODE_DESKTOP_PROFILE: "morrowbyte" }),
-      Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "morrowbyte/t3code" } }),
+        ),
+      ),
     ),
   );
 
