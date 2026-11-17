@@ -300,6 +300,7 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
   readonly copyUnpackedNatives: boolean;
   readonly cuaFileCount?: number;
   readonly cuaPackage?: string;
+  readonly speechDllCount?: number;
   readonly serverEntrySource?: string;
   readonly wslRuntime?: "valid" | "loose-server-tree" | "missing-pty" | "bad-digest";
   readonly targetArch?: "x64" | "arm64";
@@ -328,6 +329,16 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
     );
     yield* fs.makeDirectory(path.dirname(file), { recursive: true });
     yield* fs.writeFileString(file, "export {};\n");
+  }
+
+  for (let index = 0; index < (input.speechDllCount ?? 0); index += 1) {
+    const file = path.join(
+      sourceDir,
+      "node_modules/@transcribe-cpp/win32-x64-cpu-vulkan/artifact",
+      `ggml-cpu-${index}.dll`,
+    );
+    yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+    yield* fs.writeFileString(file, "native speech library");
   }
 
   const generatedAsarPath = path.join(tempDir, WINDOWS_SERVER_ASAR_RESOURCE);
@@ -1947,28 +1958,32 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
-  it.effect("allows only bounded ASAR-declared CUA packages beyond the Windows base budget", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fixture = yield* makeWindowsPayloadFixture({
-          copyUnpackedNatives: true,
-          cuaFileCount: 107,
-        });
-        const result = yield* validateWindowsPackagedPayload({
-          stageDistDir: fixture.stageDistDir,
-          appExecutableName: fixture.appExecutableName,
-          targetArch: "x64",
-          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
-        });
-        assert.isAbove(result.fileCount, WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT);
-        assert.lengthOf(
-          result.unpackedFiles.filter((file) =>
-            file.startsWith("node_modules/@trycua/cua-driver/"),
-          ),
-          107,
-        );
-      }),
-    ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+  it.effect(
+    "allows bounded ASAR-declared CUA and speech files beyond the Windows base budget",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* makeWindowsPayloadFixture({
+            copyUnpackedNatives: true,
+            cuaFileCount: 107,
+            speechDllCount: 22,
+          });
+          const result = yield* validateWindowsPackagedPayload({
+            stageDistDir: fixture.stageDistDir,
+            appExecutableName: fixture.appExecutableName,
+            targetArch: "x64",
+            appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+            fileLimit: 5,
+          });
+          assert.equal(result.fileCount, 5 + 107 + 22);
+          assert.lengthOf(
+            result.unpackedFiles.filter((file) =>
+              file.startsWith("node_modules/@trycua/cua-driver/"),
+            ),
+            107,
+          );
+        }),
+      ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect("keeps loose files outside the CUA allowance", () =>

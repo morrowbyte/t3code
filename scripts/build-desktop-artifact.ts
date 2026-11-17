@@ -1112,6 +1112,7 @@ export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 80;
 // The pinned SDKs contain 107 JS/type/metadata files plus their Windows natives.
 // Their real-path resolvers require complete packages outside server.asar.
 const WINDOWS_CUA_UNPACKED_FILE_LIMIT = 128;
+const WINDOWS_SPEECH_UNPACKED_FILE_LIMIT = 32;
 export const WINDOWS_SERVER_RESOURCE_SOURCE_DIR = "apps/desktop/prod-resources/windows-server";
 export const WINDOWS_SERVER_EXTRA_RESOURCES = [
   {
@@ -3726,9 +3727,16 @@ export const validateWindowsPackagedPayload = Effect.fn(
       fileLimit: WINDOWS_CUA_UNPACKED_FILE_LIMIT,
     });
   }
-  // Only ASAR-declared files already checked above earn the SDK allowance.
-  // Loose files and unrelated packages still consume the original budget.
-  const totalFileLimit = fileLimit + cuaFileCount;
+  const speechPackage = `node_modules/@transcribe-cpp/win32-${input.targetArch}-cpu-vulkan/`;
+  const speechAddon = `node_modules/@koromix/koffi-win32-${input.targetArch}/`;
+  const speechFileCount = unpackedFiles.filter(
+    (file) =>
+      (file.startsWith(speechPackage) && file.endsWith(".dll")) ||
+      (file.startsWith(speechAddon) && file.endsWith(".node")),
+  ).length;
+  // The speech loader needs real DLL paths for its CPU and Vulkan backends.
+  const totalFileLimit =
+    fileLimit + cuaFileCount + Math.min(speechFileCount, WINDOWS_SPEECH_UNPACKED_FILE_LIMIT);
   if (fileCount > totalFileLimit) {
     return yield* new WindowsPackagedPayloadValidationError({
       reason: "file-limit-exceeded",
