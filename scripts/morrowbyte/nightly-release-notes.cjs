@@ -28,11 +28,23 @@ function renderNotes(subjects, previous, current, repository) {
     if (!match || /^(release|ci|build|deps|test|tests)$/i.test(match[2] || "")) return [];
     return [match[3].trim()];
   });
-  const unique = [...new Set(items)];
-  const entries = unique.length
-    ? unique.map((item) => `- ${item}`).join("\n")
-    : "No user-facing changes were identified for this release.";
-  return `## What's changed\n\n${entries}\n\nFull Changelog: https://github.com/${repository}/compare/${previous}...${current}\n`;
+  const header = "## What's changed\n\n";
+  const footer = `\n\nFull Changelog: https://github.com/${repository}/compare/${previous}...${current}\n`;
+  const entries = [...new Set(items)].map((item) => `- ${item}`);
+  const content = entries.join("\n") || "No user-facing changes were identified for this release.";
+  const notes = header + content + footer;
+  const bodyLimit = 120_000;
+  if (Buffer.byteLength(notes) <= bodyLimit) return notes;
+
+  const summaryHeader = header + "Earlier changes are listed in the full changelog.\n\n";
+  const recent = [];
+  let size = Buffer.byteLength(summaryHeader + footer);
+  for (const entry of entries.toReversed()) {
+    size += Buffer.byteLength(entry) + 1;
+    if (size > bodyLimit) break;
+    recent.push(entry);
+  }
+  return summaryHeader + recent.reverse().join("\n") + footer;
 }
 
 function generateNotes(current, source, repository) {

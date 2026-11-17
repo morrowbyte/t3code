@@ -53,3 +53,16 @@ test("shows features and fixes while omitting test and release maintenance", () 
     /No user-facing changes/,
   );
 });
+
+test("bounds the GitHub release body and links to omitted commits", () => {
+  const subjects = Array.from(
+    { length: 2_500 },
+    (_, index) => `fix(web): change ${index}: ${"Änderung ".repeat(14)}`,
+  );
+  const notes = renderNotes(subjects, "old", "new", "morrowbyte/t3code");
+  assert.ok(Buffer.byteLength(notes, "utf8") <= 120_000);
+  assert.match(notes, /- change 2499:/);
+  assert.doesNotMatch(notes, /- change 0:/);
+  assert.match(notes, /Earlier changes are listed in the full changelog/);
+  assert.match(notes, /compare\/old\.\.\.new\n$/);
+});
