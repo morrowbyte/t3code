@@ -1108,7 +1108,7 @@ export function resolveWindowsServerAsarIgnoreGlobs(arch: typeof BuildArch.Type)
   ];
 }
 
-export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 80;
+export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 88;
 // The pinned SDKs contain 107 JS/type/metadata files plus their Windows natives.
 // Their real-path resolvers require complete packages outside server.asar.
 const WINDOWS_CUA_UNPACKED_FILE_LIMIT = 128;
